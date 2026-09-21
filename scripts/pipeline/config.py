@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 
 from dotenv import dotenv_values
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS_DIR = REPO_ROOT / "scripts"
@@ -20,12 +20,12 @@ FACETS_PATH = REPO_ROOT / "src" / "PromptCopilot.Api" / "Configuration" / "facet
 
 class Settings(BaseModel):
     postgres_user: str = "postgres"
-    postgres_password: str = "postgres"
+    postgres_password: str = Field(default="postgres", repr=False)
     postgres_db: str = "prompt_copilot"
     postgres_host: str = "localhost"
     postgres_port: int = 5432
 
-    gemini_api_key: str = ""
+    gemini_api_key: str = Field(default="", repr=False)
     gemini_structure_model: str = "gemini-3.5-flash-lite"
     gemini_embedding_model: str = "gemini-embedding-001"
     embedding_dimensions: int = 768

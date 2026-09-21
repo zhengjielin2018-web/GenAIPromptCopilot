@@ -6,12 +6,12 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import re
 from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from pipeline.boilerplate import strip_boilerplate as _strip_boilerplate
 from pipeline.config import CLEAN_DIR, FACETS_PATH, STRUCTURED_DIR
 from pipeline.facets import FacetCatalog, load_facets
 from pipeline.jsonl import append_jsonl, existing_keys, read_jsonl
@@ -19,37 +19,12 @@ from pipeline.jsonl import append_jsonl, existing_keys, read_jsonl
 HISTORIES_PATH = STRUCTURED_DIR / "histories.jsonl"
 PRESETS_PATH = STRUCTURED_DIR / "presets.jsonl"
 
-_SCORE_TAG_RE = re.compile(r"^score_\d+(_up)?$")
-_EMBEDDING_TAG_RE = re.compile(r"^\w*_neg$")
-_BOILERPLATE_TAGS: frozenset[str] = frozenset({
-    "masterpiece", "best quality", "high quality", "normal quality",
-    "worst quality", "low quality", "highly detailed", "ultra detailed",
-    "absurdres", "highres", "lowres", "bad anatomy", "bad hands",
-    "jpeg artifacts", "signature", "watermark", "username", "artist name",
-    "text", "error", "cropped", "out of frame", "subtitle", "subtitles",
-})
-
-
-def _strip_boilerplate(snippet: str) -> str:
-    """逐個逗號分隔標籤過濾：移除通用畫質詞、分數標籤與 negative embedding 名稱，
-    但保留有風格意義的負向詞（如 censored、furry、chibi、3d）。"""
-    kept: list[str] = []
-    for raw in snippet.split(","):
-        tag = raw.strip()
-        if not tag:
-            continue
-        low = tag.lower()
-        if low in _BOILERPLATE_TAGS or _SCORE_TAG_RE.match(low) or _EMBEDDING_TAG_RE.match(low):
-            continue
-        kept.append(tag)
-    return ", ".join(kept)
-
 Profile = Literal["portrait", "landscape", "object", "vehicle"]
 Category = Literal["Style", "Scene", "Camera", "Appearance", "Pose", "Clothing", "Combined"]
 
 
 class PresetOut(BaseModel):
-    title: str = Field(description="繁體中文，10 字內")
+    title: str = Field(description="繁體中文，10 字內", max_length=100)
     category: Category
     description: str = Field(description="繁體中文，一到兩句模糊自然語言描述，供語意檢索")
     tags: list[str] = Field(description="3-8 個英文小寫標籤")
@@ -129,7 +104,7 @@ def to_outputs(
         seen_snippets.add(key)
         presets.append({
             "source_ref": f"{ref}:{len(presets)}",
-            "title": p.title.strip(),
+            "title": p.title.strip()[:100],
             "category": p.category,
             "description": p.description.strip(),
             "tags": [t.strip().lower() for t in p.tags if t.strip()],
@@ -160,9 +135,16 @@ def run_structure(
             continue
         result = client.generate_structured(build_prompt(record, catalog), StructuredRecord)
         history, presets = to_outputs(record, result, catalog, seen_snippets)
-        append_jsonl(histories_path, history)
+        # 先寫 presets 再寫 history：history 的存在是續跑的「已完成」標記
+        # (existing_keys 用它判斷是否跳過)。若順序反過來，寫入 history 後、
+        # presets 尚未落盤前當掉，續跑會因為 history 已存在而永久跳過這筆
+        # record，導致它的 presets 全部遺失且無法補救。現在的順序下，最壞情況
+        # 是 presets 寫了一部分就當掉、history 沒寫到——續跑會重新呼叫 LLM
+        # 重新產生整筆記錄，而 seen_snippets（從 presets 檔重建）會濾掉這次
+        # 重新產生出的重複 snippet，所以不會產生重複資料。
         for p in presets:
             append_jsonl(presets_path, p)
+        append_jsonl(histories_path, history)
         n_hist += 1
         n_presets += len(presets)
     return n_hist, n_presets

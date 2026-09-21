@@ -17,6 +17,7 @@ MAX_PROMPT_CHARS = 2000
 MAX_NON_ASCII_RATIO = 0.2
 
 _ANGLE_TOKEN_RE = re.compile(r"<[^<>]*>")  # <lora:..>, <lyco:..>, <embedding:..>
+# 通用畫質詞／分數標籤／negative embedding 名稱的過濾不在這裡做，見 pipeline/boilerplate.py
 _MULTI_COMMA_RE = re.compile(r"(\s*,\s*)+")
 _MULTI_SPACE_RE = re.compile(r"\s+")
 

@@ -108,6 +108,37 @@ def test_upsert_histories_refreshes_the_embedding_on_conflict(conn):
     assert dist < 1e-6
 
 
+def test_upsert_histories_refreshes_every_column_on_conflict(conn):
+    upsert_histories(conn, [HIST])
+    conn.commit()
+    changed = {
+        **HIST,
+        "user_intent": "改過的意圖",
+        "positive_prompt": "changed positive",
+        "negative_prompt": "changed negative",
+        "subject_profile": "landscape",
+        "image_url": "https://example.invalid/changed.png",
+        "embedding": [0.0, 1.0] + [0.0] * 766,
+    }
+    assert upsert_histories(conn, [changed]) == 1
+    conn.commit()
+    row = conn.execute(
+        "SELECT user_intent, positive_prompt, negative_prompt, subject_profile, image_url, "
+        "intent_embedding <=> %s AS dist "
+        "FROM shared_prompt_histories WHERE source_ref = %s",
+        (Vector(changed["embedding"]), "test:h1"),
+    ).fetchone()
+    assert row[:5] == (
+        "改過的意圖", "changed positive", "changed negative", "landscape",
+        "https://example.invalid/changed.png",
+    )
+    assert row[5] < 1e-6
+    count = conn.execute(
+        "SELECT count(*) FROM shared_prompt_histories WHERE source_ref = %s", ("test:h1",)
+    ).fetchone()[0]
+    assert count == 1
+
+
 def test_run_load_reads_both_files_and_persists(conn, tmp_path):
     h, p = tmp_path / "histories.jsonl", tmp_path / "presets.jsonl"
     write_jsonl(h, [HIST])

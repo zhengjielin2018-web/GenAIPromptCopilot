@@ -8,6 +8,7 @@ import time
 from collections.abc import Callable
 from typing import Literal
 
+import httpx
 from google import genai
 from google.genai import errors, types
 from pydantic import BaseModel
@@ -20,7 +21,9 @@ TaskType = Literal["RETRIEVAL_DOCUMENT", "RETRIEVAL_QUERY"]
 
 
 def _is_transient(e: Exception) -> bool:
-    return isinstance(e, errors.APIError) and e.code in (429, 500, 502, 503, 504)
+    if isinstance(e, errors.APIError):
+        return e.code in (429, 500, 502, 503, 504)
+    return isinstance(e, (httpx.TimeoutException, httpx.TransportError))
 
 
 def _l2_normalize(v: list[float]) -> list[float]:

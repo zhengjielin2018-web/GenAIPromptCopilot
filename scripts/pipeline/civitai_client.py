@@ -68,7 +68,7 @@ class CivitaiClient:
             if cursor is not None:
                 params["cursor"] = cursor
             page = self._get_page(params)
-            next_cursor = page.get("metadata", {}).get("nextCursor") or None
+            next_cursor = (page.get("metadata") or {}).get("nextCursor") or None
             for item in page.get("items", []):
                 yield item, cursor
             if next_cursor is None:

@@ -41,7 +41,7 @@
 
 - Python 3.12+；PostgreSQL 16 + pgvector（`pgvector/pgvector:pg16`）
 - 向量維度 **768**；embedding 模型 `gemini-embedding-001`（`task_type`：文件用 `RETRIEVAL_DOCUMENT`、查詢用 `RETRIEVAL_QUERY`）。此決定寫入 `.env.example` 與 `db/init/001_schema.sql`，兩處必須一致；換模型必須 `embed.py --reindex`
-- 結構化模型 `gemini-2.5-flash-lite`（可由 `.env` 覆寫）
+- 結構化模型 `gemini-3.5-flash-lite`（可由 `.env` 覆寫）
 - NSFW 過濾為必要步驟：Civitai `nsfw=None` + `nsfwLevel == "None"` + 自建關鍵詞清單，三層皆做
 - `description`、`user_intent`、`title` 為繁體中文；`prompt_snippet`、`negative_snippet`、`positive_prompt`、`negative_prompt`、`tags` 為英文
 - Schema 只在 `db/init/001_schema.sql` 定義；Python 不建表

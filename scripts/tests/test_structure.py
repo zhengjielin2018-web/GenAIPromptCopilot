@@ -1,10 +1,10 @@
+from pipeline.boilerplate import strip_boilerplate as _strip_boilerplate
 from pipeline.config import FACETS_PATH
 from pipeline.facets import load_facets
 from pipeline.jsonl import read_jsonl, write_jsonl
 from pipeline.structure import (
     PresetOut,
     StructuredRecord,
-    _strip_boilerplate,
     build_prompt,
     run_structure,
     to_outputs,
@@ -135,3 +135,24 @@ def test_to_outputs_drops_preset_whose_snippet_is_only_boilerplate():
     result.presets[0].prompt_snippet = "score_9, score_8_up, masterpiece"
     _, presets = to_outputs(REC, result, CAT, seen_snippets=set())
     assert presets == []
+
+
+def test_strip_boilerplate_sees_through_sd_weight_syntax():
+    # NOTE: "bad quality" is not itself in _BOILERPLATE_TAGS (only "worst quality" /
+    # "low quality" are) and the tokenizer splits on every top-level comma, so this
+    # grouped-weight phrase only has its two listed synonyms removed; "bad quality"
+    # (a phrase never in the deliberately-unmodified tag set) survives alongside "old".
+    assert _strip_boilerplate("(worst quality, bad quality, low quality:1.2), old") == "bad quality, old"
+    assert _strip_boilerplate("(((masterpiece))), (lowres:1.2), forest") == "forest"
+    assert _strip_boilerplate("{worst quality, normal quality:2, rain") == "rain"
+
+
+def test_strip_boilerplate_preserves_weighted_non_boilerplate_verbatim():
+    assert _strip_boilerplate("(rella:1.2), (stylized), (enhanced textures)") == (
+        "(rella:1.2), (stylized), (enhanced textures)"
+    )
+
+
+def test_strip_boilerplate_treats_break_as_a_delimiter():
+    assert _strip_boilerplate("score_7_up BREAK, robot, mecha") == "robot, mecha"
+    assert _strip_boilerplate("masterpiece BREAK detailed background") == "detailed background"

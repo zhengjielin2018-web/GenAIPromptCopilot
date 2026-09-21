@@ -18,9 +18,12 @@ class FakeModels:
         self.generate_calls = []
         self.embed_calls = []
         self.fail_first_generate = False
+        self.fail_generate_with_code = None
 
     def generate_content(self, *, model, contents, config):
         self.generate_calls.append((model, contents, config))
+        if self.fail_generate_with_code is not None:
+            raise _api_error(self.fail_generate_with_code)
         if self.fail_first_generate and len(self.generate_calls) == 1:
             raise _api_error(429)
         return SimpleNamespace(text='{"title": "雨夜", "n": 3}')
@@ -56,6 +59,16 @@ def test_generate_structured_retries_on_429():
     models.fail_first_generate = True
     assert _client(models).generate_structured("hi", Out).n == 3
     assert len(models.generate_calls) == 2
+
+
+def test_generate_structured_does_not_retry_non_transient_error():
+    from google.genai import errors
+
+    models = FakeModels()
+    models.fail_generate_with_code = 404
+    with pytest.raises(errors.APIError):
+        _client(models).generate_structured("hi", Out)
+    assert len(models.generate_calls) == 1
 
 
 def test_embed_batch_chunks_normalizes_and_passes_task_type():

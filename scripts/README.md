@@ -95,9 +95,10 @@ NSFW 過濾實際上分三層：
 `nsfw_filter.py` 只是語料庫的衛生層（corpus hygiene），不是安全保證**，不應被誤解為
 已經解決 NSFW 過濾問題。
 
-## `_strip_boilerplate`：為什麼是程式碼過濾而不是純 prompt 指令
+## `pipeline/boilerplate.py::strip_boilerplate`：為什麼是程式碼過濾而不是純 prompt 指令
 
-`pipeline/structure.py` 的 `_strip_boilerplate()` 會用決定性規則（非 LLM）從每個
+`pipeline/boilerplate.py` 的 `strip_boilerplate()`（由 `pipeline/structure.py` 呼叫）
+會用決定性規則（非 LLM）從每個
 snippet 裡移除：
 
 - `score_*`（如 `score_9`、`score_8_up`）這類評分標籤
@@ -119,8 +120,13 @@ LLM「不要把這些當成片段」。原因是：純靠 prompt 指令這件事
 
 會從上次停下的地方繼續，不會重跑已完成的部分，也不會產生重複資料。
 
-隨附的正式語料是用 `python seed_data.py --max-items 400` 建立的（詳見
-`.superpowers/sdd/2026-09-21-subproject-1-data-foundation/task-11-report.md`）。這個
-數字刻意選得比 spec 草稿裡的 3000 小很多：在觀察到的約 55% 存活率下，3000 筆原始資料
-代表上千次即時的 Gemini 結構化呼叫，會花費數小時並有實際用盡免費額度的風險。若要擴大
-語料庫，直接調大 `--max-items` 重跑同一指令即可，管線會從斷點續跑而不是從頭開始。
+隨附的正式語料是用 `python seed_data.py --max-items 400` 建立的。這個
+數字刻意選得比 spec 草稿裡的 3000 小很多：clean 階段（去掉沒 meta、太短、非英文、
+NSFW 的紀錄後）實測存活率約 55%，若直接跑 3000，代表上千次即時的 Gemini 結構化呼叫，
+會花費數小時並有實際用盡免費額度的風險。若要擴大語料庫，直接調大 `--max-items` 重跑
+同一指令即可，管線會從斷點續跑而不是從頭開始。
+
+`embed --reindex` 會先清空輸出檔再重算全部向量（見上方「換 embedding 模型」）；如果
+在 `--reindex` 執行到一半時中斷，輸出檔會停在部分寫入的狀態。復原方式是**不加**
+`--reindex` 再跑一次 `python -m pipeline.embed`——它會把清空後只寫了一部分的檔案視為
+「已完成的部分」，續跑補完剩下的紀錄。
