@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import argparse
 import logging
 import sys
 from pathlib import Path
@@ -20,10 +21,33 @@ logging.getLogger("google_genai").setLevel(logging.ERROR)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from pgvector import Vector  # noqa: E402
 from pydantic import BaseModel, Field  # noqa: E402
 
-from pipeline.facets import FacetCatalog  # noqa: E402
-from pipeline.retrieval import Candidate  # noqa: E402
+from demo_render import (  # noqa: E402
+    BorrowedView,
+    DemoView,
+    OptionView,
+    Palette,
+    SuggestionView,
+    colors_enabled,
+    render,
+    render_queries,
+    render_retrieval_summary,
+    render_verbose,
+)
+from pipeline.config import FACETS_PATH  # noqa: E402
+from pipeline.db import connect  # noqa: E402
+from pipeline.facets import FacetCatalog, load_facets  # noqa: E402
+from pipeline.retrieval import (  # noqa: E402
+    Candidate,
+    annotate_coverage,
+    dedupe,
+    grounded_dimensions,
+    normalize_queries,
+    retrieve_histories,
+    retrieve_presets,
+)
 
 Profile = Literal["portrait", "landscape", "object", "vehicle"]
 FacetState = Literal["covered", "missing", "notApplicable"]
@@ -259,3 +283,110 @@ def build_assembly_prompt(
         histories=format_histories(histories),
         query=query,
     )
+
+
+# ---------- 主流程 ----------
+
+
+def build_view(
+    profile: str,
+    states: dict[str, str],
+    assembly: AssemblyResult,
+    kept_borrowed: list[BorrowedFrom],
+    rejections: list[str],
+    kept_suggestions: list[DimensionSuggestion],
+    by_id: dict[int, Candidate],
+    catalog: FacetCatalog,
+) -> DemoView:
+    borrowed = [
+        BorrowedView(
+            band=by_id[b.preset_id].band, dist=by_id[b.preset_id].dist,
+            title=by_id[b.preset_id].preset["title"], category=by_id[b.preset_id].preset["category"], tags=b.tags,
+        )
+        for b in kept_borrowed
+    ]
+    suggestions = [
+        SuggestionView(
+            dimension_label=catalog.dimensions[s.dimension],
+            missing_labels=s.missing_labels,
+            options=[OptionView(o.label, o.tags, by_id[o.preset_id].preset["title"]) for o in s.options],
+        )
+        for s in kept_suggestions
+    ]
+    return DemoView(
+        profile=profile, facet_states=states,
+        positive_prompt=assembly.positive_prompt, negative_prompt=assembly.negative_prompt,
+        borrowed=borrowed, rejections=rejections, suggestions=suggestions,
+    )
+
+
+def run_once(query: str, conn, client, catalog: FacetCatalog, args, p: Palette) -> None:
+    print(p.dim(f"\n[1/3] 分析：{query}"))
+    analysis = client.generate_structured(build_analysis_prompt(query, catalog), AnalysisResult)
+    profile = analysis.subject_profile
+    states = facet_state_map(analysis, catalog, profile)
+    grounded = grounded_dimensions(states, catalog)
+    queries = normalize_queries(
+        [(q.dimension, q.query) for q in analysis.queries], profile, grounded, catalog, query,
+        k_covered=args.k_covered, k_missing=args.k_missing,
+    )
+    print(p.dim(f"      題材 {profile}"))
+    print(p.dim(render_queries(queries, catalog)))
+
+    print(p.dim("[2/3] 檢索"))
+    vectors = client.embed_batch([query] + [q.query for q in queries], task_type="RETRIEVAL_QUERY")
+    qvec, subvecs = Vector(vectors[0]), [Vector(v) for v in vectors[1:]]
+    hits = retrieve_presets(conn, queries, subvecs, catalog, profile)
+    cands = dedupe([c for dh in hits for c in dh.hits])
+    annotate_coverage(cands, states)
+    histories = retrieve_histories(conn, qvec, profile, args.top_histories)
+    print(p.dim(render_retrieval_summary(hits, catalog, len(histories), profile)))
+    if args.verbose:
+        print(render_verbose(cands, catalog, p))
+
+    print(p.dim("[3/3] 交給 Gemini 組裝提示詞…"))
+    assembly = client.generate_structured(
+        build_assembly_prompt(query, profile, states, cands, histories, catalog), AssemblyResult
+    )
+    by_id = {c.id: c for c in cands}
+    kept_borrowed, rejected_b = validate_borrowed(assembly, by_id)
+    kept_suggestions, rejected_s = validate_suggestions(assembly, by_id, missing_labels_by_dimension(states, catalog))
+    view = build_view(
+        profile, states, assembly, kept_borrowed, rejected_b + rejected_s, kept_suggestions, by_id, catalog
+    )
+    print(render(view, catalog, p))
+
+
+def main(argv: list[str] | None = None) -> None:
+    ap = argparse.ArgumentParser(description="單輪示範：中文描述 → 英文生圖提示詞")
+    ap.add_argument("query", nargs="?", help="中文描述；省略則進入互動模式")
+    ap.add_argument("--k-covered", type=int, default=5, help="使用者有描述的維度，每維撈幾筆")
+    ap.add_argument("--k-missing", type=int, default=3, help="使用者未描述的維度，每句推想子查詢撈幾筆")
+    ap.add_argument("--top-histories", type=int, default=3)
+    ap.add_argument("--verbose", action="store_true", help="印出每維度全部候選與分級")
+    ap.add_argument("--no-color", action="store_true")
+    args = ap.parse_args(argv)
+
+    from pipeline.gemini_client import default_client  # 延遲匯入：沒金鑰時才在這裡報錯
+
+    p = Palette(colors_enabled(args.no_color))
+    catalog = load_facets(FACETS_PATH)
+    client = default_client()
+
+    with connect() as conn:
+        if args.query:
+            run_once(args.query, conn, client, catalog, args, p)
+            return
+        print(p.head("互動模式：輸入中文描述後按 Enter，Ctrl+C 離開。"))
+        while True:
+            try:
+                q = input(p.head("\n> ")).strip()
+            except (EOFError, KeyboardInterrupt):
+                print("\n再見。")
+                return
+            if q:
+                run_once(q, conn, client, catalog, args, p)
+
+
+if __name__ == "__main__":
+    main()
