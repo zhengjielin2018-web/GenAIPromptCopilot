@@ -208,7 +208,7 @@ ORDER BY dist LIMIT %(k)s
 逐筆檢查，不合的**從 `borrowed` 移除並在畫面標示**（現行 `demo.py` 是靜默丟）：
 
 - `preset_id` 不在本次候選集 → 整筆移除。
-- 候選的 `grounded == False` → 整筆移除。這是「不自行發明」的**程式化保障**，不靠 prompt。
+- 候選的 `grounded == False` → 整筆 `BorrowedFrom` 移除。程式保證的只是**這筆歸屬會被拿掉並顯示給使用者看**，不是「這個詞沒寫進提示詞」——詞是否真的沒進 `positive_prompt`，是 §4.4 ③ 規則 4（標 missing 的 facet 對應詞不可借入提示詞）這條 prompt 約束在管。兩者合起來才構成「不自行發明」的保障。
 - `tags` 裡每個詞必須大小寫無關地同時出現在**兩邊**：該片段的 `prompt_snippet ∪ negative_snippet`（真的來自這裡）**且** ③ 產出的 `positive_prompt ∪ negative_prompt`（真的用了）。任一邊沒有 → 該詞移除。例：LLM 宣稱從 id 483〈`pink hair, purple eyes`〉借了 `purple hair` → 483 沒有這個詞，歸屬是假的，移除；`purple hair` 本身留在提示詞裡不受影響。
 
 這驗的是**來源**，不是**正確性**。LLM 若真的從 483 借了 `pink hair` 進提示詞，子串檢查會過 —— 那跟使用者的「紫色」矛盾，是 ③ prompt 裡「使用者已提供的內容必須完整反映」那條規則要管的，驗證不保證。子串比對也防捏造不防偷懶（`hair` 會命中 `long hair`），已知且接受。
