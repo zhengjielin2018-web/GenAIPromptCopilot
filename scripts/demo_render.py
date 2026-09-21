@@ -6,6 +6,7 @@ from __future__ import annotations
 import os
 import sys
 import unicodedata
+from dataclasses import dataclass
 
 from pipeline.facets import FacetCatalog
 from pipeline.retrieval import DIMENSIONS  # noqa: E402
@@ -90,3 +91,40 @@ def colors_enabled(no_color: bool) -> bool:
     if no_color or os.environ.get("NO_COLOR"):
         return False
     return sys.stdout.isatty()
+
+
+# ---------- 給 render() 的資料 ----------
+
+
+@dataclass
+class BorrowedView:
+    band: str
+    dist: float
+    title: str
+    category: str
+    tags: list[str]
+
+
+@dataclass
+class OptionView:
+    label: str
+    tags: str
+    source_title: str
+
+
+@dataclass
+class SuggestionView:
+    dimension_label: str
+    missing_labels: list[str]
+    options: list[OptionView]
+
+
+@dataclass
+class DemoView:
+    profile: str
+    facet_states: dict[str, str]
+    positive_prompt: str
+    negative_prompt: str
+    borrowed: list[BorrowedView]
+    rejections: list[str]
+    suggestions: list[SuggestionView]
