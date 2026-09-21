@@ -1,3 +1,5 @@
+import pytest
+
 from pipeline.config import FACETS_PATH
 from pipeline.facets import load_facets
 
@@ -46,3 +48,21 @@ def test_facet_counts_are_pinned():
             ("portrait", "landscape", "object", "vehicle")} == {
         "portrait": 31, "landscape": 16, "object": 18, "vehicle": 20,
     }
+
+
+def test_load_facets_rejects_profile_referencing_unknown_facet(tmp_path):
+    bad = tmp_path / "bad.yaml"
+    bad.write_text(
+        "dimensions:\n"
+        "  - key: style\n"
+        "    label: 風格\n"
+        "    facets:\n"
+        "      - { id: style.genre, label: 流派, hint: anime }\n"
+        "profiles:\n"
+        "  portrait:\n"
+        "    dimensions:\n"
+        "      style: [style.genre, style.ghost]\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="style.ghost"):
+        load_facets(bad)
