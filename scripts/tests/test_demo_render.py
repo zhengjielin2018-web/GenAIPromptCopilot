@@ -107,9 +107,16 @@ def _cand(pid, dim, dist, grounded=True, coverage=None, title=None):
 def test_render_queries_separates_user_words_from_guesses():
     qs = [DimensionQuery("scene", "夜晚的湖畔", True, 5), DimensionQuery("style", "動漫", False, 3),
           DimensionQuery("style", "寫實", False, 3)]
-    text = render_queries(qs, CAT)
+    text = render_queries(qs, CAT, "portrait")
     assert "子查詢：場景「夜晚的湖畔」" in text
     assert "推想：風格「動漫」 風格「寫實」" in text
+
+
+def test_render_queries_uses_the_profile_specific_dimension_label():
+    qs = [DimensionQuery("appearance", "鏽蝕的鐵劍", True, 5)]
+    text = render_queries(qs, CAT, "object")
+    assert "主體外觀「鏽蝕的鐵劍」" in text
+    assert "人物樣貌" not in text
 
 
 def test_render_retrieval_summary_reports_pool_hits_and_bands_per_dimension_merging_multi_query_dimensions():
@@ -128,10 +135,17 @@ def test_render_retrieval_summary_reports_pool_hits_and_bands_per_dimension_merg
 def test_render_verbose_lists_every_candidate_with_usage_and_coverage():
     cands = [_cand(1, "scene", 0.26, coverage={"scene.lighting": "covered"}),
              _cand(9, "style", 0.2, grounded=False, coverage={"style.genre": "missing"})]
-    text = render_verbose(cands, CAT, P)
+    text = render_verbose(cands, CAT, P, "portrait")
     assert "[場景]" in text and "[風格]" in text
     assert "id=1" in text and "可借入" in text and "scene.lighting=covered" in text
     assert "id=9" in text and "僅供建議" in text
+
+
+def test_render_verbose_uses_the_profile_specific_dimension_label():
+    cands = [_cand(1, "appearance", 0.2, coverage={"appearance.material": "covered"})]
+    text = render_verbose(cands, CAT, P, "vehicle")
+    assert "[主體外觀]" in text
+    assert "人物樣貌" not in text
 
 
 def _view(**kw):
@@ -140,7 +154,7 @@ def _view(**kw):
         facet_states={"appearance.hair": "covered", "appearance.face": "missing", "style.genre": "missing"},
         positive_prompt="1girl, purple hair, twintails",
         negative_prompt="bad anatomy",
-        borrowed=[], rejections=[], suggestions=[],
+        borrowed=[], rejections=[], suggestions=[], unserved=[],
     )
     base.update(kw)
     return DemoView(**base)
@@ -158,6 +172,16 @@ def test_render_shows_borrowed_tags_with_band_and_rejections_verbatim():
     assert "沒有借用" not in text
 
 
+def test_render_shows_rejection_only_borrowed_section_without_the_nothing_borrowed_line():
+    """borrowed=[] 但 rejections 非空：一定要印出拒絕，不能落回「這次沒有借用」。
+    這條鎖死 `if not view.borrowed and not view.rejections:` 的雙重守門，
+    防止未來有人簡化成只看 `view.borrowed`（object 的真實跑法踩過這個坑）。"""
+    view = _view(borrowed=[], rejections=["來源不符：id 1〈甲〉沒有 \"x\"，不計入借用（提示詞不受影響）"])
+    text = render(view, CAT, P)
+    assert "✗ 來源不符：id 1〈甲〉" in text
+    assert "沒有借用" not in text
+
+
 def test_render_shows_one_suggestion_block_per_dimension_naming_missing_facets_and_lettered_options():
     view = _view(suggestions=[SuggestionView(
         "風格", ["藝術流派／媒材", "色調傾向"],
@@ -170,8 +194,38 @@ def test_render_shows_one_suggestion_block_per_dimension_naming_missing_facets_a
     assert "B. 寫實夜景攝影" in text
 
 
+def test_render_shows_an_unserved_dimension_instead_of_silently_dropping_it():
+    """③ 對某個有缺 facet 的維度一則建議都沒給（或全被驗證丟光）時，畫面必須點名，不能悄悄消失。"""
+    view = _view(unserved=[("場景", ["前景元素", "背景與遠景"])])
+    text = render(view, CAT, P)
+    assert "✗ 場景（缺：前景元素、背景與遠景）" in text
+    assert "沒有可用的建議" in text
+    assert "所有維度都已覆蓋" not in text  # 明明有缺，不能同時說「都已覆蓋」
+
+
+def test_render_all_covered_line_only_appears_when_nothing_is_missing_at_all():
+    """即使 suggestions 是空的，只要 unserved 非空就代表還有缺，不能印「都已覆蓋」。"""
+    view = _view(suggestions=[], unserved=[("場景", ["前景元素"])])
+    text = render(view, CAT, P)
+    assert "所有維度都已覆蓋" not in text
+
+    view_all_covered = _view(facet_states={"appearance.hair": "covered"}, suggestions=[], unserved=[])
+    text_all_covered = render(view_all_covered, CAT, P)
+    assert "所有維度都已覆蓋" in text_all_covered
+
+
 def test_render_says_so_when_nothing_was_borrowed_and_nothing_is_missing():
     view = _view(facet_states={"appearance.hair": "covered"})
     text = render(view, CAT, P)
     assert "沒有借用" in text
     assert "沒有建議" in text
+
+
+def test_render_uses_the_profile_specific_dimension_label_in_the_gauge():
+    view = _view(
+        profile="object",
+        facet_states={"appearance.material": "covered", "appearance.wear": "missing"},
+    )
+    text = render(view, CAT, P)
+    assert "主體外觀" in text
+    assert "人物樣貌" not in text

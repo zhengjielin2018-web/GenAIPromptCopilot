@@ -238,7 +238,7 @@ Facet 狀態：
 def format_facet_states(states: dict[str, str], catalog: FacetCatalog, profile: str) -> str:
     lines: list[str] = []
     for dim, ids in catalog.profiles[profile].items():
-        lines.append(f"[{dim}] {catalog.dimensions[dim]}")
+        lines.append(f"[{dim}] {catalog.dimension_label(dim, profile)}")
         for fid in ids:
             lines.append(f"  - {fid}（{catalog.facets[fid].label}）：{states.get(fid, 'missing')}")
     return "\n".join(lines)
@@ -299,6 +299,7 @@ def build_view(
     kept_suggestions: list[DimensionSuggestion],
     by_id: dict[int, Candidate],
     catalog: FacetCatalog,
+    missing_by_dim: dict[str, list[str]],
 ) -> DemoView:
     borrowed = [
         BorrowedView(
@@ -309,16 +310,22 @@ def build_view(
     ]
     suggestions = [
         SuggestionView(
-            dimension_label=catalog.dimensions[s.dimension],
+            dimension_label=catalog.dimension_label(s.dimension, profile),
             missing_labels=s.missing_labels,
             options=[OptionView(o.label, o.tags, by_id[o.preset_id].preset["title"]) for o in s.options],
         )
         for s in kept_suggestions
     ]
+    served = {s.dimension for s in kept_suggestions}
+    unserved = [
+        (catalog.dimension_label(dim, profile), labels)
+        for dim, labels in missing_by_dim.items()
+        if dim not in served
+    ]
     return DemoView(
         profile=profile, facet_states=states,
         positive_prompt=assembly.positive_prompt, negative_prompt=assembly.negative_prompt,
-        borrowed=borrowed, rejections=rejections, suggestions=suggestions,
+        borrowed=borrowed, rejections=rejections, suggestions=suggestions, unserved=unserved,
     )
 
 
@@ -333,7 +340,7 @@ def run_once(query: str, conn, client, catalog: FacetCatalog, args, p: Palette) 
         k_covered=args.k_covered, k_missing=args.k_missing,
     )
     print(p.dim(f"      題材 {profile}"))
-    print(p.dim(render_queries(queries, catalog)))
+    print(p.dim(render_queries(queries, catalog, profile)))
 
     print(p.dim("[2/3] 檢索"))
     vectors = client.embed_batch([query] + [q.query for q in queries], task_type="RETRIEVAL_QUERY")
@@ -344,17 +351,19 @@ def run_once(query: str, conn, client, catalog: FacetCatalog, args, p: Palette) 
     histories = retrieve_histories(conn, qvec, profile, args.top_histories)
     print(p.dim(render_retrieval_summary(hits, catalog, len(histories), profile)))
     if args.verbose:
-        print(render_verbose(cands, catalog, p))
+        print(render_verbose(cands, catalog, p, profile))
 
     print(p.dim("[3/3] 交給 Gemini 組裝提示詞…"))
     assembly = client.generate_structured(
         build_assembly_prompt(query, profile, states, cands, histories, catalog), AssemblyResult
     )
     by_id = {c.id: c for c in cands}
+    missing_by_dim = missing_labels_by_dimension(states, catalog)
     kept_borrowed, rejected_b = validate_borrowed(assembly, by_id)
-    kept_suggestions, rejected_s = validate_suggestions(assembly, by_id, missing_labels_by_dimension(states, catalog))
+    kept_suggestions, rejected_s = validate_suggestions(assembly, by_id, missing_by_dim)
     view = build_view(
-        profile, states, assembly, kept_borrowed, rejected_b + rejected_s, kept_suggestions, by_id, catalog
+        profile, states, assembly, kept_borrowed, rejected_b + rejected_s, kept_suggestions, by_id, catalog,
+        missing_by_dim,
     )
     print(render(view, catalog, p))
 
@@ -387,7 +396,10 @@ def main(argv: list[str] | None = None) -> None:
                 print("\n再見。")
                 return
             if q:
-                run_once(q, conn, client, catalog, args, p)
+                try:
+                    run_once(q, conn, client, catalog, args, p)
+                except Exception as exc:  # 互動模式：印錯誤、留在迴圈裡，不能讓一次壞回應把整個 session 弄掛
+                    print(p.warn(f"發生錯誤，這一輪取消：{exc}"))
 
 
 if __name__ == "__main__":

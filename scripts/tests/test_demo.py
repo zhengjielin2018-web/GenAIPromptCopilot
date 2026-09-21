@@ -12,6 +12,7 @@ from demo import (
     SuggestionOption,
     build_analysis_prompt,
     build_assembly_prompt,
+    build_view,
     facet_state_map,
     format_candidates,
     format_facet_states,
@@ -68,8 +69,10 @@ def test_facet_state_map_keeps_only_profile_facets_and_backfills_missing():
 
 
 def test_missing_labels_by_dimension_groups_labels_in_catalog_order():
+    # 輸入刻意反著 catalog 順序給（palette 先於 genre）：輸出仍要照 catalog 順序，
+    # 不然一個照 states.items() 輸入順序輸出的實作也會誤打誤撞通過。
     states = {
-        "style.genre": "missing", "style.palette": "missing", "scene.location": "covered", "scene.weather": "missing"
+        "style.palette": "missing", "style.genre": "missing", "scene.location": "covered", "scene.weather": "missing"
     }
     assert missing_labels_by_dimension(states, CAT) == {
         "style": ["藝術流派／媒材", "色調傾向"],
@@ -109,17 +112,26 @@ def test_validate_borrowed_rejects_a_tag_that_is_not_actually_in_the_prompt():
 
 
 def test_validate_borrowed_rejects_ungrounded_presets_entirely():
+    # 兩個 tag，兩個都要真的在片段裡，用來區分「整筆被拒」跟「只拒了其中一個 tag」：
+    # 若程式錯把 grounded 檢查放到逐 tag 迴圈裡，這裡會冒出兩則拒絕而不是一則。
     by_id = {900: _cand(900, "style", 0.23, "anime, Makoto Shinkai Style", grounded=False)}
-    a = _assembly(positive_prompt="1girl, anime", borrowed=[BorrowedFrom(preset_id=900, tags=["anime"])])
+    a = _assembly(
+        positive_prompt="1girl, anime, Makoto Shinkai Style",
+        borrowed=[BorrowedFrom(preset_id=900, tags=["anime", "Makoto Shinkai Style"])],
+    )
     kept, rejected = validate_borrowed(a, by_id)
     assert kept == []
+    assert len(rejected) == 1
     assert "未描述" in rejected[0] and "900" in rejected[0]
 
 
 def test_validate_borrowed_rejects_unknown_preset_ids():
-    a = _assembly(borrowed=[BorrowedFrom(preset_id=1, tags=["1girl"])])
+    # 同上：兩個 tag 也只該產生一則「整筆不計入」的拒絕，不是逐 tag 各一則。
+    a = _assembly(borrowed=[BorrowedFrom(preset_id=1, tags=["1girl", "twintails"])])
     kept, rejected = validate_borrowed(a, {})
-    assert kept == [] and "不在本次檢索結果" in rejected[0]
+    assert kept == []
+    assert len(rejected) == 1
+    assert "不在本次檢索結果" in rejected[0]
 
 
 def test_validate_borrowed_is_case_insensitive_and_can_borrow_from_negative_snippet():
@@ -137,6 +149,16 @@ def test_validate_borrowed_keeps_the_good_tags_and_reports_the_bad_ones_of_the_s
     kept, rejected = validate_borrowed(a, by_id)
     assert kept == [BorrowedFrom(preset_id=144, tags=["twintails"])]
     assert len(rejected) == 1 and '"purple hair"' in rejected[0]
+
+
+def test_validate_borrowed_accepts_a_tag_via_substring_containment():
+    """規格 §6.2：子串比對是刻意接受的邊界（"hair" 命中 "pink hair" 裡的 "hair"），
+    防捏造但不防偷懶。這裡把該行為釘住，不是意外通過。"""
+    by_id = {144: _cand(144, "appearance", 0.19, "1girl, pink hair")}
+    a = _assembly(positive_prompt="1girl, hair", borrowed=[BorrowedFrom(preset_id=144, tags=["hair"])])
+    kept, rejected = validate_borrowed(a, by_id)
+    assert kept == [BorrowedFrom(preset_id=144, tags=["hair"])]
+    assert rejected == []
 
 
 # ---------- validate_suggestions ----------
@@ -174,6 +196,45 @@ def test_validate_suggestions_drops_a_dimension_that_has_nothing_missing():
     assert kept == [] and "沒有缺的 facet" in rejected[0]
 
 
+# ---------- build_view：unserved（有缺卻沒有建議倖存的維度） ----------
+
+
+def test_build_view_surfaces_a_dimension_with_missing_facets_and_no_suggestion_as_unserved():
+    view = build_view(
+        "portrait", {}, _assembly(), [], [], [], {}, CAT, {"scene": ["前景元素", "背景與遠景"]},
+    )
+    assert view.unserved == [("場景", ["前景元素", "背景與遠景"])]
+
+
+def test_build_view_does_not_mark_a_served_dimension_as_unserved():
+    by_id = {7: _cand(7, "scene", 0.2, "mist")}
+    kept_suggestions = [DimensionSuggestion(
+        dimension="scene", missing_labels=["天氣氛圍"],
+        options=[SuggestionOption(label="薄霧", tags="mist", preset_id=7)],
+    )]
+    view = build_view(
+        "portrait", {}, _assembly(), [], [], kept_suggestions, by_id, CAT, {"scene": ["天氣氛圍"]},
+    )
+    assert view.unserved == []
+    assert len(view.suggestions) == 1
+
+
+def test_a_suggestion_whose_every_option_is_dropped_by_validation_surfaces_as_unserved_not_vanishing():
+    """這是 Important #1 的核心場景：③ 給了一則建議，但驗證把它唯一的 option 丟光（來源不在候選集）。
+    現行行為（修前）是整則建議悄悄消失，畫面上跟「沒有缺」看起來一樣。"""
+    by_id: dict[int, object] = {}  # 空候選集：option 的來源一定驗證失敗
+    a = _assembly(suggestions=[DimensionSuggestion(
+        dimension="scene", missing_labels=["天氣氛圍"],
+        options=[SuggestionOption(label="薄霧", tags="mist", preset_id=999)],
+    )])
+    missing_by_dim = {"scene": ["天氣氛圍"]}
+    kept_suggestions, rejected = validate_suggestions(a, by_id, missing_by_dim)
+    assert kept_suggestions == []  # 驗證把唯一的 option 丟光，這則建議整個消失
+
+    view = build_view("portrait", {}, a, [], rejected, kept_suggestions, by_id, CAT, missing_by_dim)
+    assert view.unserved == [("場景", ["天氣氛圍"])]
+
+
 # ---------- prompt ----------
 
 
@@ -191,6 +252,15 @@ def test_format_facet_states_only_lists_the_profile_facets_grouped_by_dimension(
     assert "scene.weather（天氣氛圍）：missing" in text
     assert "[scene] 場景" in text
     assert "clothing" not in text
+
+
+def test_format_facet_states_uses_the_profile_specific_dimension_label_for_object():
+    """object 的 appearance 顯示名稱是「主體外觀」(facets.yaml labels)，不是全域的「人物樣貌」。
+    這個標題會直接進 ③ 的組裝 prompt，寫錯會誤導模型把材質／磨損類 facet 讀成人物特徵。"""
+    states = {"appearance.material": "missing"}
+    text = format_facet_states(states, CAT, "object")
+    assert "[appearance] 主體外觀" in text
+    assert "人物樣貌" not in text
 
 
 def test_format_candidates_marks_band_usage_and_facet_coverage():

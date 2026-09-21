@@ -5,6 +5,7 @@ from pipeline import db
 from pipeline.config import FACETS_PATH, settings
 from pipeline.facets import load_facets
 from pipeline.retrieval import (
+    DIMENSIONS,
     Candidate,
     DimensionQuery,
     annotate_coverage,
@@ -18,6 +19,13 @@ from pipeline.retrieval import (
 )
 
 CAT = load_facets(FACETS_PATH)
+
+
+def test_dimensions_tuple_matches_facets_yaml_so_the_two_sources_of_truth_cannot_silently_desync():
+    """demo.Dimension（Literal）與 retrieval.DIMENSIONS（tuple）都各自列了六個維度 key，
+    兩者都不會拿 facets.yaml 檢查自己。這裡至少釘住 DIMENSIONS 這一側，
+    facets.yaml 改了維度 key 而忘記同步時測試會先炸，而不是靜默改變渲染順序或 pydantic schema。"""
+    assert set(DIMENSIONS) == set(CAT.dimensions)
 
 
 def test_band_boundaries_match_the_spec():

@@ -7,7 +7,7 @@ import os
 import sys
 import unicodedata
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from pipeline.facets import FacetCatalog
 from pipeline.retrieval import DIMENSIONS, Candidate, DimensionHits, DimensionQuery
@@ -129,14 +129,15 @@ class DemoView:
     borrowed: list[BorrowedView]
     rejections: list[str]
     suggestions: list[SuggestionView]
+    unserved: list[tuple[str, list[str]]] = field(default_factory=list)
 
 
 # ---------- 進度列 ----------
 
 
-def render_queries(queries: list[DimensionQuery], catalog: FacetCatalog) -> str:
+def render_queries(queries: list[DimensionQuery], catalog: FacetCatalog, profile: str) -> str:
     def fmt(qs: list[DimensionQuery]) -> str:
-        return " ".join(f"{catalog.dimensions[q.dimension]}「{q.query}」" for q in qs)
+        return " ".join(f"{catalog.dimension_label(q.dimension, profile)}「{q.query}」" for q in qs)
 
     grounded = [q for q in queries if q.grounded]
     guessed = [q for q in queries if not q.grounded]
@@ -161,18 +162,18 @@ def render_retrieval_summary(hits: list[DimensionHits], catalog: FacetCatalog, n
             continue
         pool, cnt = per[dim]
         grades = " ".join(f"{b} {cnt[b]}" for b in ("高", "中", "低") if cnt[b])
-        cells.append(f"{catalog.dimensions[dim]} 池 {pool} → {sum(cnt.values())}（{grades or '無'}）")
+        cells.append(f"{catalog.dimension_label(dim, profile)} 池 {pool} → {sum(cnt.values())}（{grades or '無'}）")
     first = "      " + ("  ".join(cells) if cells else "（沒有維度可檢索）")
     return f"{first}\n      相似作品 {n_histories}（{profile}）"
 
 
-def render_verbose(cands: list[Candidate], catalog: FacetCatalog, p: Palette) -> str:
+def render_verbose(cands: list[Candidate], catalog: FacetCatalog, p: Palette, profile: str) -> str:
     lines = [p.head("━━ 全部候選（去重後）━━")]
     for dim in DIMENSIONS:
         group = [c for c in cands if c.dimension == dim]
         if not group:
             continue
-        lines.append(f"  [{catalog.dimensions[dim]}]")
+        lines.append(f"  [{catalog.dimension_label(dim, profile)}]")
         for c in group:
             usage = "可借入" if c.grounded else "僅供建議"
             coverage = ", ".join(f"{k}={v}" for k, v in c.facet_coverage.items()) or "(無)"
@@ -189,7 +190,7 @@ def render(view: DemoView, catalog: FacetCatalog, p: Palette) -> str:
     grouped = group_by_dimension(view.facet_states, catalog)
     lines = ["", p.head("━━ 題材判定 ━━"), f"  {view.profile}", "", p.head("━━ 六維度充足度 ━━")]
     for key in DIMENSIONS:
-        row = render_dimension_row(catalog.dimensions.get(key, key), grouped[key])
+        row = render_dimension_row(catalog.dimension_label(key, view.profile), grouped[key])
         lines.append(p.dim(row) if "不適用" in row else row)
 
     lines += ["", p.head("━━ 正向提示詞 ━━"), p.ok(wrap_tags(view.positive_prompt))]
@@ -204,12 +205,13 @@ def render(view: DemoView, catalog: FacetCatalog, p: Palette) -> str:
         lines.append(p.dim("  （這次沒有借用檢索到的片段）"))
 
     lines += ["", p.head("━━ 建議 ━━")]
-    if view.suggestions:
-        for s in view.suggestions:
-            lines.append(f"  {s.dimension_label}（缺：{'、'.join(s.missing_labels)}）")
-            for letter, o in zip("ABCDEFG", s.options, strict=False):
-                lines.append(f"    {letter}. {pad(o.label, 14)} {o.tags}   〈{o.source_title}〉")
-    else:
+    for s in view.suggestions:
+        lines.append(f"  {s.dimension_label}（缺：{'、'.join(s.missing_labels)}）")
+        for letter, o in zip("ABCDEFG", s.options, strict=False):
+            lines.append(f"    {letter}. {pad(o.label, 14)} {o.tags}   〈{o.source_title}〉")
+    for dim_label, missing in view.unserved:
+        lines.append(p.warn(f"  ✗ {dim_label}（缺：{'、'.join(missing)}）這次沒有可用的建議"))
+    if not view.suggestions and not view.unserved:
         lines.append(p.dim("  （所有維度都已覆蓋，沒有建議）"))
     lines.append("")
     return "\n".join(lines)
