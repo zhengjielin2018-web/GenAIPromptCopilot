@@ -11,14 +11,28 @@ NSFW_KEYWORDS: frozenset[str] = frozenset({
     "penis", "vagina", "pussy", "cum", "orgasm", "masturbation", "fellatio", "cunnilingus",
     "bondage", "bdsm", "lingerie", "underwear only", "see-through", "cameltoe", "ahegao",
     "loli", "shota", "gore", "guro", "dismemberment",
+    # 性暗示形容詞（非解剖學名詞）
+    "sexy", "seductive", "cleavage", "busty", "skimpy", "scantily",
+    "voluptuous", "lewd", "suggestive", "provocative",
 })
 
-_WORD_RE = re.compile(r"[a-z][a-z\-]*")
+_NON_ALNUM_RE = re.compile(r"[^a-z0-9]+")
+
+
+def _normalized(text: str) -> str:
+    """小寫、把所有非英數字元轉成空白，並在頭尾補空白以便做詞組比對。"""
+    return " " + _NON_ALNUM_RE.sub(" ", text.lower()).strip() + " "
+
+
+# 單字關鍵詞比對 token；含空白或連字號的詞組改用正規化後的子字串比對。
+_SINGLE_WORDS: frozenset[str] = frozenset(k for k in NSFW_KEYWORDS if k.isalpha())
+_PHRASES: tuple[str, ...] = tuple(
+    _normalized(k) for k in NSFW_KEYWORDS if not k.isalpha()
+)
 
 
 def is_nsfw_text(text: str) -> bool:
-    lowered = text.lower()
-    tokens = set(_WORD_RE.findall(lowered))
-    if tokens & NSFW_KEYWORDS:
+    normalized = _normalized(text)
+    if set(normalized.split()) & _SINGLE_WORDS:
         return True
-    return any(" " in kw and kw in lowered for kw in NSFW_KEYWORDS)
+    return any(phrase in normalized for phrase in _PHRASES)

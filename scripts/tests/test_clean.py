@@ -55,3 +55,22 @@ def test_clean_output_contract():
     assert set(r) == {"source_id", "prompt", "negative_prompt", "image_url", "width", "height",
                       "base_model", "like_count", "prompt_hash"}
     assert r["negative_prompt"] == "lowres"
+
+
+def test_nsfw_filter_catches_suggestive_adjectives():
+    assert is_nsfw_text("1girl, cleavage, extremely sexy, seductive, city street")
+    assert is_nsfw_text("portrait, busty, skimpy outfit")
+    assert is_nsfw_text("scantily clad, provocative pose")
+
+
+def test_nsfw_filter_allows_plain_anatomical_tags():
+    # 解剖學描述不視為情色內容（Danbooru 風格常見標籤）
+    assert not is_nsfw_text("1girl, small breasts, standing, city street")
+    assert not is_nsfw_text("flat chest, school uniform, classroom")
+
+
+def test_nsfw_filter_survives_underscore_and_hyphen_tag_styles():
+    assert is_nsfw_text("score_9, underwear_only, 1girl")   # 底線分隔的詞組
+    assert is_nsfw_text("half-naked, beach")                # 連字號黏住的單字
+    assert is_nsfw_text("see_through top")                  # 底線版的 see-through
+    assert not is_nsfw_text("score_9, score_8_up, 1girl, city")  # 一般標籤不誤判
