@@ -14,6 +14,7 @@ _BOILERPLATE_TAGS: frozenset[str] = frozenset({
     "masterpiece", "best quality", "high quality", "normal quality",
     "worst quality", "low quality", "highly detailed", "ultra detailed",
     "absurdres", "highres", "lowres", "bad anatomy", "bad hands",
+    "bad quality", "bad eyes", "bad proportions", "bad face", "bad feet", "bad art",
     "jpeg artifacts", "signature", "watermark", "username", "artist name",
     "text", "error", "cropped", "out of frame", "subtitle", "subtitles",
 })

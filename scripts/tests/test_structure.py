@@ -138,11 +138,7 @@ def test_to_outputs_drops_preset_whose_snippet_is_only_boilerplate():
 
 
 def test_strip_boilerplate_sees_through_sd_weight_syntax():
-    # NOTE: "bad quality" is not itself in _BOILERPLATE_TAGS (only "worst quality" /
-    # "low quality" are) and the tokenizer splits on every top-level comma, so this
-    # grouped-weight phrase only has its two listed synonyms removed; "bad quality"
-    # (a phrase never in the deliberately-unmodified tag set) survives alongside "old".
-    assert _strip_boilerplate("(worst quality, bad quality, low quality:1.2), old") == "bad quality, old"
+    assert _strip_boilerplate("(worst quality, bad quality, low quality:1.2), old") == "old"
     assert _strip_boilerplate("(((masterpiece))), (lowres:1.2), forest") == "forest"
     assert _strip_boilerplate("{worst quality, normal quality:2, rain") == "rain"
 
@@ -156,3 +152,7 @@ def test_strip_boilerplate_preserves_weighted_non_boilerplate_verbatim():
 def test_strip_boilerplate_treats_break_as_a_delimiter():
     assert _strip_boilerplate("score_7_up BREAK, robot, mecha") == "robot, mecha"
     assert _strip_boilerplate("masterpiece BREAK detailed background") == "detailed background"
+
+
+def test_strip_boilerplate_keeps_bad_as_an_ordinary_word():
+    assert _strip_boilerplate("bad guy, city street") == "bad guy, city street"
