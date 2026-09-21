@@ -1,7 +1,10 @@
 from pipeline.config import FACETS_PATH
 from pipeline.facets import load_facets
 from pipeline.retrieval import (
+    Candidate,
+    annotate_coverage,
     band,
+    dedupe,
     dimension_facets,
     grounded_dimensions,
     normalize_queries,
@@ -63,3 +66,34 @@ def test_normalize_honours_custom_k_values():
         [("scene", "a"), ("style", "x")], "portrait", {"scene"}, CAT, "整句", k_covered=7, k_missing=2
     )
     assert [q.k for q in out] == [7, 2]
+
+
+def _cand(pid, dim, dist, facet_ids=(), grounded=True):
+    return Candidate(
+        preset={
+            "id": pid, "title": f"t{pid}", "category": "X", "facet_ids": list(facet_ids), "tags": [],
+            "prompt_snippet": "", "negative_snippet": None,
+        },
+        dimension=dim, dist=dist, band=band(dist), grounded=grounded,
+    )
+
+
+def test_dedupe_keeps_the_closest_dimension_and_its_grounded_flag():
+    hits = [_cand(1, "scene", 0.30, grounded=True), _cand(1, "camera", 0.22, grounded=False), _cand(2, "scene", 0.28)]
+    out = dedupe(hits)
+    assert [(c.id, c.dimension, c.grounded) for c in out] == [(2, "scene", True), (1, "camera", False)]
+
+
+def test_dedupe_orders_by_dimension_then_distance():
+    hits = [_cand(3, "clothing", 0.1), _cand(1, "style", 0.3), _cand(2, "style", 0.2)]
+    assert [c.id for c in dedupe(hits)] == [2, 1, 3]
+
+
+def test_annotate_coverage_marks_every_facet_of_the_preset_with_the_users_state():
+    c = _cand(1, "scene", 0.2, facet_ids=["scene.lighting", "scene.weather", "camera.shot"])
+    annotate_coverage([c], {"scene.lighting": "covered", "scene.weather": "missing"})
+    assert c.facet_coverage == {
+        "scene.lighting": "covered",
+        "scene.weather": "missing",
+        "camera.shot": "notApplicable",
+    }

@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
 from pipeline.facets import FacetCatalog
@@ -76,3 +76,34 @@ def normalize_queries(
         if dim in grounded and dim in applicable and dim not in count:
             out.append(DimensionQuery(dim, fallback_query, True, k_covered))
     return out
+
+
+@dataclass
+class Candidate:
+    preset: dict
+    dimension: str  # 去重後歸屬的維度
+    dist: float
+    band: Band
+    grounded: bool  # 歸屬維度是否 grounded；False 的片段不得借入提示詞
+    facet_coverage: dict[str, str] = field(default_factory=dict)  # facet_id -> 本次使用者的狀態
+
+    @property
+    def id(self) -> int:
+        return self.preset["id"]
+
+
+def dedupe(hits: list[Candidate]) -> list[Candidate]:
+    """同一 preset 跨維度命中只留距離最小的那個（每維用不同子查詢向量，最小即最像該維需求）。
+    輸出依 (維度順序, 距離) 排序。"""
+    best: dict[int, Candidate] = {}
+    for c in hits:
+        cur = best.get(c.id)
+        if cur is None or c.dist < cur.dist:
+            best[c.id] = c
+    return sorted(best.values(), key=lambda c: (DIMENSIONS.index(c.dimension), c.dist))
+
+
+def annotate_coverage(cands: list[Candidate], states: dict[str, str]) -> None:
+    """每筆候選的每個 facet_id 標上本次使用者的狀態；不在 ① 清單裡的視為 notApplicable。給 ③ 看的。"""
+    for c in cands:
+        c.facet_coverage = {fid: states.get(fid, "notApplicable") for fid in c.preset["facet_ids"]}
