@@ -50,3 +50,23 @@ def test_run_embed_chunks_requests(tmp_path):
     g = FakeGemini()
     run_embed(g, in_path=inp, out_path=out, text_fn=history_text, chunk=2)
     assert [len(b) for b in g.batches] == [2, 2, 1]
+
+
+def test_run_embed_preserves_every_field_of_a_preset_record(tmp_path):
+    inp, out = tmp_path / "in.jsonl", tmp_path / "out.jsonl"
+    preset = {
+        "source_ref": "civitai:1:0",
+        "title": "森林光影",
+        "category": "Scene",
+        "description": "斑駁的樹影灑在林間小徑上",
+        "tags": ["forest", "dappled sunlight"],
+        "facet_ids": ["scene.location", "scene.lighting"],
+        "prompt_snippet": "forest, dappled sunlight",
+        "negative_snippet": None,
+        "image_url": "https://example.invalid/1.png",
+    }
+    write_jsonl(inp, [preset])
+    assert run_embed(FakeGemini(), in_path=inp, out_path=out, text_fn=preset_text) == 1
+    row = next(iter(read_jsonl(out)))
+    assert {k: v for k, v in row.items() if k != "embedding"} == preset
+    assert row["embedding"] == [float(len(preset_text(preset))), 0.0]
