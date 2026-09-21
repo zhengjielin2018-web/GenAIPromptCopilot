@@ -10,7 +10,11 @@ from pipeline.config import settings
 
 def connect() -> psycopg.Connection:
     conn = psycopg.connect(settings.postgres_dsn)
-    register_vector(conn)
+    try:
+        register_vector(conn)
+    except Exception:
+        conn.close()
+        raise
     return conn
 
 
