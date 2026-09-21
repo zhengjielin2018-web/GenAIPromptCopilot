@@ -1,0 +1,87 @@
+# 六維度 facet 定義。Python 管線與 C# API 共用此檔；前端由 GET /api/config/facets 取得。
+dimensions:
+  - key: style
+    label: 風格
+    facets:
+      - { id: style.genre,     label: 藝術流派／媒材,       hint: "anime, oil painting, photorealistic, watercolor" }
+      - { id: style.reference, label: 參照畫師或作品,       hint: "Makoto Shinkai style, by Greg Rutkowski" }
+      - { id: style.render,    label: 渲染引擎／技術風格詞, hint: "octane render, cel shading, film grain（不含 masterpiece 等基礎畫質詞）" }
+      - { id: style.palette,   label: 色調傾向,             hint: "vibrant colors, muted palette, monochrome" }
+  - key: scene
+    label: 場景
+    facets:
+      - { id: scene.location,   label: 地點類型,       hint: "city street, forest, bedroom, space station" }
+      - { id: scene.foreground, label: 前景元素,       hint: "flower petals in foreground, rain drops on lens" }
+      - { id: scene.midground,  label: 中景／主體周邊, hint: "surrounded by market stalls, standing beside a motorcycle" }
+      - { id: scene.background, label: 背景與遠景,     hint: "mountains in the distance, skyline, blurred crowd" }
+      - { id: scene.lighting,   label: 光源與時間,     hint: "golden hour, neon lights, backlit, overcast noon" }
+      - { id: scene.weather,    label: 天氣氛圍,       hint: "rain, fog, snow, clear sky" }
+      - { id: scene.season,     label: 季節,           hint: "autumn leaves, cherry blossoms, snow-covered" }
+  - key: camera
+    label: 鏡頭
+    facets:
+      - { id: camera.shot,        label: 景別,     hint: "close-up, upper body, full body, wide shot" }
+      - { id: camera.angle,       label: 視角高度, hint: "low angle, eye level, from above, bird's-eye view" }
+      - { id: camera.focal,       label: 焦段,     hint: "85mm, wide-angle lens, telephoto" }
+      - { id: camera.dof,         label: 景深,     hint: "shallow depth of field, bokeh, everything in focus" }
+      - { id: camera.composition, label: 構圖,     hint: "rule of thirds, centered, dutch angle, symmetrical" }
+  - key: appearance
+    label: 人物樣貌
+    facets:
+      - { id: appearance.age_gender, label: 年齡與性別, hint: "1girl, young woman, elderly man" }
+      - { id: appearance.face,       label: 臉部特徵,   hint: "sharp jawline, freckles, blue eyes" }
+      - { id: appearance.hair,       label: 髮型髮色,   hint: "long black hair, messy silver bob, twin tails" }
+      - { id: appearance.body,       label: 膚色體型,   hint: "pale skin, athletic build, tan" }
+      - { id: appearance.expression, label: 表情,       hint: "smiling, tired eyes, smirk, crying" }
+      - { id: appearance.material,   label: 材質與工藝, hint: "brushed steel, hand-carved wood, worn leather（object/vehicle 用）" }
+      - { id: appearance.wear,       label: 磨損與使用痕跡, hint: "scratched paint, rust, patina（object/vehicle 用）" }
+      - { id: appearance.scale,      label: 尺度參照,   hint: "towering over buildings, palm-sized（object/vehicle 用）" }
+  - key: pose
+    label: 人物動作
+    facets:
+      - { id: pose.main,         label: 主要動作／姿勢,         hint: "sitting on a bench, running, leaning against wall" }
+      - { id: pose.limbs,        label: 肢體細節,               hint: "hand on hip, head tilted, arms crossed" }
+      - { id: pose.gaze,         label: 視線方向,               hint: "looking at viewer, looking away, eyes closed" }
+      - { id: pose.interaction,  label: 與環境或道具的互動,     hint: "holding umbrella, touching water, riding bicycle" }
+      - { id: pose.motion,       label: 動態感,                 hint: "motion blur, hair flowing in wind, frozen mid-jump" }
+      - { id: pose.motion_state, label: 運動狀態,               hint: "parked, speeding, drifting（vehicle 用）" }
+      - { id: pose.terrain,      label: 與地形的互動,           hint: "kicking up dust, splashing through puddle（vehicle 用）" }
+  - key: clothing
+    label: 人物穿著
+    facets:
+      - { id: clothing.head,        label: 頭部配件,   hint: "beret, cat ears headband, glasses" }
+      - { id: clothing.upper,       label: 上半身,     hint: "oversized hoodie, leather jacket, kimono" }
+      - { id: clothing.lower,       label: 下半身,     hint: "pleated skirt, cargo pants, torn jeans" }
+      - { id: clothing.footwear,    label: 鞋履,       hint: "combat boots, sneakers, barefoot" }
+      - { id: clothing.material,    label: 材質與磨損, hint: "worn denim, glossy latex, frayed hem" }
+      - { id: clothing.accessories, label: 配件飾品,   hint: "silver necklace, backpack, wristwatch" }
+
+profiles:
+  portrait:
+    dimensions:
+      style:      [style.genre, style.reference, style.render, style.palette]
+      scene:      [scene.location, scene.foreground, scene.midground, scene.background, scene.lighting, scene.weather]
+      camera:     [camera.shot, camera.angle, camera.focal, camera.dof, camera.composition]
+      appearance: [appearance.age_gender, appearance.face, appearance.hair, appearance.body, appearance.expression]
+      pose:       [pose.main, pose.limbs, pose.gaze, pose.interaction, pose.motion]
+      clothing:   [clothing.head, clothing.upper, clothing.lower, clothing.footwear, clothing.material, clothing.accessories]
+  landscape:
+    dimensions:
+      style:  [style.genre, style.reference, style.render, style.palette]
+      scene:  [scene.location, scene.foreground, scene.midground, scene.background, scene.lighting, scene.weather, scene.season]
+      camera: [camera.shot, camera.angle, camera.focal, camera.dof, camera.composition]
+  object:
+    labels: { appearance: 主體外觀 }
+    dimensions:
+      style:      [style.genre, style.reference, style.render, style.palette]
+      scene:      [scene.location, scene.foreground, scene.midground, scene.background, scene.lighting, scene.weather]
+      camera:     [camera.shot, camera.angle, camera.focal, camera.dof, camera.composition]
+      appearance: [appearance.material, appearance.wear, appearance.scale]
+  vehicle:
+    labels: { appearance: 主體外觀, pose: 運動狀態 }
+    dimensions:
+      style:      [style.genre, style.reference, style.render, style.palette]
+      scene:      [scene.location, scene.foreground, scene.midground, scene.background, scene.lighting, scene.weather]
+      camera:     [camera.shot, camera.angle, camera.focal, camera.dof, camera.composition]
+      appearance: [appearance.material, appearance.wear, appearance.scale]
+      pose:       [pose.motion_state, pose.terrain]

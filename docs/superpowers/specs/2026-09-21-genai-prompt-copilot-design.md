@@ -84,7 +84,7 @@
                                    └──────────────────────────┘
 ```
 
-LLM：Gemini Flash（現行 2.x 版本，子專案 2 開工時確認確切型號）。Embedding：Gemini embedding（維度於子專案 1 開工時確認後定案）。
+LLM：**`gemini-3.5-flash-lite`**（子專案 1 執行時實測定案。注意：`gemini-2.5-flash-lite` 仍會出現在 API 的 `models.list()` 中，但實際呼叫回 404「no longer available to new users」——列表裡有不等於可以用。採釘死版本而非 `gemini-flash-lite-latest` 別名，以維持 eval 結果可重現）。Embedding：**`gemini-embedding-001`，768 維**（實測可用）。
 
 ## 4. 核心編排（全 Agentic）
 
@@ -252,6 +252,17 @@ interface IPromptOrchestrator {
 
 ### 5.3 其他 profile
 
+> **動物的歸屬（已定案）**：四值分類沒有「動物」這一格。子專案 1 實測 258 筆語料中，
+> 一張「睡著的貓」被 LLM 標成 `portrait`（因為沒有更貼切的選項）。
+> **決議：動物視為場景中的物件，歸入 `object` profile**，不新增第五個 profile。
+> system prompt 需明確寫出這條規則，否則 LLM 會繼續回退到 `portrait`。
+>
+> 一個需要留意的副作用：`object` profile 目前把 `pose` 整個關掉，但動物**是有姿態的**
+> （趴著、蜷曲、奔跑），關掉會損失資訊。建議子專案 2 實作時做一個最小調整——
+> `object` profile 在主體是動物時保留 `pose` 維度（`pose.main`／`pose.gaze`／`pose.motion`
+> 這三項對動物有意義，`pose.limbs`／`pose.interaction` 可留可不留）。
+> 這不影響已入庫的語料，只影響 runtime 的追問行為。
+
 | Profile | 差異 |
 | :--- | :--- |
 | `landscape` | `appearance` / `pose` / `clothing` 全部 `notApplicable`；`scene` 增加 `scene.season`（季節） |
@@ -322,7 +333,17 @@ profiles:
 
 ### 6.3 資料側
 
-Python 管線在 `clean.py` 階段過濾 NSFW（Civitai API `nsfw=false` 參數 + 自建關鍵詞清單雙重過濾）。知識庫本身乾淨是整個「合規」賣點的前提。
+Python 管線在 `clean.py` 階段過濾 NSFW（Civitai API `nsfw=None` 參數 + `nsfwLevel` 檢查 + 自建關鍵詞清單，三層過濾）。知識庫本身乾淨是整個「合規」賣點的前提。
+
+> **子專案 1 實測結果（重要，會影響本節的可信度）**：抓下來的 20 筆原始資料**全部**是
+> `nsfwLevel: "None"` 且 `nsfw: false`，包含一筆內容為
+> `cleavage, extremely sexy, seductive` 的 prompt。也就是說**前兩層實際上什麼都沒擋掉**，
+> 第三層的關鍵詞清單是唯一真正在運作的過濾。清單已擴充性暗示形容詞並改為標點正規化比對，
+> 實測 859 筆 preset 殘留 0 筆，但**固定的英文關鍵詞清單本質上擋不住換句話說、其他語言或新詞**。
+> 因此 §6.1／§6.2 的 runtime LLM 分類器才是真正的防線；管線這層只是語料衛生，不是保證。
+>
+> **決議：管線這層維持現狀，不再加強。** 已知它擋不住換句話說與其他語言，這是明知並接受的
+> 取捨，不是疏漏。合規賣點的實質內容在 runtime 那兩層，demo 時應該這樣講。
 
 ## 7. 資料模型
 
