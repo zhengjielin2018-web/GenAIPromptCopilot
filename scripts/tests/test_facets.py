@@ -50,6 +50,20 @@ def test_facet_counts_are_pinned():
     }
 
 
+def test_dimension_label_uses_the_profile_override_for_object_and_vehicle():
+    cat = load_facets(FACETS_PATH)
+    assert cat.dimension_label("appearance", "object") == "主體外觀"
+    assert cat.dimension_label("appearance", "vehicle") == "主體外觀"
+    assert cat.dimension_label("pose", "vehicle") == "運動狀態"
+
+
+def test_dimension_label_falls_back_to_the_global_label_when_no_override():
+    cat = load_facets(FACETS_PATH)
+    assert cat.dimension_label("appearance", "portrait") == "人物樣貌"
+    assert cat.dimension_label("appearance", "landscape") == "人物樣貌"
+    assert cat.dimension_label("style", "object") == "風格"  # object 只覆寫 appearance，其餘用全域
+
+
 def test_load_facets_rejects_profile_referencing_unknown_facet(tmp_path):
     bad = tmp_path / "bad.yaml"
     bad.write_text(

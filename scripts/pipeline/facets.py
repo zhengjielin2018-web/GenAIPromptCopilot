@@ -21,6 +21,7 @@ class FacetCatalog:
     dimensions: dict[str, str] = field(default_factory=dict)  # key -> label
     facets: dict[str, Facet] = field(default_factory=dict)  # id -> Facet
     profiles: dict[str, dict[str, list[str]]] = field(default_factory=dict)  # profile -> dim -> ids
+    profile_labels: dict[str, dict[str, str]] = field(default_factory=dict)  # profile -> dim -> 顯示名稱覆寫
 
     @property
     def all_ids(self) -> frozenset[str]:
@@ -32,6 +33,11 @@ class FacetCatalog:
     def ids_for_profile(self, profile: str) -> frozenset[str]:
         dims = self.profiles[profile]
         return frozenset(i for ids in dims.values() for i in ids)
+
+    def dimension_label(self, dimension: str, profile: str) -> str:
+        """該 profile 的顯示名稱覆寫優先於全域名稱（例：object/vehicle 的 appearance → 主體外觀）。"""
+        override = self.profile_labels.get(profile, {})
+        return override.get(dimension, self.dimensions.get(dimension, dimension))
 
     def prompt_listing(self) -> str:
         lines: list[str] = []
@@ -54,6 +60,7 @@ def load_facets(path: Path) -> FacetCatalog:
             )
     for name, body in raw["profiles"].items():
         cat.profiles[name] = {k: list(v) for k, v in body["dimensions"].items()}
+        cat.profile_labels[name] = dict(body.get("labels", {}))
     unknown = {i for dims in cat.profiles.values() for ids in dims.values() for i in ids} - cat.all_ids
     if unknown:
         raise ValueError(f"facets.yaml profiles 引用了不存在的 facet id: {sorted(unknown)}")
