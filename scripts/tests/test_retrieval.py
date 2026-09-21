@@ -142,14 +142,19 @@ def test_retrieve_presets_only_returns_rows_touching_the_dimension_and_respects_
 
 
 @pytest.mark.integration
-def test_retrieve_presets_pool_differs_between_profiles():
+def test_retrieve_presets_pool_is_empty_for_a_dimension_the_profile_lacks():
+    # landscape 沒有 clothing 這個維度，portrait 有：候選池應該一個有一個沒有
+    assert dimension_facets(CAT, "landscape", "clothing") == []
+    assert dimension_facets(CAT, "portrait", "clothing") != []
     with _conn_with_data() as conn:
         v = _unit_vector()
-        q = DimensionQuery("scene", "q", True, 5)
+        q = DimensionQuery("clothing", "q", True, 5)
         portrait = retrieve_presets(conn, [q], [v], CAT, "portrait")[0]
         landscape = retrieve_presets(conn, [q], [v], CAT, "landscape")[0]
-        # landscape 的 scene 多了 scene.season，候選池只會更大
-        assert landscape.pool_size >= portrait.pool_size
+        assert portrait.pool_size > 0
+        assert len(portrait.hits) > 0
+        assert landscape.pool_size == 0
+        assert landscape.hits == []
 
 
 @pytest.mark.integration
