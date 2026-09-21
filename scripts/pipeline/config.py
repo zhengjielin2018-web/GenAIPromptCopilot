@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from dotenv import load_dotenv
+from dotenv import dotenv_values
 from pydantic import BaseModel
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -34,13 +34,19 @@ class Settings(BaseModel):
     gemini_min_interval_s: float = 0.5
 
     def __init__(self, _env_file: str | Path | None = REPO_ROOT / ".env", **overrides):
-        if _env_file is not None:
-            load_dotenv(_env_file, override=False)
-        values = {
-            name: os.environ[name.upper()]
-            for name in type(self).model_fields
-            if name.upper() in os.environ
+        field_names = type(self).model_fields
+        file_values = (
+            dotenv_values(_env_file) if _env_file is not None and Path(_env_file).is_file() else {}
+        )
+        env_values = {
+            name: os.environ[name.upper()] for name in field_names if name.upper() in os.environ
         }
+        values = {
+            name: file_values[name.upper()]
+            for name in field_names
+            if name.upper() in file_values and file_values[name.upper()] is not None
+        }
+        values.update(env_values)
         values.update(overrides)
         super().__init__(**values)
 
