@@ -149,3 +149,113 @@ def validate_suggestions(
         if options:
             kept.append(DimensionSuggestion(dimension=s.dimension, missing_labels=truth, options=options))
     return kept, rejected
+
+
+# ---------- prompt ----------
+
+ANALYSIS_TEMPLATE = """你是 AI 生圖提示詞助理的「分析」階段。使用者用繁體中文描述想要的畫面，你只做分析，不產出提示詞。
+
+1. 判斷 subject_profile：portrait（畫面主體是人）、landscape（風景）、object（靜物；**動物也歸在這一類**）、\
+vehicle（載具）。
+2. 對下面清單裡的**每一個** facet 判斷狀態，一個都不能漏：
+   - covered：使用者的描述已經提供了這項資訊
+   - missing：這項對本題材有意義，但使用者沒有提到
+   - notApplicable：這項對本題材根本不適用（例如風景沒有「人物穿著」）
+3. 產出 queries，每筆是 {{dimension, query}}，query 為繁體中文，供向量檢索用：
+   - 有任一 facet 為 covered 的維度：給 **1 句**，**逐字使用使用者的原話**（只挑出屬於這個維度的那部分），不改寫、不補充
+   - 全部 facet 為 missing 的維度：給 **2 句**，依整體畫面推想這個維度可能的方向，兩句必須是**對比**的方向\
+（例如「寫實攝影」對「動漫插畫」），不是同一方向的兩種說法
+   - 全部 facet 為 notApplicable 的維度：不給
+
+Facet 清單：
+{facets}
+
+使用者的描述：
+{query}
+"""
+
+ASSEMBLY_TEMPLATE = """你是 AI 生圖提示詞助理的「組裝」階段。分析階段已判定題材與每個 facet 的狀態，\
+並從知識庫撈出候選片段。你要產出可直接使用的 Stable Diffusion / SDXL 提示詞（英文、逗號分隔的 tag 風格）。
+
+規則：
+1. 使用者已描述的內容必須**完整**反映在提示詞裡。
+2. **複合屬性用複合 tag 完整表達**：雙色髮、半邊、漸層、混色這類，要寫成像 `split-color hair, two-tone hair, \
+purple hair, pink hair` 這種能讓生圖模型理解結構的組合，不可被候選片段裡的單色詞（如 `pink hair`）取代或吃掉一半。\
+知識庫沒有的詞由你自己翻譯，不因為片段裡沒有就省略。
+3. 標為 missing 的 facet **不要自行發明**，留白交給生圖模型；基礎畫質詞與基礎負向詞例外（慣例 boilerplate）。
+4. 候選片段每筆都標了「可借入提示詞」或「僅供建議」，以及它涉及的 facet 對本次使用者是 covered 還是 missing：
+   - 「僅供建議」的片段，任何詞都不可寫進提示詞
+   - 「可借入提示詞」的片段，標 missing 的 facet 對應的詞也不可寫進提示詞，只可進建議
+   - 相似度「低」的片段仍可借用其中與使用者描述相符的詞（例如 `sitting on the mushroom` 裡的 `sitting`），\
+但不可借入與描述矛盾的詞
+5. borrowed 只列**真的寫進提示詞**且**真的來自該片段**的詞；每個詞要跟片段裡的寫法一致。
+6. suggestions：每個有 missing facet 的維度都要給一則，missing_labels 逐一點名該維度缺的 facet，\
+options 給 2–3 個**不同方向**的選項，每個選項的 tags 是可直接貼的英文、preset_id 是來源片段。\
+沒有 missing facet 的維度不要給。
+
+題材：{profile}
+
+Facet 狀態：
+{facet_states}
+
+候選片段（依維度分組，相似度依向量距離分級）：
+{candidates}
+
+類似的既有作品（僅供參考風格，不要照抄）：
+{histories}
+
+使用者的描述：
+{query}
+"""
+
+
+def format_facet_states(states: dict[str, str], catalog: FacetCatalog, profile: str) -> str:
+    lines: list[str] = []
+    for dim, ids in catalog.profiles[profile].items():
+        lines.append(f"[{dim}] {catalog.dimensions[dim]}")
+        for fid in ids:
+            lines.append(f"  - {fid}（{catalog.facets[fid].label}）：{states.get(fid, 'missing')}")
+    return "\n".join(lines)
+
+
+def format_candidates(cands: list[Candidate]) -> str:
+    if not cands:
+        return "  （無）"
+    lines: list[str] = []
+    for c in cands:
+        usage = "可借入提示詞" if c.grounded else "僅供建議"
+        coverage = ", ".join(f"{k}={v}" for k, v in c.facet_coverage.items()) or "(無)"
+        lines.append(f"  id={c.id} 〈{c.preset['title']}〉[{c.dimension}] 相似度：{c.band}（{c.dist:.3f}） {usage}")
+        lines.append(f"      facets: {coverage}")
+        lines.append(f"      positive: {c.preset['prompt_snippet']}")
+        lines.append(f"      negative: {c.preset['negative_snippet'] or '(無)'}")
+    return "\n".join(lines)
+
+
+def format_histories(histories: list[dict]) -> str:
+    if not histories:
+        return "  （無）"
+    return "\n".join(
+        f"  ({x['subject_profile']}) {x['user_intent']}\n      {x['positive_prompt'][:150]}" for x in histories
+    )
+
+
+def build_analysis_prompt(query: str, catalog: FacetCatalog) -> str:
+    return ANALYSIS_TEMPLATE.format(facets=catalog.prompt_listing(), query=query)
+
+
+def build_assembly_prompt(
+    query: str,
+    profile: str,
+    states: dict[str, str],
+    cands: list[Candidate],
+    histories: list[dict],
+    catalog: FacetCatalog,
+) -> str:
+    return ASSEMBLY_TEMPLATE.format(
+        profile=profile,
+        facet_states=format_facet_states(states, catalog, profile),
+        candidates=format_candidates(cands),
+        histories=format_histories(histories),
+        query=query,
+    )

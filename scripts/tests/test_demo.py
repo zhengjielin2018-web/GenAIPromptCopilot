@@ -5,7 +5,11 @@ from demo import (
     DimensionSuggestion,
     FacetAssessment,
     SuggestionOption,
+    build_analysis_prompt,
+    build_assembly_prompt,
     facet_state_map,
+    format_candidates,
+    format_facet_states,
     missing_labels_by_dimension,
     validate_borrowed,
     validate_suggestions,
@@ -160,3 +164,53 @@ def test_validate_suggestions_drops_a_dimension_that_has_nothing_missing():
     )])
     kept, rejected = validate_suggestions(a, by_id, {})
     assert kept == [] and "沒有缺的 facet" in rejected[0]
+
+
+# ---------- prompt ----------
+
+
+def test_analysis_prompt_lists_facets_and_states_the_query_rules():
+    text = build_analysis_prompt("夜晚的湖畔", CAT)
+    assert "scene.location" in text and "夜晚的湖畔" in text
+    assert "逐字使用使用者的原話" in text  # covered 維度 1 句
+    assert "對比" in text and "2 句" in text  # missing 維度 2 句對比
+
+
+def test_format_facet_states_only_lists_the_profile_facets_grouped_by_dimension():
+    states = {"scene.location": "covered", "scene.weather": "missing", "style.genre": "missing"}
+    text = format_facet_states(states, CAT, "landscape")
+    assert "scene.location（地點類型）：covered" in text
+    assert "scene.weather（天氣氛圍）：missing" in text
+    assert "[scene] 場景" in text
+    assert "clothing" not in text
+
+
+def test_format_candidates_marks_band_usage_and_facet_coverage():
+    a = Candidate(
+        preset={"id": 144, "title": "雙馬尾少女", "category": "Appearance",
+                "facet_ids": ["appearance.hair", "appearance.face"], "tags": [],
+                "prompt_snippet": "1girl, twintails", "negative_snippet": None},
+        dimension="appearance", dist=0.19, band="高", grounded=True,
+        facet_coverage={"appearance.hair": "covered", "appearance.face": "missing"},
+    )
+    b = Candidate(
+        preset={"id": 900, "title": "新海誠動畫風", "category": "Style", "facet_ids": ["style.reference"], "tags": [],
+                "prompt_snippet": "(Makoto Shinkai Style:1.4)", "negative_snippet": "lowres"},
+        dimension="style", dist=0.234, band="高", grounded=False, facet_coverage={"style.reference": "missing"},
+    )
+    text = format_candidates([a, b])
+    assert "id=144" in text and "〈雙馬尾少女〉" in text and "相似度：高（0.190）" in text
+    assert "可借入提示詞" in text and "僅供建議" in text
+    assert "appearance.hair=covered" in text and "appearance.face=missing" in text
+    assert "negative: lowres" in text and "negative: (無)" in text
+
+
+def test_assembly_prompt_contains_every_required_rule_and_all_blocks():
+    text = build_assembly_prompt("夜晚的湖畔", "portrait", {"scene.location": "covered"}, [], [], CAT)
+    needles = (
+        "完整", "複合", "split-color hair", "不要自行發明", "僅供建議", "低", "borrowed", "suggestions", "2–3",
+    )
+    for needle in needles:
+        assert needle in text, needle
+    assert "題材：portrait" in text and "夜晚的湖畔" in text
+    assert "（無）" in text  # 候選與相似作品都空
