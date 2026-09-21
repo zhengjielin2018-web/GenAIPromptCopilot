@@ -28,7 +28,7 @@ def test_iter_images_follows_cursor_and_sends_required_params():
 
     items = list(_client(handler).iter_images(limit=2))
     assert [it["id"] for it, _ in items] == [1, 2, 3]
-    assert [c for _, c in items] == ["c2", "c2", None]
+    assert [c for _, c in items] == [None, None, "c2"]
     p = seen_params[0]
     assert p["nsfw"] == "None" and p["withMeta"] == "true" and p["type"] == "image"
     assert p["sort"] == "Most Reactions" and p["limit"] == "2"

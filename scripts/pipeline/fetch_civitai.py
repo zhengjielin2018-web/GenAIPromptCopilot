@@ -32,15 +32,15 @@ def run_fetch(client, *, max_items: int, out_path: Path, state_path: Path,
         return 0
     seen = existing_keys(out_path, "id")
     added = 0
-    last_cursor = state["cursor"]
-    for item, next_cursor in client.iter_images(cursor=state["cursor"], base_models=base_models):
+    resume_cursor = state["cursor"]
+    for item, page_cursor in client.iter_images(cursor=state["cursor"], base_models=base_models):
+        resume_cursor = page_cursor
         if item["id"] not in seen:
             append_jsonl(out_path, item)
             seen.add(item["id"])
             added += 1
-        last_cursor = next_cursor
         if added >= max_items:
-            _save_state(state_path, {"cursor": last_cursor, "fetched": len(seen), "done": last_cursor is None})
+            _save_state(state_path, {"cursor": resume_cursor, "fetched": len(seen), "done": False})
             return added
     _save_state(state_path, {"cursor": None, "fetched": len(seen), "done": True})
     return added

@@ -47,6 +47,13 @@ class CivitaiClient:
         cursor: str | None = None,
         base_models: list[str] | None = None,
     ) -> Iterator[tuple[dict, str | None]]:
+        """Yield (item, cursor_used_to_fetch_this_page) for every item, page by page.
+
+        The second element is the cursor that FETCHED the current page, not the
+        cursor for the next page. This lets a caller that stops mid-page persist
+        a cursor that re-fetches the same page on resume, rather than skipping
+        the unwritten remainder of that page.
+        """
         params: dict = {
             "limit": limit,
             "nsfw": "None",
@@ -63,7 +70,7 @@ class CivitaiClient:
             page = self._get_page(params)
             next_cursor = page.get("metadata", {}).get("nextCursor") or None
             for item in page.get("items", []):
-                yield item, next_cursor
+                yield item, cursor
             if next_cursor is None:
                 return
             cursor = next_cursor
