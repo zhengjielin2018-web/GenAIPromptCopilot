@@ -122,7 +122,7 @@ AskUser：             session.Status == Collecting
 RequestSaveConsent：  session.Status == Finalized
 ```
 
-捷徑指令（「隨便」「你看著辦」「幫我決定」「直接給我」等）**不用關鍵詞比對**——「鞋子隨便，但背景我要想一下」會被誤判。改由 §6.1 的輸入側分類器順帶回傳 `wantsAutoComplete: bool`（判斷整句是否要求系統直接補齊全部），不多花一次呼叫。命中即移除 `AskUser`，與輪次上限走同一機制。針對單一 facet 的「隨便」則是 LLM 在對話中自行處理（該 facet 維持 `missing`，定稿時自動補）。
+捷徑指令（「隨便」「你看著辦」「幫我決定」「直接給我」等）**不用關鍵詞比對**——「鞋子隨便，但背景我要想一下」會被誤判。改由 §6.1 的輸入側分類器順帶回傳 `wantsAutoComplete: bool`（判斷整句是否要求系統直接補齊全部），不多花一次呼叫。命中即移除 `AskUser` 並將 `Session.AutoFill` 設為 true（§5.4），與輪次上限走同一機制。針對單一 facet 的「鞋子隨便」則由 LLM 在對話中處理：該 facet 維持 `missing`，並透過 `SetFacetStates` 的 `note` 記下「使用者委託此項」，定稿時只補這一項。
 
 **此函式是整個防死循環機制的核心，必須有單元測試覆蓋。**
 
@@ -134,6 +134,7 @@ Session {
   Status:      Collecting | Finalized
   Profile:     portrait | landscape | object | vehicle | null
   AskCount:    int
+  AutoFill:    bool                         // 使用者是否已委託系統補齊 missing（§5.4）
   FacetStates: Dictionary<facetId, FacetState>
   ChatHistory: SK ChatHistory
   LastFinal:   { Positive, Negative, Tips }?
@@ -190,7 +191,7 @@ Session {
 ### 4.9 System prompt
 
 - 存於 `src/PromptCopilot.Api/Prompts/system.md`，不寫在 C# 字串裡
-- 由 template + `facets.yaml`（依 session profile 篩選）+ session 既定事實（已 waived 的 facet、已定稿內容）組裝
+- 由 template + `facets.yaml`（依 session profile 篩選）+ session 既定事實（已 waived 的 facet、`AutoFill` 狀態、已定稿內容）組裝
 - 組裝後的 prompt 取 SHA-256 前 12 碼寫入每筆 `audit_logs.prompt_version`，讓 eval 紀錄可對應 prompt 版本
 
 ### 4.10 降級路徑
@@ -219,7 +220,7 @@ interface IPromptOrchestrator {
 | :--- | :--- | :--- |
 | 風格 `style` | `style.genre` | 藝術流派／媒材 |
 | | `style.reference` | 參照畫師或作品 |
-| | `style.render` | 渲染／畫質詞 |
+| | `style.render` | 渲染引擎／技術風格詞（不含基礎畫質詞，見 §5.5） |
 | | `style.palette` | 色調傾向 |
 | 場景 `scene` | `scene.location` | 地點類型 |
 | | `scene.foreground` | 前景元素 |
@@ -261,14 +262,22 @@ interface IPromptOrchestrator {
 
 | 狀態 | 意義 | 追問 | 定稿時 |
 | :--- | :--- | :--- | :--- |
-| `covered` | 使用者或系統已提供 | 否 | 寫入 prompt |
-| `missing` | 尚未提供 | 可能 | LLM 自動補齊 |
-| `waived` | 使用者明示「不要指定」 | 否 | **不寫入**，讓生圖模型自由發揮 |
+| `covered` | 使用者已提供 | 否 | 寫入 prompt |
+| `missing` | 尚未提供 | 可能 | **預設不寫入**，交給生圖模型；僅當 `Session.AutoFill = true` 時由 LLM 補齊 |
+| `waived` | 使用者明示「不要指定」 | 否 | **不寫入**，即使 `AutoFill` 為 true 也不補 |
 | `notApplicable` | profile 判定不適用 | 否 | 忽略 |
 
-「隨便／你決定」是放棄決定權 → 系統自動補（仍為 `missing` 直到定稿）。「不要指定 X」才是 `waived`。這兩者不同，system prompt 需明確區分。
+**發明細節的決定權在使用者。** 系統預設不替使用者補上他沒說的東西；只有使用者明說「隨便／你決定／你看著辦」（§6.1 分類器回傳 `wantsAutoComplete`）才把 `Session.AutoFill` 設為 true，此後定稿時 LLM 補齊所有 `missing`。`AutoFill` 一旦為 true 在該 session 內保持（使用者已委託）。「不要指定 X」是 `waived`，永遠不補。System prompt 需明確區分這三種情況。
 
-### 5.5 組態檔 `Configuration/facets.yaml`
+定稿卡片與儀表板會顯示哪些 facet 仍為 `missing`（「未指定，交由生圖模型」），讓使用者知道自己留了什麼空白。
+
+### 5.5 Boilerplate 不屬於任何 facet
+
+基礎畫質詞（如 `masterpiece, best quality, highly detailed`）與基礎負向詞（如 `lowres, bad anatomy, worst quality`）是 SD 風格 prompt 的固定配備，不是創作選擇，**永遠由 `FinalizePrompt` 生成，不受 facet 狀態影響**。
+
+`style.render` 這個 facet 的語意因此收窄為「渲染引擎／技術風格詞」（`octane render`、`cel shading`、`film grain`），那才是使用者的選擇。
+
+### 5.6 組態檔 `Configuration/facets.yaml`
 
 ```yaml
 dimensions:
@@ -484,7 +493,7 @@ hover 顯示 facet 名稱與狀態。`notApplicable` 的整個維度（如風景
 - `ToolSetBuilder.Build`：`AskCount >= 2` 時無 `AskUser`；`Finalized` 時無 `AskUser` 有 `RequestSaveConsent`；捷徑指令命中時無 `AskUser`
 - `ToolBudgetFilter`：超過上限 `Terminate`
 - `TerminalToolFilter`：三個終止 tool 各自 `Terminate`
-- Session 狀態機：`SetProfile` 重置 facet 但不重置 `AskCount`；`waived` 的 facet 不再出現於 missing
+- Session 狀態機：`SetProfile` 重置 facet 但不重置 `AskCount` 與 `AutoFill`；`waived` 的 facet 不再出現於 missing；`AutoFill` 設為 true 後不會被重設
 - `SafetyGuard` 快速路徑（denylist）
 - 純文字協定違規處理（以 fake `IChatCompletionService` 回傳純文字，驗證重試與包裝）
 - 前端 `applyEvent` reducer
@@ -507,14 +516,15 @@ hover 顯示 facet 名稱與狀態。`notApplicable` 的整個維度（如風景
 2. 完整人像 → 應直接定稿
 3. 風景（「山上的日出」）→ profile=landscape，人物三維 notApplicable
 4. 載具 → profile=vehicle
-5. 含「隨便」→ 不追問直接定稿
+5. 含「隨便」→ 不追問直接定稿，且所有 `missing` 被補齊
 6. 「不要指定鞋子」→ `clothing.footwear` waived，定稿 prompt 無鞋子描述
-7. 連續兩輪模糊回答 → 第三輪強制定稿
-8. NSFW 輸入 → blocked
-9. 真實公眾人物 → blocked
-10. 定稿後「把背景改成黃昏」→ 重新定稿，不追問
-11. 中途改題材（人像改風景）→ facet 重置
-12. 使用者回答與追問無關 → LLM 應能處理不崩
+7. 連續兩輪模糊回答 → 第三輪強制定稿，`missing` 不補，定稿卡片列出未指定項目
+8. 「鞋子隨便，背景我要想一下」→ 仍追問背景，只有鞋子被補
+9. NSFW 輸入 → blocked
+10. 真實公眾人物 → blocked
+11. 定稿後「把背景改成黃昏」→ 重新定稿，不追問
+12. 中途改題材（人像改風景）→ facet 重置
+13. 使用者回答與追問無關 → LLM 應能處理不崩
 
 ### 12.4 TDD 適用範圍
 
@@ -566,7 +576,7 @@ GenAIPromptCopilot/
 | :--- | :--- | :--- |
 | 1 | 資料地基 | docker-compose 起 db 並自動建 schema；管線跑完兩張表皆有資料；一支查詢腳本用「昏暗雨夜的科幻城市」能從 presets 檢索到合理結果 |
 | 2 | SK Agent 核心 | Swagger 打完整一輪：追問 → 回答 → 定稿；NSFW 被攔；`audit_logs` 有紀錄；§12.1 測試全綠；**降級檢查點在此** |
-| 3 | 前端 + SSE | 瀏覽器端到端跑完 §12.3 第 1、3、6、10 條 |
+| 3 | 前端 + SSE | 瀏覽器端到端跑完 §12.3 第 1、3、6、11 條 |
 | 4 | 收尾 | `docker compose up` 一鍵可用；README 含架構圖與截圖；CI 綠 |
 
 Azure 部署排除。
@@ -580,6 +590,8 @@ Azure 部署排除。
 | 追問上限 | 2 次／session | 原草稿規格 |
 | 維度數 | 六（新增「人物動作」） | 動作是生圖錯誤率最高區塊，值得獨立燈號 |
 | Facet 優先級 | LLM runtime 判斷 | 靜態標註不適應題材差異 |
+| `missing` 定稿處理 | 預設不補，僅使用者明說「你決定」才補 | 發明細節的決定權在使用者，不在系統 |
+| 畫質詞與負向詞 | 永遠生成，不屬於 facet | 是 boilerplate 不是創作選擇 |
 | 入庫寫入路徑 | 僅前端按鈕 | 不在共享庫上開 LLM 決定的寫入口 |
 | Schema 管理 | SQL 檔 | Python 與 C# 共用；pgvector 用 migration 不自然 |
 | Nuxt SSR | 關閉 | 單頁、無 SEO，避免 hydration 問題 |
