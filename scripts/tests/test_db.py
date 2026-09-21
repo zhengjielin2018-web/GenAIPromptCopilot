@@ -30,6 +30,6 @@ def test_connect_round_trips_a_vector():
     with db.connect() as conn:
         sent = [0.5] * 768
         got = conn.execute("SELECT %s::vector", (Vector(sent),)).fetchone()[0]
-        assert len(got) == 768
         assert not isinstance(got, str), "register_vector did not deserialize the vector"
-        assert all(abs(float(a) - b) < 1e-6 for a, b in zip(got, sent, strict=True))
+        assert got.dimensions() == 768
+        assert all(abs(a - b) < 1e-6 for a, b in zip(got.to_list(), sent, strict=True))
