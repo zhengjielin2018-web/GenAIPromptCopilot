@@ -1,12 +1,22 @@
 from demo_render import (
+    BorrowedView,
+    DemoView,
+    OptionView,
+    Palette,
+    SuggestionView,
     display_width,
     group_by_dimension,
     pad,
+    render,
     render_dimension_row,
+    render_queries,
+    render_retrieval_summary,
+    render_verbose,
     wrap_tags,
 )
 from pipeline.config import FACETS_PATH
 from pipeline.facets import load_facets
+from pipeline.retrieval import Candidate, DimensionHits, DimensionQuery, band
 
 CAT = load_facets(FACETS_PATH)
 
@@ -81,3 +91,87 @@ def test_dimension_labels_of_different_cjk_lengths_line_up():
 
 def test_pad_leaves_an_already_wide_string_untouched():
     assert pad("人物樣貌", 4) == "人物樣貌"
+
+
+P = Palette(False)
+
+
+def _cand(pid, dim, dist, grounded=True, coverage=None, title=None):
+    return Candidate(
+        preset={"id": pid, "title": title or f"t{pid}", "category": dim.title(), "facet_ids": [], "tags": [],
+                "prompt_snippet": "1girl, twintails", "negative_snippet": None},
+        dimension=dim, dist=dist, band=band(dist), grounded=grounded, facet_coverage=coverage or {},
+    )
+
+
+def test_render_queries_separates_user_words_from_guesses():
+    qs = [DimensionQuery("scene", "夜晚的湖畔", True, 5), DimensionQuery("style", "動漫", False, 3),
+          DimensionQuery("style", "寫實", False, 3)]
+    text = render_queries(qs, CAT)
+    assert "子查詢：場景「夜晚的湖畔」" in text
+    assert "推想：風格「動漫」 風格「寫實」" in text
+
+
+def test_render_retrieval_summary_reports_pool_hits_and_bands_per_dimension_merging_multi_query_dimensions():
+    hits = [
+        DimensionHits(DimensionQuery("scene", "q", True, 5), 292, [_cand(1, "scene", 0.26), _cand(2, "scene", 0.31)]),
+        DimensionHits(DimensionQuery("style", "a", False, 3), 238, [_cand(3, "style", 0.2)]),
+        DimensionHits(DimensionQuery("style", "b", False, 3), 238, [_cand(4, "style", 0.2), _cand(5, "style", 0.29)]),
+    ]
+    text = render_retrieval_summary(hits, CAT, 3, "portrait")
+    assert "風格 池 238 → 3（高 2 中 1）" in text
+    assert "場景 池 292 → 2（中 1 低 1）" in text
+    assert text.index("風格") < text.index("場景")  # 依 DIMENSIONS 順序，不是輸入順序
+    assert "相似作品 3（portrait）" in text
+
+
+def test_render_verbose_lists_every_candidate_with_usage_and_coverage():
+    cands = [_cand(1, "scene", 0.26, coverage={"scene.lighting": "covered"}),
+             _cand(9, "style", 0.2, grounded=False, coverage={"style.genre": "missing"})]
+    text = render_verbose(cands, CAT, P)
+    assert "[場景]" in text and "[風格]" in text
+    assert "id=1" in text and "可借入" in text and "scene.lighting=covered" in text
+    assert "id=9" in text and "僅供建議" in text
+
+
+def _view(**kw):
+    base = dict(
+        profile="portrait",
+        facet_states={"appearance.hair": "covered", "appearance.face": "missing", "style.genre": "missing"},
+        positive_prompt="1girl, purple hair, twintails",
+        negative_prompt="bad anatomy",
+        borrowed=[], rejections=[], suggestions=[],
+    )
+    base.update(kw)
+    return DemoView(**base)
+
+
+def test_render_shows_borrowed_tags_with_band_and_rejections_verbatim():
+    view = _view(
+        borrowed=[BorrowedView("高", 0.19, "粉紅雙馬尾少女", "Appearance", ["twintails", "green eyes"])],
+        rejections=['來源不符：id 483〈粉髮紫瞳少女〉沒有 "purple hair"，不計入借用（提示詞不受影響）'],
+    )
+    text = render(view, CAT, P)
+    assert "[高 0.190] 粉紅雙馬尾少女（Appearance）→ 借入 twintails, green eyes" in text
+    assert '✗ 來源不符：id 483〈粉髮紫瞳少女〉沒有 "purple hair"，不計入借用（提示詞不受影響）' in text
+    assert "1/2" in text  # 人物樣貌 1/2
+    assert "沒有借用" not in text
+
+
+def test_render_shows_one_suggestion_block_per_dimension_naming_missing_facets_and_lettered_options():
+    view = _view(suggestions=[SuggestionView(
+        "風格", ["藝術流派／媒材", "色調傾向"],
+        [OptionView("新海誠風", "Makoto Shinkai Style, Soft Realism", "新海誠動畫風"),
+         OptionView("寫實夜景攝影", "photo realism", "寫實攝影")],
+    )])
+    text = render(view, CAT, P)
+    assert "風格（缺：藝術流派／媒材、色調傾向）" in text
+    assert "A. 新海誠風" in text and "Makoto Shinkai Style, Soft Realism" in text and "〈新海誠動畫風〉" in text
+    assert "B. 寫實夜景攝影" in text
+
+
+def test_render_says_so_when_nothing_was_borrowed_and_nothing_is_missing():
+    view = _view(facet_states={"appearance.hair": "covered"})
+    text = render(view, CAT, P)
+    assert "沒有借用" in text
+    assert "沒有建議" in text

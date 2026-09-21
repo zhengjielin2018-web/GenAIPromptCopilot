@@ -6,10 +6,11 @@ from __future__ import annotations
 import os
 import sys
 import unicodedata
+from collections import Counter
 from dataclasses import dataclass
 
 from pipeline.facets import FacetCatalog
-from pipeline.retrieval import DIMENSIONS  # noqa: E402
+from pipeline.retrieval import DIMENSIONS, Candidate, DimensionHits, DimensionQuery
 
 # ---------- 文字對齊 ----------
 
@@ -128,3 +129,87 @@ class DemoView:
     borrowed: list[BorrowedView]
     rejections: list[str]
     suggestions: list[SuggestionView]
+
+
+# ---------- 進度列 ----------
+
+
+def render_queries(queries: list[DimensionQuery], catalog: FacetCatalog) -> str:
+    def fmt(qs: list[DimensionQuery]) -> str:
+        return " ".join(f"{catalog.dimensions[q.dimension]}「{q.query}」" for q in qs)
+
+    grounded = [q for q in queries if q.grounded]
+    guessed = [q for q in queries if not q.grounded]
+    parts = []
+    if grounded:
+        parts.append("子查詢：" + fmt(grounded))
+    if guessed:
+        parts.append("推想：" + fmt(guessed))
+    return "      " + ("；".join(parts) if parts else "（沒有子查詢）")
+
+
+def render_retrieval_summary(hits: list[DimensionHits], catalog: FacetCatalog, n_histories: int, profile: str) -> str:
+    """每維度：池大小 → 命中數（高/中/低各幾筆）。同維度兩句子查詢合併計數。知識庫缺口在這裡直接暴露。"""
+    per: dict[str, tuple[int, Counter[str]]] = {}
+    for dh in hits:
+        pool, cnt = per.get(dh.query.dimension, (dh.pool_size, Counter()))
+        cnt.update(c.band for c in dh.hits)
+        per[dh.query.dimension] = (pool, cnt)
+    cells = []
+    for dim in DIMENSIONS:
+        if dim not in per:
+            continue
+        pool, cnt = per[dim]
+        grades = " ".join(f"{b} {cnt[b]}" for b in ("高", "中", "低") if cnt[b])
+        cells.append(f"{catalog.dimensions[dim]} 池 {pool} → {sum(cnt.values())}（{grades or '無'}）")
+    first = "      " + ("  ".join(cells) if cells else "（沒有維度可檢索）")
+    return f"{first}\n      相似作品 {n_histories}（{profile}）"
+
+
+def render_verbose(cands: list[Candidate], catalog: FacetCatalog, p: Palette) -> str:
+    lines = [p.head("━━ 全部候選（去重後）━━")]
+    for dim in DIMENSIONS:
+        group = [c for c in cands if c.dimension == dim]
+        if not group:
+            continue
+        lines.append(f"  [{catalog.dimensions[dim]}]")
+        for c in group:
+            usage = "可借入" if c.grounded else "僅供建議"
+            coverage = ", ".join(f"{k}={v}" for k, v in c.facet_coverage.items()) or "(無)"
+            lines.append(f"    [{c.band} {c.dist:.3f}] id={c.id} {c.preset['title']}  {usage}")
+            lines.append(p.dim(f"        facets: {coverage}"))
+            lines.append(p.dim(f"        {c.preset['prompt_snippet'][:76]}"))
+    return "\n".join(lines)
+
+
+# ---------- 最終畫面 ----------
+
+
+def render(view: DemoView, catalog: FacetCatalog, p: Palette) -> str:
+    grouped = group_by_dimension(view.facet_states, catalog)
+    lines = ["", p.head("━━ 題材判定 ━━"), f"  {view.profile}", "", p.head("━━ 六維度充足度 ━━")]
+    for key in DIMENSIONS:
+        row = render_dimension_row(catalog.dimensions.get(key, key), grouped[key])
+        lines.append(p.dim(row) if "不適用" in row else row)
+
+    lines += ["", p.head("━━ 正向提示詞 ━━"), p.ok(wrap_tags(view.positive_prompt))]
+    lines += ["", p.head("━━ 負向提示詞 ━━"), p.warn(wrap_tags(view.negative_prompt))]
+
+    lines += ["", p.head("━━ 借用的知識庫片段 ━━")]
+    for b in view.borrowed:
+        lines.append(f"  [{b.band} {b.dist:.3f}] {b.title}（{b.category}）→ 借入 {', '.join(b.tags)}")
+    for r in view.rejections:
+        lines.append(p.warn(f"  ✗ {r}"))
+    if not view.borrowed and not view.rejections:
+        lines.append(p.dim("  （這次沒有借用檢索到的片段）"))
+
+    lines += ["", p.head("━━ 建議 ━━")]
+    if view.suggestions:
+        for s in view.suggestions:
+            lines.append(f"  {s.dimension_label}（缺：{'、'.join(s.missing_labels)}）")
+            for letter, o in zip("ABCDEFG", s.options, strict=False):
+                lines.append(f"    {letter}. {pad(o.label, 14)} {o.tags}   〈{o.source_title}〉")
+    else:
+        lines.append(p.dim("  （所有維度都已覆蓋，沒有建議）"))
+    lines.append("")
+    return "\n".join(lines)
