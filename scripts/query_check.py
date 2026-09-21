@@ -46,7 +46,7 @@ def main(argv: list[str] | None = None) -> None:
         print(f"\n== presets for「{args.query}」 ==")
         for row in conn.execute(PRESETS_SQL, {"q": qvec, "facet": args.facet, "tag": args.tag, "k": args.top}):
             title, category, facets, tags, snippet, dist = row
-            print(f"[{dist:.3f}] {title} ({category}) {facets}\n         {snippet[:90]}")
+            print(f"[{dist:.3f}] {title} ({category}) {facets} {tags}\n         {snippet[:90]}")
         print("\n== histories ==")
         for intent, profile, prompt, dist in conn.execute(HISTORIES_SQL, {"q": qvec, "k": args.top}):
             print(f"[{dist:.3f}] ({profile}) {intent}\n         {prompt}")

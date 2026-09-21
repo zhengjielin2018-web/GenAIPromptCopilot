@@ -108,11 +108,12 @@ def to_outputs(
     record: dict, result: StructuredRecord, catalog: FacetCatalog, seen_snippets: set[str]
 ) -> tuple[dict, list[dict]]:
     ref = f"civitai:{record['source_id']}"
+    stripped_positive = _strip_boilerplate(record["prompt"]).strip(" ,")
     history = {
         "source_ref": ref,
         "user_intent": result.user_intent.strip(),
-        "positive_prompt": record["prompt"],
-        "negative_prompt": record.get("negative_prompt") or "",
+        "positive_prompt": stripped_positive or record["prompt"],
+        "negative_prompt": _strip_boilerplate(record.get("negative_prompt") or "").strip(" ,"),
         "subject_profile": result.subject_profile,
         "image_url": record.get("image_url"),
     }

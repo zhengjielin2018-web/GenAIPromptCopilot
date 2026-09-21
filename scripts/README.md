@@ -19,7 +19,10 @@ Civitai 公開 API → 清洗 → Gemini 結構化 → Gemini embedding → Post
 
 全量（會花時間，可中斷後重跑同一指令續跑）：
 
-    python seed_data.py --max-items 3000
+    python seed_data.py --max-items 400
+
+`--max-items 400` 是隨附語料實際使用的數字（見下方「續跑與規模」）；數字愈大花的
+Gemini 額度愈多，第一次執行不建議直接跳到更大的數字（例如 spec 草稿裡的 3000）。
 
 從某階段起跑：
 
@@ -78,8 +81,9 @@ NSFW 過濾實際上分三層：
 2. 回傳資料的 `nsfwLevel` 欄位檢查
 3. `pipeline/nsfw_filter.py` 的關鍵詞清單（`is_nsfw_text`）
 
-**在目前這批實際取得的語料上，前兩層幾乎沒有濾掉任何東西**：即使 prompt 內文含有明顯
-的性暗示字眼，Civitai 回傳的 `nsfwLevel` 仍是 `"None"`。換句話說，**真正在做事的只有
+**在目前這批實際取得的語料上，前兩層完全沒有濾掉任何東西（實測 20 筆原始資料全部是
+`nsfwLevel: "None"`、`nsfw: false`）**：即使 prompt 內文含有明顯的性暗示字眼，Civitai
+回傳的 `nsfwLevel` 仍是 `"None"`。換句話說，**真正在做事的只有
 第三層的固定英文關鍵詞清單**，而一份固定的英文關鍵詞清單天生就抓不到：
 
 - 同義改寫（paraphrase）

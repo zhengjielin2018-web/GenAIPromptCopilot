@@ -44,11 +44,24 @@ def test_build_prompt_contains_record_and_facet_listing():
 def test_to_outputs_filters_invalid_facets_and_empty_snippets():
     hist, presets = to_outputs(REC, _result(), CAT, seen_snippets=set())
     assert hist["source_ref"] == "civitai:12345"
-    assert hist["positive_prompt"] == REC["prompt"] and hist["subject_profile"] == "portrait"
+    assert hist["subject_profile"] == "portrait"
     assert hist["image_url"] == "https://x/1.png"
     assert len(presets) == 1
     assert presets[0]["source_ref"] == "civitai:12345:0"
     assert presets[0]["facet_ids"] == ["scene.location", "scene.weather"]
+
+
+def test_to_outputs_strips_boilerplate_from_history_prompt_columns():
+    hist, _ = to_outputs(REC, _result(), CAT, seen_snippets=set())
+    # REC's prompt ends in ", masterpiece"; REC's negative_prompt is "lowres, bad anatomy" (all boilerplate).
+    assert hist["positive_prompt"] == "1girl, cyberpunk city, rain, neon, looking at viewer"
+    assert hist["negative_prompt"] == ""
+
+
+def test_to_outputs_falls_back_to_original_prompt_when_stripping_would_empty_it():
+    boilerplate_only = {**REC, "source_id": 99, "prompt": "masterpiece, best quality, score_9, score_8_up"}
+    hist, _ = to_outputs(boilerplate_only, _result(), CAT, seen_snippets=set())
+    assert hist["positive_prompt"] == boilerplate_only["prompt"]
 
 
 def test_to_outputs_dedupes_snippets_across_records():
