@@ -1,5 +1,4 @@
-from demo import (
-    FacetAssessment,
+from demo_render import (
     display_width,
     group_by_dimension,
     pad,
@@ -14,18 +13,23 @@ CAT = load_facets(FACETS_PATH)
 
 def test_group_by_dimension_buckets_by_the_catalog_and_drops_unknown_ids():
     grouped = group_by_dimension(
-        [
-            FacetAssessment(facet_id="scene.location", state="covered"),
-            FacetAssessment(facet_id="scene.weather", state="missing"),
-            FacetAssessment(facet_id="clothing.upper", state="notApplicable"),
-            FacetAssessment(facet_id="not.a.real.facet", state="covered"),
-        ],
+        {
+            "scene.location": "covered",
+            "scene.weather": "missing",
+            "clothing.upper": "notApplicable",
+            "not.a.real.facet": "covered",
+        },
         CAT,
     )
     assert grouped["scene"] == [("地點類型", "covered"), ("天氣氛圍", "missing")]
     assert grouped["clothing"] == [("上半身", "notApplicable")]
     assert grouped["camera"] == []
     assert not any("not.a.real.facet" in str(v) for v in grouped.values())
+
+
+def test_group_by_dimension_follows_catalog_order_not_input_order():
+    grouped = group_by_dimension({"scene.weather": "missing", "scene.location": "covered"}, CAT)
+    assert grouped["scene"] == [("地點類型", "covered"), ("天氣氛圍", "missing")]
 
 
 def test_render_dimension_row_shows_ratio_and_names_what_is_missing():

@@ -11,9 +11,7 @@ from __future__ import annotations
 
 import argparse
 import logging
-import os
 import sys
-import unicodedata
 from pathlib import Path
 from typing import Literal
 
@@ -25,6 +23,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from pgvector import Vector  # noqa: E402
 from pydantic import BaseModel, Field  # noqa: E402
 
+from demo_render import (  # noqa: E402
+    DIMENSIONS,
+    Palette,
+    colors_enabled,
+    group_by_dimension,
+    render_dimension_row,
+    wrap_tags,
+)
 from pipeline.config import FACETS_PATH  # noqa: E402
 from pipeline.db import connect  # noqa: E402
 from pipeline.facets import FacetCatalog, load_facets  # noqa: E402
@@ -92,92 +98,11 @@ class DemoResult(BaseModel):
     used_preset_ids: list[int] = Field(description="實際採用的片段 id")
 
 
-# ---------- 純函式：可單獨測試，不碰資料庫與網路 ----------
-
-DIMENSION_ORDER = ["style", "scene", "camera", "appearance", "pose", "clothing"]
-
-
-def group_by_dimension(
-    assessments: list[FacetAssessment], catalog: FacetCatalog
-) -> dict[str, list[tuple[str, str]]]:
-    """回傳 {維度 key: [(facet 顯示名稱, 狀態), ...]}，只保留 catalog 認得的 id。"""
-    grouped: dict[str, list[tuple[str, str]]] = {k: [] for k in DIMENSION_ORDER}
-    for a in assessments:
-        facet = catalog.facets.get(a.facet_id)
-        if facet is None:
-            continue
-        grouped[facet.dimension].append((facet.label, a.state))
-    return grouped
-
-
-def display_width(text: str) -> int:
-    """終端機顯示寬度：全形／寬字元佔兩欄。用字元數對齊中文會歪掉。"""
-    return sum(2 if unicodedata.east_asian_width(c) in "WF" else 1 for c in text)
-
-
-def pad(text: str, width: int) -> str:
-    return text + " " * max(0, width - display_width(text))
-
-
-def render_dimension_row(label: str, entries: list[tuple[str, str]], width: int = 10) -> str:
-    """把一個維度畫成一行：名稱、覆蓋比例、以及缺了哪些項目。"""
-    applicable = [(n, s) for n, s in entries if s != "notApplicable"]
-    if not applicable:
-        return f"  {pad(label, width)}  ──  不適用"
-    covered = [n for n, s in applicable if s == "covered"]
-    missing = [n for n, s in applicable if s == "missing"]
-    bar = "●" * len(covered) + "○" * len(missing)
-    line = f"  {pad(label, width)}  {bar}  {len(covered)}/{len(applicable)}"
-    if missing:
-        line += f"   缺：{'、'.join(missing)}"
-    return line
-
-
-def wrap_tags(text: str, indent: str = "    ", width: int = 84) -> str:
-    """逐個 tag 換行，避免把一個 tag 從中間切斷。"""
-    out, line = [], indent
-    for tag in [t.strip() for t in text.split(",") if t.strip()]:
-        piece = tag + ", "
-        if len(line) + len(piece) > width and line != indent:
-            out.append(line.rstrip())
-            line = indent
-        line += piece
-    if line.strip():
-        out.append(line.rstrip().rstrip(","))
-    return "\n".join(out)
-
-
 # ---------- 輸出 ----------
 
 
-class Palette:
-    def __init__(self, enabled: bool):
-        self.on = enabled
-
-    def _w(self, code: str, s: str) -> str:
-        return f"\033[{code}m{s}\033[0m" if self.on else s
-
-    def head(self, s: str) -> str:
-        return self._w("1;36", s)
-
-    def ok(self, s: str) -> str:
-        return self._w("32", s)
-
-    def warn(self, s: str) -> str:
-        return self._w("33", s)
-
-    def dim(self, s: str) -> str:
-        return self._w("2", s)
-
-
-def colors_enabled(no_color: bool) -> bool:
-    if no_color or os.environ.get("NO_COLOR"):
-        return False
-    return sys.stdout.isatty()
-
-
 def render(result: DemoResult, catalog: FacetCatalog, presets: list[dict], p: Palette) -> str:
-    grouped = group_by_dimension(result.facets, catalog)
+    grouped = group_by_dimension({a.facet_id: a.state for a in result.facets}, catalog)
     lines = [
         "",
         p.head("━━ 題材判定 ━━"),
@@ -185,7 +110,7 @@ def render(result: DemoResult, catalog: FacetCatalog, presets: list[dict], p: Pa
         "",
         p.head("━━ 六維度充足度 ━━"),
     ]
-    for key in DIMENSION_ORDER:
+    for key in DIMENSIONS:
         label = catalog.dimensions.get(key, key)
         row = render_dimension_row(label, grouped[key])
         lines.append(p.dim(row) if "不適用" in row else row)
