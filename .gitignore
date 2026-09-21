@@ -1,0 +1,30 @@
+# secrets
+.env
+*.local.json
+appsettings.*.json
+!appsettings.Development.json.example
+
+# .NET
+bin/
+obj/
+*.user
+.vs/
+
+# Node / Nuxt
+node_modules/
+.nuxt/
+.output/
+dist/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# pipeline data
+scripts/data/
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.idea/
