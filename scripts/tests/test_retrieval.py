@@ -1,13 +1,20 @@
-from pipeline.config import FACETS_PATH
+import pytest
+from pgvector import Vector
+
+from pipeline import db
+from pipeline.config import FACETS_PATH, settings
 from pipeline.facets import load_facets
 from pipeline.retrieval import (
     Candidate,
+    DimensionQuery,
     annotate_coverage,
     band,
     dedupe,
     dimension_facets,
     grounded_dimensions,
     normalize_queries,
+    retrieve_histories,
+    retrieve_presets,
 )
 
 CAT = load_facets(FACETS_PATH)
@@ -97,3 +104,58 @@ def test_annotate_coverage_marks_every_facet_of_the_preset_with_the_users_state(
         "scene.weather": "missing",
         "camera.shot": "notApplicable",
     }
+
+
+def _unit_vector() -> Vector:
+    return Vector([1.0] + [0.0] * (settings.embedding_dimensions - 1))
+
+
+def _conn_with_data():
+    if not db.db_available():
+        pytest.skip("PostgreSQL 未啟動")
+    conn = db.connect()
+    if conn.execute("SELECT count(*) FROM prompt_knowledge_presets").fetchone()[0] == 0:
+        conn.close()
+        pytest.skip("presets 表是空的")
+    return conn
+
+
+@pytest.mark.integration
+def test_retrieve_presets_only_returns_rows_touching_the_dimension_and_respects_k():
+    with _conn_with_data() as conn:
+        v = _unit_vector()
+        queries = [DimensionQuery("scene", "q", True, 5), DimensionQuery("style", "q", False, 3)]
+        out = retrieve_presets(conn, queries, [v, v], CAT, "portrait")
+        assert [dh.query.dimension for dh in out] == ["scene", "style"]
+        for dh in out:
+            allowed = set(dimension_facets(CAT, "portrait", dh.query.dimension))
+            assert dh.pool_size >= len(dh.hits) > 0
+            assert len(dh.hits) <= dh.query.k
+            for c in dh.hits:
+                assert allowed & set(c.preset["facet_ids"])
+                assert c.dimension == dh.query.dimension
+                assert c.grounded is dh.query.grounded
+                assert c.band == band(c.dist)
+                assert set(c.preset) == {
+                    "id", "title", "category", "facet_ids", "tags", "prompt_snippet", "negative_snippet",
+                }
+
+
+@pytest.mark.integration
+def test_retrieve_presets_pool_differs_between_profiles():
+    with _conn_with_data() as conn:
+        v = _unit_vector()
+        q = DimensionQuery("scene", "q", True, 5)
+        portrait = retrieve_presets(conn, [q], [v], CAT, "portrait")[0]
+        landscape = retrieve_presets(conn, [q], [v], CAT, "landscape")[0]
+        # landscape 的 scene 多了 scene.season，候選池只會更大
+        assert landscape.pool_size >= portrait.pool_size
+
+
+@pytest.mark.integration
+def test_retrieve_histories_filters_by_profile():
+    with _conn_with_data() as conn:
+        rows = retrieve_histories(conn, _unit_vector(), "portrait", 3)
+        assert len(rows) <= 3
+        assert all(r["subject_profile"] == "portrait" for r in rows)
+        assert all(set(r) == {"user_intent", "positive_prompt", "subject_profile", "dist"} for r in rows)

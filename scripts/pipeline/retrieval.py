@@ -7,6 +7,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
+from pgvector import Vector
+
 from pipeline.facets import FacetCatalog
 
 DIMENSIONS: tuple[str, ...] = ("style", "scene", "camera", "appearance", "pose", "clothing")
@@ -107,3 +109,65 @@ def annotate_coverage(cands: list[Candidate], states: dict[str, str]) -> None:
     """每筆候選的每個 facet_id 標上本次使用者的狀態；不在 ① 清單裡的視為 notApplicable。給 ③ 看的。"""
     for c in cands:
         c.facet_coverage = {fid: states.get(fid, "notApplicable") for fid in c.preset["facet_ids"]}
+
+
+# ---------- 以下吃 conn ----------
+
+PRESETS_SQL = """
+SELECT id, title, category, facet_ids, tags, prompt_snippet, negative_snippet,
+       preset_embedding <=> %(q)s AS dist
+FROM prompt_knowledge_presets
+WHERE facet_ids && %(facets)s
+ORDER BY dist
+LIMIT %(k)s
+"""
+
+POOL_SQL = "SELECT count(*) FROM prompt_knowledge_presets WHERE facet_ids && %(facets)s"
+
+HISTORIES_SQL = """
+SELECT user_intent, positive_prompt, subject_profile,
+       intent_embedding <=> %(q)s AS dist
+FROM shared_prompt_histories
+WHERE subject_profile = %(profile)s
+ORDER BY dist
+LIMIT %(k)s
+"""
+
+
+@dataclass
+class DimensionHits:
+    query: DimensionQuery
+    pool_size: int
+    hits: list[Candidate]
+
+
+def retrieve_presets(
+    conn, queries: list[DimensionQuery], vectors: list[Vector], catalog: FacetCatalog, profile: str
+) -> list[DimensionHits]:
+    """每句子查詢各跑一次：GIN 過濾該維度 facet（idx_presets_facet_ids）+ 向量排序。不設距離門檻。"""
+    pool_cache: dict[str, int] = {}
+    out: list[DimensionHits] = []
+    for q, v in zip(queries, vectors, strict=True):
+        facets = dimension_facets(catalog, profile, q.dimension)
+        if q.dimension not in pool_cache:
+            pool_cache[q.dimension] = conn.execute(POOL_SQL, {"facets": facets}).fetchone()[0]
+        hits = [
+            Candidate(
+                preset={
+                    "id": r[0], "title": r[1], "category": r[2], "facet_ids": list(r[3]), "tags": list(r[4]),
+                    "prompt_snippet": r[5], "negative_snippet": r[6],
+                },
+                dimension=q.dimension, dist=float(r[7]), band=band(float(r[7])), grounded=q.grounded,
+            )
+            for r in conn.execute(PRESETS_SQL, {"q": v, "facets": facets, "k": q.k})
+        ]
+        out.append(DimensionHits(q, pool_cache[q.dimension], hits))
+    return out
+
+
+def retrieve_histories(conn, qvec: Vector, profile: str, k: int) -> list[dict]:
+    """整段紀錄配整句向量，並依 ① 判定的 profile 過濾（主規格 §9 本來就有）。"""
+    return [
+        {"user_intent": r[0], "positive_prompt": r[1], "subject_profile": r[2], "dist": float(r[3])}
+        for r in conn.execute(HISTORIES_SQL, {"q": qvec, "profile": profile, "k": k})
+    ]
