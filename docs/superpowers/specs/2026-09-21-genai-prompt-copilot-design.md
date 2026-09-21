@@ -328,7 +328,7 @@ Python 管線在 `clean.py` 階段過濾 NSFW（Civitai API `nsfw=false` 參數 
 
 `db/init/001_schema.sql` 為 schema 單一真實來源，由 docker-compose 於首次啟動執行。**不用 EF Core Migration**——Python 與 C# 共用資料庫，且 pgvector 型別與 HNSW 索引用 migration 表達不自然。EF Core 只負責讀寫。
 
-向量維度 `<DIM>` 於子專案 1 開工時確認 Gemini embedding 模型後定案，並與 `appsettings` 的 `Embedding:Dimensions` 保持一致。
+向量維度 `<DIM>` = **768**，模型 `gemini-embedding-001`（stable、支援逐筆批次與 `task_type`；`gemini-embedding-2` 仍為 preview 且多輸入會合併成單一向量，不採用）。與 `.env` 的 `EMBEDDING_DIMENSIONS` 及 `appsettings` 的 `Embedding:Dimensions` 保持一致。
 
 ```sql
 CREATE EXTENSION IF NOT EXISTS vector;
@@ -336,13 +336,15 @@ CREATE EXTENSION IF NOT EXISTS vector;
 -- 使用者沉澱 + 管線匯入的完整 prompt；RAG 1 來源
 CREATE TABLE shared_prompt_histories (
     id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    source_ref          VARCHAR(64) UNIQUE,       -- 'civitai:<imageId>'，供管線 upsert；使用者紀錄為 NULL
     user_intent         TEXT NOT NULL,            -- 繁中原始需求（匯入資料由 LLM 生成）
     positive_prompt     TEXT NOT NULL,
     negative_prompt     TEXT NOT NULL,
     subject_profile     VARCHAR(20) NOT NULL,     -- portrait | landscape | object | vehicle
     source              VARCHAR(20) NOT NULL,     -- user | civitai
+    image_url           TEXT,
     completeness_scores JSONB,                    -- 六維度 + facet 四態快照
-    intent_embedding    VECTOR(<DIM>),
+    intent_embedding    VECTOR(768),
     created_at          TIMESTAMPTZ DEFAULT NOW()
 );
 CREATE INDEX idx_shared_intent_embedding ON shared_prompt_histories
@@ -352,6 +354,7 @@ CREATE INDEX idx_shared_profile ON shared_prompt_histories (subject_profile);
 -- 知識包片段；RAG 2 來源
 CREATE TABLE prompt_knowledge_presets (
     id               BIGSERIAL PRIMARY KEY,
+    source_ref       VARCHAR(64) UNIQUE,          -- 'civitai:<imageId>:<idx>'，供管線 upsert
     title            VARCHAR(100) NOT NULL,
     category         VARCHAR(50) NOT NULL,        -- Style | Scene | Camera | Appearance | Pose | Clothing | Combined
     description      TEXT NOT NULL,               -- 繁中模糊敘述（LLM 生成，供語意檢索）
@@ -360,7 +363,7 @@ CREATE TABLE prompt_knowledge_presets (
     prompt_snippet   TEXT NOT NULL,               -- 英文正向片段
     negative_snippet TEXT,                        -- 英文負向片段（可空）
     image_url        TEXT,
-    preset_embedding VECTOR(<DIM>),
+    preset_embedding VECTOR(768),
     created_at       TIMESTAMPTZ DEFAULT NOW()
 );
 CREATE INDEX idx_presets_tags      ON prompt_knowledge_presets USING gin (tags);
