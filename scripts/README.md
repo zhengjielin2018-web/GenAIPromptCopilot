@@ -36,10 +36,64 @@ Gemini 額度愈多，第一次執行不建議直接跳到更大的數字（例�
     python -m pipeline.embed [--reindex]
     python -m pipeline.load
 
-## 驗收
+## 驗收：測試檢索效果
+
+`query_check.py` 會把你的中文口語敘述向量化，然後同時查兩個庫：
+`prompt_knowledge_presets`（可重用片段，支援 facet／tag 過濾）與
+`shared_prompt_histories`（完整的參考 prompt）。距離是 cosine，**愈小愈相關**。
 
     python query_check.py "昏暗雨夜的科幻城市"
     python query_check.py "穿皮夾克的女生" --facet clothing.upper
+    python query_check.py "霓虹燈光" --tag neon --top 10
+
+可用的 `--facet` 值就是 `src/PromptCopilot.Api/Configuration/facets.yaml` 裡的 37 個 id
+（`scene.lighting`、`clothing.upper`、`camera.shot`…）。`--tag` 則是管線產生的英文標籤。
+
+判讀方式：同一批結果裡**距離的落差**比絕對值重要。最相關的通常落在 0.20–0.25，
+0.30 以上大多只是勉強沾邊。如果整批距離擠在很窄的範圍內，代表那個查詢的語意
+沒有被語料涵蓋，不是檢索壞掉。
+
+## 查看資料庫內容
+
+以下都是唯讀查詢，可以直接貼。
+
+總覽：
+
+    docker exec prompt-copilot-db psql -U postgres -d prompt_copilot -c "SELECT (SELECT count(*) FROM shared_prompt_histories) AS histories, (SELECT count(*) FROM prompt_knowledge_presets) AS presets"
+
+題材分布與 preset 分類分布：
+
+    docker exec prompt-copilot-db psql -U postgres -d prompt_copilot -c "SELECT subject_profile, count(*) FROM shared_prompt_histories GROUP BY 1 ORDER BY 2 DESC"
+    docker exec prompt-copilot-db psql -U postgres -d prompt_copilot -c "SELECT category, count(*) FROM prompt_knowledge_presets GROUP BY 1 ORDER BY 2 DESC"
+
+最常出現的 facet（看語料偏向哪些維度）：
+
+    docker exec prompt-copilot-db psql -U postgres -d prompt_copilot -c "SELECT f AS facet_id, count(*) FROM prompt_knowledge_presets, unnest(facet_ids) AS f GROUP BY 1 ORDER BY 2 DESC LIMIT 10"
+
+隨機抽幾筆實際內容出來看：
+
+    docker exec prompt-copilot-db psql -U postgres -d prompt_copilot -c "SELECT title, category, facet_ids, left(prompt_snippet,60) FROM prompt_knowledge_presets ORDER BY random() LIMIT 5"
+    docker exec prompt-copilot-db psql -U postgres -d prompt_copilot -c "SELECT subject_profile, user_intent FROM shared_prompt_histories ORDER BY random() LIMIT 5"
+
+開一個互動式 psql（`\dt` 看表、`\d+ 表名` 看欄位、`\q` 離開）：
+
+    docker exec -it prompt-copilot-db psql -U postgres -d prompt_copilot
+
+## 本機注意事項（Windows）
+
+這兩點在別台機器上不一定適用，但在目前這台開發機上會踩到：
+
+- **`docker` 不在預設 PATH。** Docker Desktop 裝在使用者目錄下，所以每個新開的
+  PowerShell 視窗要先跑一次：
+
+      $env:PATH = "C:\Users\USER\AppData\Local\Programs\DockerDesktop\resources\bin;$env:PATH"
+
+- **Python 只在 PowerShell 裡解析得到**（Git Bash 會撞到 Microsoft Store 的 stub）。
+  最穩的做法是直接用 venv 的直譯器，不依賴 PATH：
+
+      Set-Location <repo>\scripts
+      & .\.venv\Scripts\python.exe -m pytest
+      & .\.venv\Scripts\python.exe query_check.py "昏暗雨夜的科幻城市"
 
 ## 資料流
 
