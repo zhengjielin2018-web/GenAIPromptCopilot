@@ -8,9 +8,7 @@ import sys
 import unicodedata
 
 from pipeline.facets import FacetCatalog
-
-DIMENSIONS: tuple[str, ...] = ("style", "scene", "camera", "appearance", "pose", "clothing")
-
+from pipeline.retrieval import DIMENSIONS  # noqa: E402
 
 # ---------- 文字對齊 ----------
 
