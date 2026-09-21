@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import re
 from pathlib import Path
 from typing import Literal
 
@@ -17,6 +18,31 @@ from pipeline.jsonl import append_jsonl, existing_keys, read_jsonl
 
 HISTORIES_PATH = STRUCTURED_DIR / "histories.jsonl"
 PRESETS_PATH = STRUCTURED_DIR / "presets.jsonl"
+
+_SCORE_TAG_RE = re.compile(r"^score_\d+(_up)?$")
+_EMBEDDING_TAG_RE = re.compile(r"^\w*_neg$")
+_BOILERPLATE_TAGS: frozenset[str] = frozenset({
+    "masterpiece", "best quality", "high quality", "normal quality",
+    "worst quality", "low quality", "highly detailed", "ultra detailed",
+    "absurdres", "highres", "lowres", "bad anatomy", "bad hands",
+    "jpeg artifacts", "signature", "watermark", "username", "artist name",
+    "text", "error", "cropped", "out of frame", "subtitle", "subtitles",
+})
+
+
+def _strip_boilerplate(snippet: str) -> str:
+    """逐個逗號分隔標籤過濾：移除通用畫質詞、分數標籤與 negative embedding 名稱，
+    但保留有風格意義的負向詞（如 censored、furry、chibi、3d）。"""
+    kept: list[str] = []
+    for raw in snippet.split(","):
+        tag = raw.strip()
+        if not tag:
+            continue
+        low = tag.lower()
+        if low in _BOILERPLATE_TAGS or _SCORE_TAG_RE.match(low) or _EMBEDDING_TAG_RE.match(low):
+            continue
+        kept.append(tag)
+    return ", ".join(kept)
 
 Profile = Literal["portrait", "landscape", "object", "vehicle"]
 Category = Literal["Style", "Scene", "Camera", "Appearance", "Pose", "Clothing", "Combined"]
@@ -92,7 +118,7 @@ def to_outputs(
     }
     presets: list[dict] = []
     for p in result.presets:
-        snippet = p.prompt_snippet.strip(" ,")
+        snippet = _strip_boilerplate(p.prompt_snippet).strip(" ,")
         facet_ids = [f for f in p.facet_ids if f in catalog.all_ids]
         if not snippet or not facet_ids:
             continue
@@ -108,7 +134,7 @@ def to_outputs(
             "tags": [t.strip().lower() for t in p.tags if t.strip()],
             "facet_ids": facet_ids,
             "prompt_snippet": snippet,
-            "negative_snippet": (p.negative_snippet or "").strip() or None,
+            "negative_snippet": _strip_boilerplate(p.negative_snippet or "").strip(" ,") or None,
             "image_url": record.get("image_url"),
         })
     return history, presets

@@ -1,7 +1,14 @@
 from pipeline.config import FACETS_PATH
 from pipeline.facets import load_facets
 from pipeline.jsonl import read_jsonl, write_jsonl
-from pipeline.structure import PresetOut, StructuredRecord, build_prompt, run_structure, to_outputs
+from pipeline.structure import (
+    PresetOut,
+    StructuredRecord,
+    _strip_boilerplate,
+    build_prompt,
+    run_structure,
+    to_outputs,
+)
 
 CAT = load_facets(FACETS_PATH)
 REC = {"source_id": 12345, "prompt": "1girl, cyberpunk city, rain, neon, looking at viewer, masterpiece",
@@ -31,6 +38,7 @@ def test_build_prompt_contains_record_and_facet_listing():
     assert REC["prompt"] in p and REC["negative_prompt"] in p
     assert "scene.weather" in p and "clothing.footwear" in p
     assert "繁體中文" in p
+    assert "score_9 / score_8_up / score_7_up" in p
 
 
 def test_to_outputs_filters_invalid_facets_and_empty_snippets():
@@ -77,3 +85,40 @@ def test_run_structure_resumes_and_respects_max(tmp_path):
     assert run_structure(g, CAT, in_path=inp, histories_path=h, presets_path=p) == (1, 0)
     assert g.calls == 3
     assert [r["source_ref"] for r in read_jsonl(h)] == ["civitai:12345", "civitai:2", "civitai:3"]
+
+
+def test_strip_boilerplate_removes_score_and_artifact_tags_but_keeps_style_negatives():
+    out = _strip_boilerplate(
+        "score_6, score_5, score_4, censored, furry, child, kid, chibi, 3d, "
+        "aidxlv05_neg, signature, watermark, subtitle"
+    )
+    assert out == "censored, furry, child, kid, chibi, 3d"
+
+
+def test_strip_boilerplate_keeps_multiword_tags_containing_a_boilerplate_word():
+    assert _strip_boilerplate("neon text, glowing signage") == "neon text, glowing signage"
+
+
+def test_strip_boilerplate_empties_an_all_boilerplate_snippet():
+    assert _strip_boilerplate("score_9, score_8_up, masterpiece, best quality") == ""
+
+
+def test_to_outputs_nulls_a_fully_boilerplate_negative_snippet():
+    result = _result()
+    result.presets[0].negative_snippet = "score_6, score_5, score_4"
+    _, presets = to_outputs(REC, result, CAT, seen_snippets=set())
+    assert presets[0]["negative_snippet"] is None
+
+
+def test_to_outputs_keeps_style_relevant_negatives():
+    result = _result()
+    result.presets[0].negative_snippet = "score_6, realistic, 3d"
+    _, presets = to_outputs(REC, result, CAT, seen_snippets=set())
+    assert presets[0]["negative_snippet"] == "realistic, 3d"
+
+
+def test_to_outputs_drops_preset_whose_snippet_is_only_boilerplate():
+    result = _result()
+    result.presets[0].prompt_snippet = "score_9, score_8_up, masterpiece"
+    _, presets = to_outputs(REC, result, CAT, seen_snippets=set())
+    assert presets == []
