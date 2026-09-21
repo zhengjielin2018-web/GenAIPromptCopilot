@@ -22,7 +22,7 @@
 - 維度固定順序：`style, scene, camera, appearance, pose, clothing`。
 - 驗證只改 `borrowed` / `suggestions` 紀錄，**絕不修改** `positive_prompt` / `negative_prompt`（spec §6.2）。
 - 被移除的借用歸屬一定顯示在畫面上，措辭是「來源不符」且說明提示詞不受影響，不能寫成像是詞被拿掉（spec §7）。
-- Commit 訊息沿用 repo 慣例 `type(scope): 摘要`（`feat(demo)`、`refactor(demo)`、`test(retrieval)`、`docs(spec)`），結尾加 `Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>`。
+- Commit 訊息沿用 repo 慣例 `type(scope): 摘要`（`feat(demo)`、`refactor(demo)`、`test(retrieval)`、`docs(spec)`），結尾加上**你自己這個 session 的署名提醒所指定的** `Co-Authored-By:` 行（各任務由不同模型執行，署名據實反映實際執行者，不必統一）。
 - 在分支 `feat/dimension-scoped-retrieval` 上工作，完成後用 `superpowers:finishing-a-development-branch` 併回 `master`（子專案 1 也是 merge commit 併入）。
 
 ---
