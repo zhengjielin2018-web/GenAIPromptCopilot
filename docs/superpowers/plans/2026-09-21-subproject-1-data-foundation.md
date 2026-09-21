@@ -6,9 +6,36 @@
 
 **Architecture:** 管線分五個階段（fetch → clean → structure → embed → load），每階段讀前一階段的 jsonl、寫自己的 jsonl，可獨立重跑與斷點續傳。Gemini 與 Civitai 的 HTTP 呼叫各自包在可注入假物件的 client 類別裡，讓每階段的邏輯都能在不打網路的情況下用 pytest 測。DB schema 以 SQL 檔為單一真實來源，由 docker-compose 自動執行。
 
-**Tech Stack:** Python 3.12+、httpx、google-genai、pydantic v2、psycopg 3 + pgvector、PyYAML、python-dotenv、pytest、ruff；PostgreSQL 16 + pgvector（Docker）；Gemini `gemini-2.5-flash-lite`（結構化）與 `gemini-embedding-001`（768 維）。
+**Tech Stack:** Python 3.12+、httpx、google-genai、pydantic v2、psycopg 3 + pgvector、PyYAML、python-dotenv、pytest、ruff；PostgreSQL 16 + pgvector（Docker）；Gemini `gemini-3.5-flash-lite`（結構化；原訂的 `gemini-2.5-flash-lite` 已對新使用者停用，見下方修正紀錄 R18）與 `gemini-embedding-001`（768 維）。
 
 **Spec:** [docs/superpowers/specs/2026-09-21-genai-prompt-copilot-design.md](../specs/2026-09-21-genai-prompt-copilot-design.md) — 本計畫實作 §2.1 第 1 項、§6.3、§7、§8、§9、§14 第 1 列。
+
+---
+
+## ⚠️ 執行期修正紀錄（Corrections applied during execution）
+
+> **本計畫已完整執行完畢。下列項目是執行過程中發現「計畫本身寫錯」的地方。**
+> 各任務的程式碼區塊**保留原樣未改寫**，以保存當初的判斷紀錄；但若你要直接照抄某段程式碼，
+> 請先看這張表。以 repo 內的實際程式碼為準，計畫文件只是當初的論證。
+
+| # | 影響任務 | 計畫寫錯的地方 | 實際採用的作法 |
+| :--- | :--- | :--- | :--- |
+| R2 | Task 1 | `line-length = 100`，但計畫自己提供的程式碼有約 18 行超過 100 字元 | 改為 `line-length = 120` |
+| R3 | Task 1 | `config.py` 匯入了從未使用的 `Field`（ruff F401） | 只匯入 `BaseModel` |
+| R5/R8 | Task 1 | `Settings` 用 `load_dotenv()`，會把 `.env` 洩進全域 `os.environ`；模組載入時就執行，導致所有測試互相污染 | 改用 `dotenv_values()`，永不寫入 `os.environ`；優先序仍為 kwargs > os.environ > .env > 預設值 |
+| R12 | Task 2、Task 10 | 測試寫 `len(vector) == 768`，但 pgvector 的 `Vector` 沒有 `__len__` 也沒有 `__iter__` | 改用 `.dimensions()` 與 `.to_list()`；`to_numpy()` 不可用（未安裝 numpy） |
+| **R13** | **Task 5** | **`iter_images` 每頁只算一次 `next_cursor` 並附在該頁每一筆上；`run_fetch` 在頁中途停止時存下的是「整頁之後」的游標，導致該頁未寫入的資料永久遺失。實測 `--max-items 20` 搭配預設 `limit=200`，抓了 200 筆只寫 20 筆，游標卻跳過全部 200 筆。** | **改為 yield「抓這一頁所用的游標」，早停時一律記 `done: False`；續跑會重抓該頁，由既有去重邏輯跳過已寫入的部分。另補上頁中途停止的測試** |
+| R14/R15 | Task 6 | NSFW 關鍵詞清單漏掉性暗示形容詞；實測 3/12 筆通過過濾的資料含 `cleavage, extremely sexy, seductive`。且斷詞方式讓 `underwear_only`（底線）與 `half-naked`（連字號）繞過過濾 | 新增 `sexy / seductive / cleavage / busty / skimpy / scantily / voluptuous / lewd / suggestive / provocative`（刻意**不**加解剖學名詞如 `breasts`，那是一般動漫標籤）；比對前把非英數字元正規化成空白 |
+| **R18** | **Task 7** | **`gemini-2.5-flash-lite` 已對新使用者停用，實際呼叫回 404。它仍會出現在 API 自己的 `models.list()` 裡，所以「列表裡有」不等於「可以用」** | **改用 `gemini-3.5-flash-lite`（釘死版本，不用 `-latest` 別名，以維持 eval 可重現）** |
+| R17/R19 | Task 8 | 只靠 prompt 指示 LLM 別把 `score_9` 這類分數標籤當成片段。實測負向詞那側洩漏率 12.5%，而正向側「0/16」在 n=5 下幾乎不具統計意義 | 改為 `structure.py` 內的確定性過濾 `_strip_boilerplate`，正負兩側都套用。實測在 859 筆 preset 上洩漏 0 筆 |
+| R24 | Task 8 | 同一個過濾沒套用到 history 的 `positive_prompt`／`negative_prompt` | 一併套用（embedding 建在 `user_intent` 上，所以修補不需重跑 LLM） |
+| R4 | Task 11 | `query_check.py` 用了沒有佔位符的 f-string（ruff F541） | 改成一般字串 |
+| R20/R21 | Task 10 | GIN 查詢的斷言沒限定測試資料列，資料庫一有真實資料就會失敗；且 preset 的 `ON CONFLICT DO UPDATE` 分支完全沒有測試 | 改為斷言「測試列存在於結果集合中」；補上三個 upsert 測試 |
+| R22 | Task 11 | 最終跑 `--max-items 3000`，約等於 1500 次即時 LLM 呼叫，很可能耗盡 Gemini 免費額度 | 改跑 `--max-items 400`（產出 258 histories／859 presets）。各階段皆可續跑，要擴充直接用更大的數字重跑同一指令 |
+
+完整的判斷理由與證據保存在執行紀錄 `.superpowers/sdd/2026-09-21-subproject-1-data-foundation/progress.md`（該目錄未納入版控）。
+
+---
 
 ## Global Constraints
 

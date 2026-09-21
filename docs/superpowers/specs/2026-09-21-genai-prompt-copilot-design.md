@@ -84,7 +84,7 @@
                                    └──────────────────────────┘
 ```
 
-LLM：Gemini Flash（現行 2.x 版本，子專案 2 開工時確認確切型號）。Embedding：Gemini embedding（維度於子專案 1 開工時確認後定案）。
+LLM：**`gemini-3.5-flash-lite`**（子專案 1 執行時實測定案。注意：`gemini-2.5-flash-lite` 仍會出現在 API 的 `models.list()` 中，但實際呼叫回 404「no longer available to new users」——列表裡有不等於可以用。採釘死版本而非 `gemini-flash-lite-latest` 別名，以維持 eval 結果可重現）。Embedding：**`gemini-embedding-001`，768 維**（實測可用）。
 
 ## 4. 核心編排（全 Agentic）
 
@@ -252,6 +252,12 @@ interface IPromptOrchestrator {
 
 ### 5.3 其他 profile
 
+> **子專案 1 實測發現的分類缺口**：四值分類沒有「動物」這一格。實測 258 筆語料中，
+> 一張「睡著的貓」被 LLM 標成 `portrait`（因為沒有更貼切的選項），連帶讓
+> 「山上的日出」這類查詢撈到不相干的結果。子專案 2 開工前需決定：新增 `animal` profile，
+> 或明確把動物歸進 `portrait` 並在 system prompt 裡講清楚。目前傾向後者（少一個 profile
+> 要維護），但這是待決事項，不是已定案。
+
 | Profile | 差異 |
 | :--- | :--- |
 | `landscape` | `appearance` / `pose` / `clothing` 全部 `notApplicable`；`scene` 增加 `scene.season`（季節） |
@@ -322,7 +328,14 @@ profiles:
 
 ### 6.3 資料側
 
-Python 管線在 `clean.py` 階段過濾 NSFW（Civitai API `nsfw=false` 參數 + 自建關鍵詞清單雙重過濾）。知識庫本身乾淨是整個「合規」賣點的前提。
+Python 管線在 `clean.py` 階段過濾 NSFW（Civitai API `nsfw=None` 參數 + `nsfwLevel` 檢查 + 自建關鍵詞清單，三層過濾）。知識庫本身乾淨是整個「合規」賣點的前提。
+
+> **子專案 1 實測結果（重要，會影響本節的可信度）**：抓下來的 20 筆原始資料**全部**是
+> `nsfwLevel: "None"` 且 `nsfw: false`，包含一筆內容為
+> `cleavage, extremely sexy, seductive` 的 prompt。也就是說**前兩層實際上什麼都沒擋掉**，
+> 第三層的關鍵詞清單是唯一真正在運作的過濾。清單已擴充性暗示形容詞並改為標點正規化比對，
+> 實測 859 筆 preset 殘留 0 筆，但**固定的英文關鍵詞清單本質上擋不住換句話說、其他語言或新詞**。
+> 因此 §6.1／§6.2 的 runtime LLM 分類器才是真正的防線；管線這層只是語料衛生，不是保證。
 
 ## 7. 資料模型
 
