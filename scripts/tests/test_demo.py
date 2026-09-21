@@ -216,12 +216,19 @@ def test_format_candidates_marks_band_usage_and_facet_coverage():
 def test_assembly_prompt_contains_every_required_rule_and_all_blocks():
     text = build_assembly_prompt("夜晚的湖畔", "portrait", {"scene.location": "covered"}, [], [], CAT)
     needles = (
-        "完整", "複合", "split-color hair", "不要自行發明", "僅供建議", "低", "borrowed", "suggestions", "2–3",
+        "完整", "複合", "split-color hair", "不要自行發明", "僅供建議", "任何詞都不可寫進提示詞", "低",
+        "borrowed", "suggestions", "2–3",
     )
     for needle in needles:
         assert needle in text, needle
     assert "題材：portrait" in text and "夜晚的湖畔" in text
     assert "（無）" in text  # 候選與相似作品都空
+
+
+def test_assembly_prompt_forbids_copying_the_compound_tag_example_verbatim():
+    """規則 2 的範例（two-tone hair 等）只是示範格式；防呆句必須存在，否則以後改壞範例不會被抓到。"""
+    text = build_assembly_prompt("夜晚的湖畔", "portrait", {"scene.location": "covered"}, [], [], CAT)
+    assert "範例只是示範格式" in text and "不可原封抄進提示詞" in text
 
 
 # ---------- 端到端 ----------
