@@ -32,7 +32,8 @@ def strip_boilerplate(snippet: str) -> str:
         tag = raw.strip()
         if not tag:
             continue
-        low = _WEIGHT_RE.match(tag).group(1).strip().lower()
+        match = _WEIGHT_RE.match(tag)
+        low = (match.group(1) if match else tag).strip().lower()
         if not low:
             continue
         if low in _BOILERPLATE_TAGS or _SCORE_TAG_RE.match(low) or _EMBEDDING_TAG_RE.match(low):

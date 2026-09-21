@@ -156,3 +156,7 @@ def test_strip_boilerplate_treats_break_as_a_delimiter():
 
 def test_strip_boilerplate_keeps_bad_as_an_ordinary_word():
     assert _strip_boilerplate("bad guy, city street") == "bad guy, city street"
+
+
+def test_strip_boilerplate_survives_an_embedded_newline():
+    assert _strip_boilerplate("forest\nlit by dappled sun, masterpiece") == "forest\nlit by dappled sun"
