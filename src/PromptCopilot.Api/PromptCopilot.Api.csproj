@@ -16,4 +16,9 @@
     <PackageReference Include="YamlDotNet" Version="18.1.0" />
   </ItemGroup>
 
+  <ItemGroup>
+    <None Update="Configuration\facets.yaml" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="Prompts\system.md" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>
