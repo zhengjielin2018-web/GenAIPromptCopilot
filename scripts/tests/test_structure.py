@@ -223,3 +223,55 @@ def test_run_structure_concurrent_actually_overlaps_calls(tmp_path):
     run_structure(g, CAT, in_path=inp, histories_path=tmp_path / "h.jsonl",
                   presets_path=tmp_path / "p.jsonl", concurrency=4)
     assert g.peak > 1
+
+
+class FlakyGemini:
+    """第 bad_index 筆丟 UnusableResponse（模擬安全性攔截／MAX_TOKENS 截斷）。"""
+
+    def __init__(self, bad_index):
+        self.bad_index = bad_index
+        self.calls = 0
+
+    def generate_structured(self, prompt, schema, *, temperature=0.2):
+        from pipeline.gemini_client import UnusableResponse
+
+        i = self.calls
+        self.calls += 1
+        if i == self.bad_index:
+            raise UnusableResponse("回應沒有文字內容（finish_reason=SAFETY）")
+        return _result()
+
+
+def test_run_structure_skips_unusable_response_instead_of_aborting(tmp_path):
+    """一筆被模型擋掉不能毀掉整個 6000 筆的跑批——其餘的都要寫出來。"""
+    inp = tmp_path / "records.jsonl"
+    write_jsonl(inp, [{**REC, "source_id": i} for i in range(1, 6)])
+    h, p = tmp_path / "h.jsonl", tmp_path / "p.jsonl"
+    n_hist, _ = run_structure(FlakyGemini(bad_index=2), CAT, in_path=inp,
+                              histories_path=h, presets_path=p)
+    assert n_hist == 4
+    assert [r["source_ref"] for r in read_jsonl(h)] == [
+        "civitai:1", "civitai:2", "civitai:4", "civitai:5"]
+
+
+def test_concurrent_batch_keeps_paid_siblings_when_one_record_is_unusable(tmp_path):
+    """併發下一筆壞掉時，同 batch 其他『已經付費』的結果不得跟著作廢。"""
+    inp = tmp_path / "records.jsonl"
+    write_jsonl(inp, [{**REC, "source_id": i} for i in range(1, 9)])
+    h, p = tmp_path / "h.jsonl", tmp_path / "p.jsonl"
+    n_hist, _ = run_structure(FlakyGemini(bad_index=3), CAT, in_path=inp,
+                              histories_path=h, presets_path=p, concurrency=8)
+    assert n_hist == 7  # 8 筆送出、1 筆壞，其餘 7 筆都必須留下
+    assert len(list(read_jsonl(h))) == 7
+
+
+def test_skipped_record_is_retried_on_resume_not_marked_done(tmp_path):
+    """被跳過的那筆不能被當成已完成——續跑時要再試一次。"""
+    inp = tmp_path / "records.jsonl"
+    write_jsonl(inp, [{**REC, "source_id": i} for i in range(1, 4)])
+    h, p = tmp_path / "h.jsonl", tmp_path / "p.jsonl"
+    run_structure(FlakyGemini(bad_index=1), CAT, in_path=inp, histories_path=h, presets_path=p)
+    assert [r["source_ref"] for r in read_jsonl(h)] == ["civitai:1", "civitai:3"]
+    run_structure(FakeGemini(), CAT, in_path=inp, histories_path=h, presets_path=p)
+    assert sorted(r["source_ref"] for r in read_jsonl(h)) == [
+        "civitai:1", "civitai:2", "civitai:3"]

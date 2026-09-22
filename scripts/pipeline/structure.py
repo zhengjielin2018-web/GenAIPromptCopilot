@@ -10,11 +10,12 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from pipeline.boilerplate import strip_boilerplate as _strip_boilerplate
 from pipeline.config import CLEAN_DIR, FACETS_PATH, STRUCTURED_DIR
 from pipeline.facets import FacetCatalog, load_facets
+from pipeline.gemini_client import UnusableResponse
 from pipeline.jsonl import append_jsonl, existing_keys, read_jsonl
 
 HISTORIES_PATH = STRUCTURED_DIR / "histories.jsonl"
@@ -161,19 +162,43 @@ def run_structure(
     def _call(record: dict) -> StructuredRecord:
         return client.generate_structured(build_prompt(record, catalog), StructuredRecord)
 
+    skipped: list[int] = []
+
     if concurrency <= 1:
         for record in pending:
-            n_presets += _emit(record, _call(record))
+            try:
+                result = _call(record)
+            except (UnusableResponse, ValidationError) as e:
+                skipped.append(record["source_id"])
+                print(f"  跳過 source_id={record['source_id']}：{type(e).__name__} {e}")
+                continue
+            n_presets += _emit(record, result)
             n_hist += 1
+        _report_skipped(skipped)
         return n_hist, n_presets
 
     with ThreadPoolExecutor(max_workers=concurrency) as pool:
         for i in range(0, len(pending), concurrency):
             batch = pending[i : i + concurrency]
-            for record, result in zip(batch, list(pool.map(_call, batch)), strict=True):
+            # 逐筆取 future：一筆壞掉不能讓同 batch 其他「已經付費」的結果一起作廢
+            futures = [pool.submit(_call, r) for r in batch]
+            for record, fut in zip(batch, futures, strict=True):
+                try:
+                    result = fut.result()
+                except (UnusableResponse, ValidationError) as e:
+                    skipped.append(record["source_id"])
+                    print(f"  跳過 source_id={record['source_id']}：{type(e).__name__} {e}")
+                    continue
                 n_presets += _emit(record, result)
                 n_hist += 1
+    _report_skipped(skipped)
     return n_hist, n_presets
+
+
+def _report_skipped(skipped: list[int]) -> None:
+    """跳過的筆數必須講出來。靜默丟棄會讓語料量對不上卻查不出原因。"""
+    if skipped:
+        print(f"structure: 跳過 {len(skipped)} 筆無法使用的回應 source_id={skipped}")
 
 
 def main(argv: list[str] | None = None) -> None:
