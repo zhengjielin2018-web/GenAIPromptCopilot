@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.ChatCompletion;
 using PromptCopilot.Api.Configuration;
@@ -56,7 +57,7 @@ public class AgenticOrchestratorTests
                 ? new ResilientChatCompletion(Chat, llm, (_, _) => Task.CompletedTask)
                 : Chat;
             return new AgenticOrchestrator(chat, Catalog, guard, prompts, SinkOverride ?? Audit, Options,
-                new SafetyClassifier(ClassifierChat, llm),
+                new SafetyClassifier(ClassifierChat, llm), NullLogger<AgenticOrchestrator>.Instance,
                 kernelFactory: (turn, tools, _) =>
                 {
                     var k = Kernel.CreateBuilder().Build();

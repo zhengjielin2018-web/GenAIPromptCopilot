@@ -7,7 +7,8 @@ namespace PromptCopilot.Api.Data;
 public sealed record HistoryHit(Guid Id, string UserIntent, string PositivePrompt, string SubjectProfile, double Dist);
 public sealed record HistoryInsert(string UserIntent, string Positive, string Negative, string Profile, string? CompletenessJson, float[] IntentEmbedding);
 
-public sealed class HistoryRepository(NpgsqlDataSource ds)
+/// <summary>非 sealed、InsertAsync 為 virtual：端點測試要在不碰資料庫的情況下走完 save-to-shared。</summary>
+public class HistoryRepository(NpgsqlDataSource ds)
 {
     private const string SearchSql = """
         SELECT id, user_intent, positive_prompt, subject_profile, intent_embedding <=> @q AS dist
@@ -36,7 +37,7 @@ public sealed class HistoryRepository(NpgsqlDataSource ds)
         return list;
     }
 
-    public async Task<Guid> InsertAsync(HistoryInsert h, CancellationToken ct)
+    public virtual async Task<Guid> InsertAsync(HistoryInsert h, CancellationToken ct)
     {
         await using var cmd = ds.CreateCommand(InsertSql);
         cmd.Parameters.AddWithValue("intent", h.UserIntent);

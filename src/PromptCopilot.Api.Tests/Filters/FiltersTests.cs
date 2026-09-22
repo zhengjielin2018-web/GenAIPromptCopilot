@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Threading.Channels;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.ChatCompletion;
@@ -229,7 +230,7 @@ public class FiltersTests
     {
         var (k, _, ch) = Kernel();
         var sink = new MemorySink();
-        await new AuditFilter(sink).OnAutoFunctionInvocationAsync(Ctx(k, "SetProfile", ("profile", "portrait")), Next());
+        await new AuditFilter(sink, NullLogger<AuditFilter>.Instance).OnAutoFunctionInvocationAsync(Ctx(k, "SetProfile", ("profile", "portrait")), Next());
         Assert.True(ch.Reader.TryRead(out var e)); Assert.IsType<ToolCallEvent>(e);
         var row = Assert.Single(sink.Entries);
         Assert.Equal("Tool_Invoked", row.EventType); Assert.Equal("s", row.SessionId); Assert.Equal(2, row.TurnIndex);
@@ -243,7 +244,7 @@ public class FiltersTests
     {
         var (k, turn, ch) = Kernel();
         string? seen = null;
-        await new AuditFilter(new MemorySink()).OnAutoFunctionInvocationAsync(
+        await new AuditFilter(new MemorySink(), NullLogger<AuditFilter>.Instance).OnAutoFunctionInvocationAsync(
             Ctx(k, "SearchPresets", ("dimension", "style")), _ => { seen = turn.CurrentCallId; return Task.CompletedTask; });
 
         Assert.True(ch.Reader.TryRead(out var e));
@@ -259,7 +260,7 @@ public class FiltersTests
         var (k, turn, _) = Kernel();
         var sink = new MemorySink { Throw = new IOException("db down") };
         var called = false;
-        await new AuditFilter(sink).OnAutoFunctionInvocationAsync(Ctx(k, "SetProfile"), Next(() => called = true));
+        await new AuditFilter(sink, NullLogger<AuditFilter>.Instance).OnAutoFunctionInvocationAsync(Ctx(k, "SetProfile"), Next(() => called = true));
         Assert.True(called);
         Assert.Contains(turn.Rejections, r => r.Contains("audit"));
     }

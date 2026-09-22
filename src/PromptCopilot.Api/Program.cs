@@ -71,7 +71,7 @@ services.AddSingleton<IPromptOrchestrator>(sp =>
     return new AgenticOrchestrator(
         sp.GetRequiredService<IChatCompletionService>(), sp.GetRequiredService<FacetCatalog>(), sp.GetRequiredService<SafetyGuard>(),
         sp.GetRequiredService<SystemPromptBuilder>(), sp.GetRequiredService<IAuditSink>(), o,
-        sp.GetRequiredService<SafetyClassifier>(),
+        sp.GetRequiredService<SafetyClassifier>(), sp.GetRequiredService<ILogger<AgenticOrchestrator>>(),
         kernelFactory: sp.GetRequiredService<AgentKernelFactory>().Create);
 });
 

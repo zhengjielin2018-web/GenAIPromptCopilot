@@ -12,7 +12,8 @@ namespace PromptCopilot.Api.Orchestration;
 
 /// <summary>每輪建一個 kernel：plugin 拿這一輪的 TurnContext，函式清單依 ToolSetBuilder 過濾，filter 由外到內掛上。</summary>
 public sealed class AgentKernelFactory(IChatCompletionService chat, FacetCatalog catalog, IEmbeddingClient embed,
-    PresetRepository presets, HistoryRepository histories, SafetyClassifier classifier, IAuditSink audit, OrchestratorOptions options)
+    PresetRepository presets, HistoryRepository histories, SafetyClassifier classifier, IAuditSink audit, OrchestratorOptions options,
+    ILoggerFactory loggers)
 {
     public Kernel Create(TurnContext turn, IReadOnlySet<string> tools, bool includeBudget)
     {
@@ -25,7 +26,7 @@ public sealed class AgentKernelFactory(IChatCompletionService chat, FacetCatalog
         AddFiltered(k, "Session", new SessionPlugin(turn, catalog), tools);
         AddFiltered(k, "Dialog", new DialogPlugin(turn, catalog, options), tools);
 
-        k.AutoFunctionInvocationFilters.Add(new AuditFilter(audit));
+        k.AutoFunctionInvocationFilters.Add(new AuditFilter(audit, loggers.CreateLogger<AuditFilter>()));
         if (includeBudget) k.AutoFunctionInvocationFilters.Add(new ToolBudgetFilter(options));
         k.AutoFunctionInvocationFilters.Add(new OutputSafetyFilter(classifier));
         k.AutoFunctionInvocationFilters.Add(new TerminalToolFilter());

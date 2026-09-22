@@ -6,7 +6,7 @@ using PromptCopilot.Api.Streaming;
 
 namespace PromptCopilot.Api.Filters;
 
-public sealed class AuditFilter(IAuditSink sink) : IAutoFunctionInvocationFilter
+public sealed class AuditFilter(IAuditSink sink, ILogger<AuditFilter> logger) : IAutoFunctionInvocationFilter
 {
     public async Task OnAutoFunctionInvocationAsync(AutoFunctionInvocationContext context, Func<AutoFunctionInvocationContext, Task> next)
     {
@@ -26,6 +26,7 @@ public sealed class AuditFilter(IAuditSink sink) : IAutoFunctionInvocationFilter
         }
         catch (Exception e) when (e is not OperationCanceledException)
         {
+            logger.LogWarning(e, "Tool_Invoked audit write failed: {Function} session {SessionId}", context.Function.Name, turn.Session.Id);
             turn.Rejections.Add($"audit 寫入失敗：{e.GetType().Name}");   // 稽核掛掉不該讓 tool 呼叫失敗
         }
     }

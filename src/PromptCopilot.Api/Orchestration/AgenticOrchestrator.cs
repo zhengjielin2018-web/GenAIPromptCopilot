@@ -23,6 +23,7 @@ public sealed class AgenticOrchestrator(
     IAuditSink audit,
     OrchestratorOptions options,
     SafetyClassifier classifier,
+    ILogger<AgenticOrchestrator> logger,
     Func<TurnContext, IReadOnlySet<string>, bool, Kernel> kernelFactory) : IPromptOrchestrator
 {
     private static readonly JsonSerializerOptions Json = new() { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
@@ -203,7 +204,10 @@ public sealed class AgenticOrchestrator(
     private async Task TryAuditAsync(AuditEntry entry)
     {
         try { await audit.WriteAsync(entry, CancellationToken.None); }
-        catch (Exception e) when (e is not OperationCanceledException) { /* 吞掉 */ }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            logger.LogWarning(e, "audit write failed: {EventType} session {SessionId} turn {TurnIndex}", entry.EventType, entry.SessionId, entry.TurnIndex);
+        }
     }
 
     /// <summary>一次 SK auto-invoke：connector 自己跑 tool、跑 filter，Terminal filter 設 Terminate 就回來。

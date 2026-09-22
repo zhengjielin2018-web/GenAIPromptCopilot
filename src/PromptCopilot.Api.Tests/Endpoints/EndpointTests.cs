@@ -3,6 +3,8 @@ using System.Net.Http.Json;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.SemanticKernel.ChatCompletion;
+using PromptCopilot.Api.Data;
+using PromptCopilot.Api.Llm;
 using PromptCopilot.Api.Orchestration;
 using PromptCopilot.Api.Sessions;
 using PromptCopilot.Api.Streaming;
@@ -27,6 +29,24 @@ public class EndpointTests : IClassFixture<EndpointTests.Factory>
         }
     }
 
+    /// <summary>不打 Gemini。</summary>
+    private sealed class FakeEmbeddings : IEmbeddingClient
+    {
+        public Task<IReadOnlyList<float[]>> EmbedAsync(IReadOnlyList<string> texts, string taskType, CancellationToken ct) =>
+            Task.FromResult<IReadOnlyList<float[]>>(texts.Select(_ => new float[768]).ToList());
+    }
+
+    /// <summary>不打 DB。</summary>
+    private sealed class FakeHistories() : HistoryRepository(null!)
+    {
+        public override Task<Guid> InsertAsync(HistoryInsert h, CancellationToken ct) => Task.FromResult(Guid.NewGuid());
+    }
+
+    public sealed class ExplodingAudit : IAuditSink
+    {
+        public Task WriteAsync(AuditEntry entry, CancellationToken ct) => throw new IOException("audit db down");
+    }
+
     public sealed class Factory : WebApplicationFactory<Program>
     {
         protected override void ConfigureWebHost(Microsoft.AspNetCore.Hosting.IWebHostBuilder builder)
@@ -35,12 +55,26 @@ public class EndpointTests : IClassFixture<EndpointTests.Factory>
             {
                 s.AddSingleton<IChatCompletionService>(new FakeChatCompletion());   // 不建真的 Gemini service
                 s.AddSingleton<IPromptOrchestrator, FakeOrchestrator>();
+                s.AddSingleton<IEmbeddingClient>(new FakeEmbeddings());
+                s.AddSingleton<HistoryRepository>(new FakeHistories());
+                s.AddSingleton<IAuditSink>(new ExplodingAudit());                   // 稽核掛掉不該讓 200 變 500
             });
         }
     }
 
     private readonly HttpClient _client;
-    public EndpointTests(Factory f) => _client = f.CreateClient();
+    private readonly Factory _factory;
+    public EndpointTests(Factory f) { _factory = f; _client = f.CreateClient(); }
+
+    /// <summary>直接從 store 拿 session 佈置成已定稿：走 HTTP 的話得先跑完一輪真的對話。</summary>
+    private Session FinalizedSession()
+    {
+        var store = _factory.Services.GetRequiredService<SessionStore>();
+        var s = store.Create();
+        s.ApplyProfile("portrait", _factory.Services.GetRequiredService<PromptCopilot.Api.Configuration.FacetCatalog>());
+        s.RecordFinalize(new FinalPrompt("1girl", "lowres", "tips"));
+        return s;
+    }
 
     [Fact]
     public async Task Create_session_returns_id()
@@ -80,7 +114,7 @@ public class EndpointTests : IClassFixture<EndpointTests.Factory>
         Assert.True(text.IndexOf("event: session", StringComparison.Ordinal) < text.IndexOf("event: error", StringComparison.Ordinal),
             $"error frame 應該接在 session frame 後面，實際收到：{text}");
         Assert.Contains("\"code\":\"turn_failed\"", text);
-        Assert.Contains("boom", text);
+        Assert.DoesNotContain("boom", text);          // 例外訊息留在 log，不送到使用者眼前
 
         // 鎖有在 finally 放掉：同一個 session 還能再跑一輪
         var again = await _client.PostAsJsonAsync($"/api/sessions/{id}/messages", new { text = "hi" });
@@ -94,6 +128,32 @@ public class EndpointTests : IClassFixture<EndpointTests.Factory>
         var id = (await (await _client.PostAsync("/api/sessions", null)).Content.ReadFromJsonAsync<Dictionary<string, string>>())!["sessionId"];
         var r = await _client.PostAsJsonAsync($"/api/sessions/{id}/save-to-shared", new { intent = "x" });
         Assert.Equal(HttpStatusCode.Conflict, r.StatusCode);
+    }
+
+    /// <summary>儲存會讀 FacetStates 與 LastFinal。那一輪還在跑（還可能被回滾）時讀，讀到的是半途的狀態。</summary>
+    [Fact]
+    public async Task Save_is_rejected_while_a_turn_holds_the_session_lock()
+    {
+        var s = FinalizedSession();
+        Assert.True(await s.Lock.WaitAsync(0));
+        try
+        {
+            var r = await _client.PostAsJsonAsync($"/api/sessions/{s.Id}/save-to-shared", new { intent = "雨夜霓虹" });
+            Assert.Equal(HttpStatusCode.Conflict, r.StatusCode);
+        }
+        finally { s.Lock.Release(); }
+    }
+
+    /// <summary>稽核寫在資料列插入之後。讓它把回應弄成 500，使用者一重試就多一筆重複的資料。</summary>
+    [Fact]
+    public async Task Save_succeeds_even_when_the_audit_write_fails()
+    {
+        var s = FinalizedSession();
+        var r = await _client.PostAsJsonAsync($"/api/sessions/{s.Id}/save-to-shared", new { intent = "雨夜霓虹" });
+
+        Assert.Equal(HttpStatusCode.OK, r.StatusCode);
+        Assert.False(string.IsNullOrWhiteSpace((await r.Content.ReadFromJsonAsync<Dictionary<string, string>>())!["id"]));
+        Assert.Equal(1, s.Lock.CurrentCount);        // 鎖有放掉
     }
 
     [Fact]
