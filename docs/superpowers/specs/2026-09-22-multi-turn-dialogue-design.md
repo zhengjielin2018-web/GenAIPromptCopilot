@@ -286,13 +286,17 @@ Gemini 有可能對某些輸入**完全不回應**：HTTP 200，但 `candidates`
 
 | 情況 | 判定 | 處置 |
 | :--- | :--- | :--- |
-| `blockReason` 或 `finishReason` 屬 `PROHIBITED_CONTENT`／`SAFETY`／`BLOCKLIST`／`JAILBREAK`／`IMAGE_SAFETY`／`MODEL_ARMOR` | 內容攔截 | **不重試** |
+| `blockReason` 或 `finishReason` 屬 `PROHIBITED_CONTENT`／`SAFETY`／`BLOCKLIST`／`JAILBREAK`／`IMAGE_SAFETY`／`MODEL_ARMOR` | 內容攔截 | **重試 1 次**，仍被擋才交給使用者 |
 | `finishReason = MAX_TOKENS`；或空 `candidates` 且無 `blockReason` | 與內容無關 | 重試，預設 3 次 |
 | 429／5xx／逾時 | 傳輸 | 既有的指數退避重試 |
 
-**內容攔截不得重試。** 攔截是機率性的，對同一份輸入重送到通過為止，等於利用分類器的
-不確定性規避安全判定，而實測顯示這裡的判定牽涉未成年與暴露服裝的組合。`safetySettings`
-也不是出口：`PROHIBITED_CONTENT` 不在可調的 `HarmCategory` 之列。
+**內容攔截重試一次，不多。** 攔截是機率性的：實測同一份 SFW 內容也會被誤擋，重送一次常會過。
+送到 Gemini 的內容已經先過了 §6.1 輸入側 `SafetyGuard`——是我們自己判定可接受的東西，
+上游攔截是第二個分類器的第二次意見，容忍它一次誤判是合理的。
+
+但只能一次。對同一份輸入重送到通過為止，等於利用分類器的不確定性規避安全判定，
+而實測顯示這裡的判定牽涉未成年與暴露服裝的組合——這條界線兩次仍被擋就交給使用者，
+由人決定要不要改寫。`safetySettings` 也不是出口：`PROHIBITED_CONTENT` 不在可調的 `HarmCategory` 之列。
 
 #### 攔截時的對話行為
 
@@ -313,6 +317,10 @@ history——否則下一輪 LLM 會看到它，可能再觸發一次。使用�
 
 `scripts/pipeline/gemini_client.py` 的 `UnusableResponse.is_content_block` 與
 `generate_structured` 的重試條件；使用者訊息見 `scripts/demo.py::unusable_message`。
+
+**Python 端目前是 0 次**（`should_retry` 排除 `is_content_block`），跟本節的 1 次不一致。
+要同步：`generate_structured` 的 `should_retry` 對內容攔截放行一次、`test_gemini_client.py` 對應案例、
+`docs/單輪流程說明.md` 同一個 commit 更新。
 
 ### 5.6 錯誤復原：回滾、內部重試、手動重試（新增）
 
@@ -346,7 +354,7 @@ RunTurnAsync(session, text, ct):
 | :--- | :--- | :--- | :--- |
 | 傳輸 | 429／5xx／逾時 | **3 次**，退避 1s／2s／4s | `_call` 的 6 次。互動場景每輪有 3–4 次上游呼叫，6 次退避會吃掉整輪預算 |
 | 空回應 | 200 但無可用內容、`MAX_TOKENS`、無 `blockReason` | **3 次** | `UNUSABLE_ATTEMPTS = 3` |
-| 內容攔截 | §5.5 的那組 reason | **0 次** | `is_content_block` → 不重試 |
+| 內容攔截 | §5.5 的那組 reason | **1 次**，不退避 | Python 端目前 0 次，待同步（§5.5 參考實作） |
 
 分類邏輯放在一個 `IChatCompletionService` 的 decorator 裡，跟 connector 無關——§4.8 說 connector 還沒選，
 而 Google connector 與 OpenAI 相容端點回「被擋」的形狀不同（前者 `promptFeedback.blockReason`，
@@ -359,6 +367,7 @@ RunTurnAsync(session, text, ct):
 | :--- | :--- |
 | `Llm:TransportRetries` | 3 |
 | `Llm:UnusableRetries` | 3 |
+| `Llm:ContentBlockRetries` | 1 |
 | `Orchestrator:TurnTimeoutSeconds` | 120 |
 
 #### 手動重試：不加端點、不分原因
@@ -369,7 +378,7 @@ RunTurnAsync(session, text, ct):
 事件不分 `error` 或 `blocked`，前端一律：失敗的訊息保留顯示並標記原因，附「重試」按鈕；按下把**原文填回輸入框**，
 使用者可改可直接送。輸入什麼是使用者的決定——不給按鈕他也只是重打一次，區分只是做樣子。
 
-這跟 §5.5「內容攔截不得重試」不衝突：那條管的是**系統自動**重送同一份輸入到過為止；使用者自己決定再送是他的判斷，
+這跟 §5.5「內容攔截只重試一次」不衝突：那條管的是**系統自動**重送的上限；使用者自己決定再送是他的判斷，
 一次一則，每則都有 audit。
 
 `error` 事件維持主規格 `{ code, message }`，不加 `retryable` 欄位。
@@ -492,7 +501,7 @@ history：
 錯誤復原（§5.6）：
 - 任一階段拋例外 → session 所有欄位等於 snapshot，`ChatHistory.Count` 回到輪次開始，`PresetLedger` 無本輪新增
 - 終止型 tool 成功後再拋例外（例如 SSE 寫入失敗）→ 不回滾，狀態已提交
-- decorator 分類：內容攔截 reason → 不重試、拋 `UpstreamBlocked`；空回應 → 重試至 `UnusableRetries` 次；429／5xx → 重試至 `TransportRetries` 次；每一類用 fake `IChatCompletionService` 各一案例
+- decorator 分類：內容攔截 reason → 重試 1 次（不退避），仍被擋才拋 `UpstreamBlocked`，第二次通過則正常回傳；空回應 → 重試至 `UnusableRetries` 次；429／5xx → 重試至 `TransportRetries` 次；每一類用 fake `IChatCompletionService` 各一案例，內容攔截要有「第二次過」與「第二次仍擋」兩案
 - 退避等待中 `CancellationToken` 取消 → 立即停止、回滾，不再打下一次
 - 失敗後重送同一段文字 → 計數器、history 長度、ledger 與首次送出時完全相同
 - 失敗一輪只寫一筆 `Turn_Failed`，`attempts` 等於實際嘗試次數
@@ -556,7 +565,8 @@ history：
 | history 截斷 | 最近 10 輪 | session 事實都在 ledger / `FacetStates` / `LastFinal`，history 只需最近脈絡 |
 | session 總輪次上限 | 不加 | 純成本護欄，既有設計就沒有，不在本次範圍 |
 | 一輪失敗的處理 | 回滾至本輪開始前，所有失敗一律 | 一般化主規格 §4.6 的逾時回滾；「不全毀」靠原子性保證，不靠逐項列舉哪個欄位不動 |
-| 手動重試 | 不加端點；不分 `error` / `blocked` 一律給重試按鈕，原文填回輸入框 | session 已回滾，重送等價首次送出；不給按鈕使用者也只是重打一次，區分是做樣子。§5.5 的「不得重試」管的是系統自動重送，不是使用者的決定 |
+| 手動重試 | 不加端點；不分 `error` / `blocked` 一律給重試按鈕，原文填回輸入框 | session 已回滾，重送等價首次送出；不給按鈕使用者也只是重打一次，區分是做樣子。§5.5 的「只重試一次」管的是系統自動重送的上限，不是使用者的決定 |
+| 上游內容攔截的內部重試 | 1 次（原 0 次） | 使用者實測同一份 SFW 內容會被誤擋，重送一次常會過；送到上游的內容已先過我們自己的 `SafetyGuard`，容忍第二個分類器一次誤判合理。上限 1 是為了不變成「重送到過為止」——那才是規避安全判定 |
 | 傳輸重試次數 | 3（Python 管線是 6） | 互動場景每輪 3–4 次上游呼叫，6 次退避會吃掉整輪預算 |
 | 單輪逾時 | 120s（原 60s） | 給三層重試留空間；退避吃同一個 `CancellationToken`，不會逾時了還在等 |
 
@@ -568,4 +578,5 @@ history：
 - **history 截斷 10 輪是拍腦袋的數字**，要看 eval 才知道對不對。
 - **每個討論回合多一次分類呼叫**是 A 方案的固定成本，長對話的成本線性成長。
 - **重試按鈕對確定性攔截無效**：輸入側 denylist 命中，原文重送必然再被擋。按鈕留著是為了行為一致，使用者按了會再看到同一則攔截訊息，然後自己改。
+- **內容攔截重試一次會提高邊緣內容的通過率**。§5.5 實測表裡「少女＋熱褲」3/6 被擋，重試一次後被擋機率約降到 1/4。對誤擋的 SFW 內容這是修正，對真正該擋的邊緣內容這是漏網——兩者上游分不開，我們也分不開。守住的界線是「只一次」加上前面已過 `SafetyGuard`。
 - **前端整頁重載後 session 狀態拿不回來**：session 在 `IMemoryCache` 還活著（2 小時），但主規格沒有 `GET /api/sessions/{id}` 讓前端重建畫面。不在本次範圍，但跟「不全毀」是同一類問題，子專案 3 要處理。
