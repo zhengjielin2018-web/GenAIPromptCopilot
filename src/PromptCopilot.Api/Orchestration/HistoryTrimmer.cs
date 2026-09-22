@@ -5,7 +5,8 @@ using Microsoft.SemanticKernel.ChatCompletion;
 
 namespace PromptCopilot.Api.Orchestration;
 
-/// <summary>多輪 §6.3。壓縮不改語意，只丟掉 ledger 已經有的內容。</summary>
+/// <summary>多輪 §6.3。壓縮吃的是 LLM 產的 JSON：形狀不對就整段跳過，絕不丟例外。
+/// 壓縮不改語意，只丟掉 ledger 已經有的內容。</summary>
 public static class HistoryTrimmer
 {
     private static readonly HashSet<string> OptionCarriers = new() { ToolNames.AskUser, ToolNames.Discuss };
@@ -38,19 +39,16 @@ public static class HistoryTrimmer
             {
                 case ToolNames.SearchPresets:
                 {
-                    var root = JsonNode.Parse(json)?.AsObject();
-                    var hits = root?["hits"]?.AsArray();
-                    if (hits is null) return null;
-                    var slim = new JsonArray(hits.Select(x => (JsonNode)new JsonObject { ["id"] = x!["id"]?.DeepClone(), ["title"] = x["title"]?.DeepClone() }).ToArray());
-                    return new JsonObject { ["dimension"] = root!["dimension"]?.DeepClone(), ["poolSize"] = root["poolSize"]?.DeepClone(), ["hits"] = slim }.ToJsonString(Json);
+                    if (JsonNode.Parse(json) is not JsonObject root || root["hits"] is not JsonArray hits) return null;
+                    var slim = new JsonArray(hits.OfType<JsonObject>().Select(x => (JsonNode)new JsonObject { ["id"] = x["id"]?.DeepClone(), ["title"] = x["title"]?.DeepClone() }).ToArray());
+                    return new JsonObject { ["dimension"] = root["dimension"]?.DeepClone(), ["poolSize"] = root["poolSize"]?.DeepClone(), ["hits"] = slim }.ToJsonString(Json);
                 }
                 case ToolNames.SearchSimilarPrompts:
                 {
-                    var arr = JsonNode.Parse(json)?.AsArray();
-                    if (arr is null) return null;
+                    if (JsonNode.Parse(json) is not JsonArray arr) return null;
                     return new JsonArray(arr.Select(x =>
                     {
-                        var intent = x?["intent"]?.GetValue<string>() ?? "";
+                        var intent = (x as JsonObject)?["intent"] is JsonValue v && v.TryGetValue<string>(out var s) ? s ?? "" : "";
                         return (JsonNode)new JsonObject { ["intent"] = intent.Length > 40 ? intent[..40] : intent };
                     }).ToArray()).ToJsonString(Json);
                 }
@@ -64,9 +62,8 @@ public static class HistoryTrimmer
     {
         try
         {
-            var arr = JsonNode.Parse(json)?.AsArray();
-            if (arr is null) return json;
-            foreach (var o in arr) o?.AsObject().Remove("tags");
+            if (JsonNode.Parse(json) is not JsonArray arr) return json;
+            foreach (var o in arr) (o as JsonObject)?.Remove("tags");
             return arr.ToJsonString(Json);
         }
         catch (JsonException) { return json; }
@@ -76,10 +73,9 @@ public static class HistoryTrimmer
     {
         try
         {
-            var arr = JsonNode.Parse(json)?.AsArray();
-            if (arr is null) return json;
+            if (JsonNode.Parse(json) is not JsonArray arr) return json;
             foreach (var ask in arr)
-                foreach (var o in ask?["options"]?.AsArray() ?? new JsonArray()) o?.AsObject().Remove("tags");
+                foreach (var o in (ask as JsonObject)?["options"] as JsonArray ?? new JsonArray()) (o as JsonObject)?.Remove("tags");
             return arr.ToJsonString(Json);
         }
         catch (JsonException) { return json; }

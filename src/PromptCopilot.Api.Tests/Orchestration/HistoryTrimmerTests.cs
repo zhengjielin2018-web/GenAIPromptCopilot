@@ -53,6 +53,31 @@ public class HistoryTrimmerTests
     }
 
     [Fact]
+    public void CompressTurn_leaves_wrong_shaped_options_untouched()
+    {
+        var h = new ChatHistory();
+        h.Add(Call("Discuss", new { options = new[] { "A", "B" }, asks = new[] { "not an object" } }));
+
+        HistoryTrimmer.CompressTurn(h, 0);
+
+        var call = h[0].Items.OfType<FunctionCallContent>().Single();
+        Assert.Equal("""["A","B"]""", call.Arguments!["options"]!.ToString());
+        Assert.Equal("""["not an object"]""", call.Arguments["asks"]!.ToString());
+    }
+
+    [Fact]
+    public void CompressTurn_leaves_wrong_shaped_search_result_untouched()
+    {
+        const string json = """[{"dimension":"style","hits":[]}]""";
+        var h = new ChatHistory();
+        h.Add(ToolResult("SearchPresets", json));
+
+        HistoryTrimmer.CompressTurn(h, 0);
+
+        Assert.Equal(json, h[0].Items.OfType<FunctionResultContent>().Single().Result!.ToString());
+    }
+
+    [Fact]
     public void Truncate_keeps_system_and_last_n_turns()
     {
         var h = new ChatHistory();
