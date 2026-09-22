@@ -1561,7 +1561,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
   - `enum LlmFailureKind { Transport, ContentBlock, Unusable, Fatal }`
   - `static class LlmFailureClassifier { IReadOnlySet<string> ContentBlockReasons; LlmFailureKind Classify(Exception e); string? BlockReasonOf(Exception e); (LlmFailureKind Kind, string? Reason)? ProblemOf(IReadOnlyList<ChatMessageContent> result) }`
   - `class ResilientChatCompletion(IChatCompletionService inner, IOptions<LlmOptions>, Func<TimeSpan, CancellationToken, Task>? delay = null) : IChatCompletionService`
-  - 測試用 `class FakeChatCompletion : IChatCompletionService { Queue<Func<ChatHistory, IReadOnlyList<ChatMessageContent>>> Script; List<ChatHistory> Calls; static ChatMessageContent Text(string); static ChatMessageContent Calls(params FunctionCallContent[]); static ChatMessageContent WithMeta(string? content, string key, string value) }`
+  - 測試用 `class FakeChatCompletion : IChatCompletionService { Queue<Func<ChatHistory, IReadOnlyList<ChatMessageContent>>> Script; List<ChatHistory> Calls; static ChatMessageContent Text(string); static ChatMessageContent WithCalls(params FunctionCallContent[]); static ChatMessageContent WithMeta(string? content, string key, string value) }`
 
 `XRetries` 是**重試次數**，總嘗試 = 重試 + 1：`ContentBlockRetries = 1` → 最多打 2 次，跟 Python `CONTENT_BLOCK_ATTEMPTS = 1` 的實際行為一致。
 
@@ -1600,7 +1600,7 @@ public sealed class FakeChatCompletion : IChatCompletionService
 
     public static ChatMessageContent Text(string content) => new(AuthorRole.Assistant, content);
 
-    public static ChatMessageContent Calls(params FunctionCallContent[] calls)
+    public static ChatMessageContent WithCalls(params FunctionCallContent[] calls)
     {
         var m = new ChatMessageContent(AuthorRole.Assistant, content: null);
         foreach (var c in calls) m.Items.Add(c);
@@ -1724,7 +1724,7 @@ public class ResilientChatCompletionTests
     public async Task Function_call_with_no_text_is_a_usable_response()
     {
         var (sut, inner, _) = Make();
-        inner.Then(FakeChatCompletion.Calls(new FunctionCallContent("SetProfile", "Session", "1")));
+        inner.Then(FakeChatCompletion.WithCalls(new FunctionCallContent("SetProfile", "Session", "1")));
         var r = await sut.GetChatMessageContentsAsync(new ChatHistory());
         Assert.Single(r[0].Items.OfType<FunctionCallContent>());
         Assert.Single(inner.Calls);
@@ -3934,7 +3934,7 @@ public sealed class FakeChatCompletion : IChatCompletionService
 
     public static ChatMessageContent Text(string content) => new(AuthorRole.Assistant, content);
 
-    public static ChatMessageContent Calls(params FunctionCallContent[] calls)
+    public static ChatMessageContent WithCalls(params FunctionCallContent[] calls)
     {
         var m = new ChatMessageContent(AuthorRole.Assistant, content: null);
         foreach (var c in calls) m.Items.Add(c);
