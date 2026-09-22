@@ -259,6 +259,59 @@ LLM 吐散文時想做的九成是講話，不是追問；包成追問會憑空�
 - chip 送出時帶維度前綴：`[風格] 寫實攝影`，讓 LLM 能對回 `asks` 的哪一則。
 - `options[].presetId` 非 null 的選項可點開 preset 抽屜（主規格 §11.1 已有）。
 
+### 5.5 上游內容攔截與重試（新增）
+
+Gemini 有可能對某些輸入**完全不回應**：HTTP 200，但 `candidates` 是 `null`、
+`promptFeedback.blockReason` 有值、`safetyRatings` 與 `blockReasonMessage` 都是 `null`。
+這跟 `OutputSafetyFilter` 是兩回事 —— 那是我們檢查 LLM 的輸出，這是 LLM 根本拒絕產出。
+
+實測（2026-09-22，用子專案 1 的 `demo.py`，語料庫 19,354 筆 presets，每格 3 次）：
+
+| 查詢 | 被擋 |
+| :--- | ---: |
+| 少女＋熱褲 | 3/6 |
+| 成年女性＋熱褲 | 2/6 |
+| 少女＋泳裝 | 2/3 |
+| 成年女性＋泳裝 | 0/3 |
+| 少女／男性／風景／載具，一般服裝 | 0/18 |
+
+三個結論：
+
+1. 觸發因子是**暴露性服裝**，不是年齡用詞。加「成年」有幫助但不消除。
+2. 攔截發生在**組裝**階段——送進去的 prompt 含檢索到的候選片段。分析階段從沒被擋過。
+3. 是**機率性**的，同一份輸入重送有時會過。
+
+#### 重試規則（C# client 層必須實作）
+
+| 情況 | 判定 | 處置 |
+| :--- | :--- | :--- |
+| `blockReason` 或 `finishReason` 屬 `PROHIBITED_CONTENT`／`SAFETY`／`BLOCKLIST`／`JAILBREAK`／`IMAGE_SAFETY`／`MODEL_ARMOR` | 內容攔截 | **不重試** |
+| `finishReason = MAX_TOKENS`；或空 `candidates` 且無 `blockReason` | 與內容無關 | 重試，預設 3 次 |
+| 429／5xx／逾時 | 傳輸 | 既有的指數退避重試 |
+
+**內容攔截不得重試。** 攔截是機率性的，對同一份輸入重送到通過為止，等於利用分類器的
+不確定性規避安全判定，而實測顯示這裡的判定牽涉未成年與暴露服裝的組合。`safetySettings`
+也不是出口：`PROHIBITED_CONTENT` 不在可調的 `HarmCategory` 之列。
+
+#### 攔截時的對話行為
+
+比照 §5.2 `OutputSafetyFilter` 命中：發 `blocked` 事件、Terminate、**任何計數器都不動**
+（不算 `DiscussStreak`、不算 `AskCount`、不計 tool 預算）。使用者不該因為上游攔截損失輪次。
+
+訊息要說清楚三件事：這是上游模型的判定**不是程式錯誤**、**不是知識庫的問題**、
+**下一步在使用者手上**（由人決定要不要改寫自己的需求）。
+
+#### Audit
+
+`event_type = 'Blocked_Upstream'`，`payload` 記 `blockReason` 與發生階段。必須與既有的
+`Blocked_NSFW`（我們自己擋的）**分開**——兩者混在一起會讓「合規」指標失真：一個是我們的
+防線生效，一個是我們把上游不接受的東西送出去了。
+
+#### 參考實作
+
+`scripts/pipeline/gemini_client.py` 的 `UnusableResponse.is_content_block` 與
+`generate_structured` 的重試條件；使用者訊息見 `scripts/demo.py::unusable_message`。
+
 ## 6. 對話記憶
 
 ### 6.1 `Session.PresetLedger`

@@ -39,6 +39,7 @@ from demo_render import (  # noqa: E402
 from pipeline.config import FACETS_PATH  # noqa: E402
 from pipeline.db import connect  # noqa: E402
 from pipeline.facets import FacetCatalog, load_facets  # noqa: E402
+from pipeline.gemini_client import UnusableResponse  # noqa: E402
 from pipeline.retrieval import (  # noqa: E402
     Candidate,
     annotate_coverage,
@@ -329,6 +330,27 @@ def build_view(
     )
 
 
+
+def unusable_message(exc: UnusableResponse) -> str:
+    """把 Gemini 唯一給出的那點資訊翻成使用者看得懂的話。
+
+    內容攔截不重試（見 pipeline/gemini_client.py 的 UnusableResponse），所以這裡要講
+    清楚這不是程式壞掉，而且下一步在使用者手上——由人決定要不要改寫自己的需求。
+    非攔截的情形 client 層已經重試過了，叫使用者改描述只會誤導。
+    """
+    if exc.is_content_block:
+        reason = exc.block_reason or exc.finish_reason
+        return "\n".join([
+            f"Gemini 判定這次的內容不該生成，已攔截（block_reason={reason}）。",
+            "      這不是程式錯誤，也不是知識庫的問題——攔截發生在把提示詞交給 Gemini 組裝的那一步。",
+            "      實測上「未成年人物＋暴露性服裝」的組合最容易觸發，換個說法再試通常就過了。",
+        ])
+    return "\n".join([
+        f"Gemini 連續回了無法使用的回應，重試已用盡（finish_reason={exc.finish_reason or 'unknown'}）。",
+        "      這與內容無關，稍後再跑一次即可。",
+    ])
+
+
 def run_once(query: str, conn, client, catalog: FacetCatalog, args, p: Palette) -> None:
     print(p.dim(f"\n[1/3] 分析：{query}"))
     analysis = client.generate_structured(build_analysis_prompt(query, catalog), AnalysisResult)
@@ -386,7 +408,11 @@ def main(argv: list[str] | None = None) -> None:
 
     with connect() as conn:
         if args.query:
-            run_once(args.query, conn, client, catalog, args, p)
+            try:
+                run_once(args.query, conn, client, catalog, args, p)
+            except UnusableResponse as exc:
+                print(p.warn(unusable_message(exc)))
+                raise SystemExit(2) from None
             return
         print(p.head("互動模式：輸入中文描述後按 Enter，Ctrl+C 離開。"))
         while True:
@@ -398,6 +424,8 @@ def main(argv: list[str] | None = None) -> None:
             if q:
                 try:
                     run_once(q, conn, client, catalog, args, p)
+                except UnusableResponse as exc:
+                    print(p.warn(unusable_message(exc)))
                 except Exception as exc:  # 互動模式：印錯誤、留在迴圈裡，不能讓一次壞回應把整個 session 弄掛
                     print(p.warn(f"發生錯誤，這一輪取消：{exc}"))
 

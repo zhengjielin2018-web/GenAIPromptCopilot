@@ -418,3 +418,23 @@ def test_main_parses_new_flags(monkeypatch):
     assert captured["query"] == "山上的日出"
     a = captured["args"]
     assert (a.k_covered, a.k_missing, a.top_histories, a.verbose) == (7, 2, 1, True)
+
+
+def test_unusable_message_for_a_content_block_says_it_is_not_a_crash():
+    """內容攔截是預期內的狀況。使用者要看懂「這是 Gemini 擋的、我可以換個說法」，
+    而不是一串 traceback 或 finish_reason=unknown。"""
+    from pipeline.gemini_client import UnusableResponse
+
+    msg = demo.unusable_message(UnusableResponse("x", block_reason="PROHIBITED_CONTENT"))
+    assert "PROHIBITED_CONTENT" in msg
+    assert "換個說法" in msg
+
+
+def test_unusable_message_for_a_truncated_response_says_retries_were_exhausted():
+    """非內容攔截已經在 client 層重試過了；訊息不該叫使用者去改描述。"""
+    from pipeline.gemini_client import UnusableResponse
+
+    msg = demo.unusable_message(UnusableResponse("x", finish_reason="MAX_TOKENS"))
+    assert "MAX_TOKENS" in msg
+    assert "重試" in msg
+    assert "換個說法" not in msg
