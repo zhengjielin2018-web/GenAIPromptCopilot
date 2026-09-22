@@ -194,7 +194,8 @@ class Stratum:
 2. `python seed_data.py --from structure --max-records 500` → `embed` → `load` →
    `python coverage_report.py`
 3. 檢查 profile 分布、各 (profile, 維度) 候選池是否接近 §2／§6 的估算。偏離太多就回頭
-   調整 §6 配額表（改程式碼常數），或用 `--quota-scale` 重跑 fetch 補特定分層
+   調整 §6 配額表——`--quota-scale` 是全域的九層等比縮放，沒有單獨補某一層的旋鈕，要
+   補特定分層得直接改 `pipeline/strata.py::STRATA` 裡那一層的 `quota`（見 §6）
 4. 確認無誤後跑全量 `python seed_data.py --from structure`（不限 `--max-records`）
 
 用真實 LLM 分類的 500 筆抽樣外推，比任何關鍵字啟發式準，成本僅約 500 次結構化呼叫

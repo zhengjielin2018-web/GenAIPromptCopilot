@@ -1,7 +1,17 @@
 import json
 
+import pytest
+
 import pipeline.fetch_civitai as fetch_civitai
-from pipeline.fetch_civitai import _default_stratum_state, _migrate_to_v2, _remaining_quota, run_fetch
+from pipeline.fetch_civitai import (
+    StateFileError,
+    _default_stratum_state,
+    _load_state,
+    _migrate_to_v2,
+    _remaining_quota,
+    _save_state,
+    run_fetch,
+)
 from pipeline.jsonl import append_jsonl, read_jsonl
 from pipeline.strata import STRATA
 
@@ -186,3 +196,203 @@ def test_main_wires_each_stratum_with_own_params_and_is_idempotent_on_rerun(tmp_
     fetch_civitai.main(["--quota-scale", "0.01"])
     assert fake.calls == []
     assert len(list(read_jsonl(raw))) == expected_total
+
+
+# --- I-3: 中途當機不能靜默超額重抓 -----------------------------------------
+
+
+class PagedInfiniteClient:
+    """呼應 FakeMainClient：資料源永遠有更多可抓、不靠 cursor 自然耗盡。每頁固定
+    page_size 筆，item id 由 (頁號, 頁內位置) 決定性算出，讓不同 instance 從同一個
+    cursor resume 時能接上同一組資料（模擬同一個一直有貨的遠端資料源）。crash_after
+    有給值時，抓到第 crash_after 筆後丟例外模擬中途當機（例外在該筆已被 run_fetch
+    寫入之後、要求下一筆時才丟出，符合「crash 發生在兩次頁界存檔之間」的最壞情況）。"""
+
+    def __init__(self, page_size, crash_after=None):
+        self.page_size = page_size
+        self.crash_after = crash_after
+        self.calls = []
+        self._count = 0
+
+    def iter_images(self, *, limit=200, cursor=None, base_models=None,
+                     sort="Most Reactions", period="AllTime"):
+        self.calls.append(cursor)
+        page_no = 0 if cursor is None else int(cursor)
+        while True:
+            page_cursor = None if page_no == 0 else str(page_no)
+            for pos in range(self.page_size):
+                if self.crash_after is not None and self._count >= self.crash_after:
+                    raise RuntimeError("simulated crash")
+                self._count += 1
+                yield {"id": page_no * self.page_size + pos + 1}, page_cursor
+            page_no += 1
+
+
+def test_crash_midstratum_persists_progress_at_page_boundaries(tmp_path):
+    """finding I-3：run_fetch 原本只在 return 時存檔一次；如果 process 在跑到一半當機，
+    已經寫進 raw 的列沒有對應的 state 紀錄，重跑會把整層配額（或更多）重抓一次，
+    且 resume cursor 會整個重置回最初（因為連 cursor 都沒存），沒辦法接上原本的分頁。
+
+    這裡用一個「資料永遠抓不完」的來源（呼應 main() 測試用的 FakeMainClient）模擬
+    「當機前已經抓了好幾頁」，驗證：(a) 當機當下磁碟上已寫入的列在下次啟動時不會
+    被要求整層重抓（resume 的 cursor 不是最初的 None，而是當機前最後一次頁界存檔
+    記下的中間頁）；(b) 用 main() 會用的「quota - 已存 fetched」算出的 remaining
+    重跑，總筆數收斂在 quota 附近，不是 quota 的兩倍或整層從頭再抓一次。"""
+    page_size = 2
+    out, state = tmp_path / "images.jsonl", tmp_path / "state.json"
+    crashing = PagedInfiniteClient(page_size, crash_after=5)
+    with pytest.raises(RuntimeError):
+        run_fetch(crashing, max_items=8, out_path=out, state_path=state, stratum_key="sd15/year")
+
+    # 當機當下，前面已經寫過的列都已經在磁碟上——這是既有事實，fix 不是要避免這個
+    on_disk_after_crash = [r["id"] for r in read_jsonl(out)]
+    assert on_disk_after_crash == [1, 2, 3, 4, 5]
+
+    doc = json.loads(state.read_text())
+    st = doc["strata"]["sd15/year"]
+    # 頁界存檔生效：state 記到的 cursor 不是最初的 None（否則重跑等於從頭整層重抓），
+    # 且 fetched 有被墊高到接近當機當下的實際進度（允許最後一頁的既存 drift，
+    # 但不可以是 0——0 就代表完全沒有頁界存檔生效，等同修 I-3 前的行為）。
+    assert st["cursor"] != crashing.calls[0]
+    assert st["cursor"] is not None
+    assert st["fetched"] > 0
+    assert st["done"] is False
+
+    # 重跑：比照 main() 用「quota - 已存 fetched」算這次還要抓多少，而不是整份 quota。
+    quota = 8
+    remaining = quota - st["fetched"]
+    resumed = PagedInfiniteClient(page_size)  # 全新 instance，模擬重新啟動的 process
+    n = run_fetch(resumed, max_items=remaining, out_path=out, state_path=state, stratum_key="sd15/year")
+
+    # 沒有整層重抓：resume 用的是頁界存下的 cursor，不是最初的 None
+    assert resumed.calls[0] != crashing.calls[0]
+    assert resumed.calls[0] is not None
+
+    # 這次只新增 remaining 筆（不是 quota 那麼多），且總筆數收斂在 quota 附近，
+    # 而不是「當機前的量 + 完整 quota」（那才是「等於沒修」的徵兆，會是 5 + 8 = 13 這種量級）
+    assert n == remaining
+    total_rows = len(list(read_jsonl(out)))
+    assert total_rows < 5 + quota  # 遠低於「當機進度 + 再整層重抓一次」的量級
+    assert total_rows <= quota + page_size  # 只允許至多一頁的 drift，符合頁界存檔（非逐筆存檔）的設計
+
+
+def test_fetch_saves_state_at_each_page_boundary_not_just_at_return(tmp_path):
+    """更直接地釘住「頁界存檔」這個機制本身：用一個不會當機、但會在每次 iter_images
+    被呼叫時記錄呼叫當下 state.json 內容的假 client，驗證進到第二頁時 state 已經
+    被存過一次（cursor 指到第二頁），不用等到整層抓完或呼叫端拿到回傳值才看得到。"""
+    calls_seen_state = []
+
+    class ObservingClient:
+        def iter_images(self, *, limit=200, cursor=None, base_models=None,
+                         sort="Most Reactions", period="AllTime"):
+            pages = {None: ([{"id": 1}, {"id": 2}], "c2"), "c2": ([{"id": 3}, {"id": 4}], None)}
+            c = cursor
+            while True:
+                items, nxt = pages[c]
+                for it in items:
+                    # 讀取「當下」state.json 的內容（在這個 item 被 run_fetch 處理之前）
+                    calls_seen_state.append(
+                        json.loads(state.read_text()) if state.exists() else None
+                    )
+                    yield it, c
+                if nxt is None:
+                    return
+                c = nxt
+
+    out, state = tmp_path / "images.jsonl", tmp_path / "state.json"
+    run_fetch(ObservingClient(), max_items=10, out_path=out, state_path=state, stratum_key="s1")
+
+    # 四筆讀取順序依序對應 id1/id2（頁 None）、id3/id4（頁 c2）。邊界存檔是 run_fetch
+    # 收到「新頁的第一筆」之後才做的動作，所以要等到抓 id4（頁 c2 的第二筆）之前，
+    # 才看得到「id3 觸發的 None -> c2 邊界存檔」已經生效；抓 id3 之前 state 仍不存在。
+    assert calls_seen_state[0] is None
+    assert calls_seen_state[1] is None
+    assert calls_seen_state[2] is None
+    state_before_page2_second_item = calls_seen_state[3]
+    assert state_before_page2_second_item is not None
+    assert state_before_page2_second_item["strata"]["s1"]["fetched"] == 2
+    assert state_before_page2_second_item["strata"]["s1"]["cursor"] == "c2"
+
+
+# --- I-4: state.json 非原子寫入 + 缺欄位就崩潰 -------------------------------
+
+
+def test_save_state_writes_atomically_so_a_failed_replace_does_not_corrupt_target(tmp_path, monkeypatch):
+    """finding I-4(a)：_save_state 原本直接 write_text（truncate-then-write），
+    寫到一半被中斷會留下截斷或空的 state.json。改成寫暫存檔後 os.replace 原子換入；
+    這裡模擬「暫存檔寫完了，但 rename 那一步失敗」，驗證目標檔案完全沒被動過。"""
+    path = tmp_path / "state.json"
+    original_doc = {"version": 2, "strata": {"s1": {"cursor": None, "fetched": 1, "done": False}}}
+    path.write_text(json.dumps(original_doc), encoding="utf-8")
+    original_text = path.read_text(encoding="utf-8")
+
+    def boom(*_a, **_kw):
+        raise OSError("simulated crash during rename")
+
+    monkeypatch.setattr(fetch_civitai.os, "replace", boom)
+
+    with pytest.raises(OSError):
+        _save_state(path, {"version": 2, "strata": {"s1": {"cursor": "x", "fetched": 2, "done": False}}})
+
+    assert path.read_text(encoding="utf-8") == original_text
+
+
+def test_load_state_raises_clear_error_not_bare_json_decode_error_on_empty_file(tmp_path):
+    """finding I-4(b)：空檔（例如上次寫入被中斷留下的截斷檔）原本會讓
+    json.loads 丟 JSONDecodeError 的裸 traceback。改成丟出有指引的錯誤，
+    且不能靜默把它當成空 state 重置掉（那等於幫使用者做了「刪 state.json」這個
+    finding 裡明講會導致整層重抓的危險操作）。"""
+    path = tmp_path / "state.json"
+    path.write_text("", encoding="utf-8")
+    with pytest.raises(StateFileError):
+        _load_state(path)
+
+
+def test_load_state_raises_clear_error_not_bare_json_decode_error_on_truncated_json(tmp_path):
+    path = tmp_path / "state.json"
+    path.write_text('{"version": 2, "strata": {"s1": {"cursor": null,', encoding="utf-8")
+    with pytest.raises(StateFileError):
+        _load_state(path)
+
+
+def test_run_fetch_tolerates_v1_state_missing_done_field(tmp_path):
+    """finding I-4(b)：v1 狀態檔（沒有 version 欄位，整個物件就是 baseline 的狀態）
+    若缺 'done' 欄位，原本 st["done"] 會丟 KeyError。改成 st.get("done", False)。"""
+    out, state = tmp_path / "images.jsonl", tmp_path / "state.json"
+    state.write_text(json.dumps({"cursor": None, "fetched": 5}), encoding="utf-8")  # 沒有 done
+    client = FakeClient({None: ([{"id": 1}], None)})
+    n = run_fetch(client, max_items=10, out_path=out, state_path=state, stratum_key="baseline")
+    assert n == 1
+    doc = json.loads(state.read_text())
+    assert doc["strata"]["baseline"]["fetched"] == 6
+    assert doc["strata"]["baseline"]["done"] is True
+
+
+def test_run_fetch_tolerates_stratum_entry_missing_cursor_and_fetched(tmp_path):
+    """finding I-4(b)：v2 狀態檔裡某層若缺 'cursor'／'fetched'（例如手動編輯過、
+    或未來版本欄位有增減），原本 st["cursor"]／st["fetched"] 會丟 KeyError。"""
+    out, state = tmp_path / "images.jsonl", tmp_path / "state.json"
+    state.write_text(json.dumps({"version": 2, "strata": {"s1": {"done": False}}}), encoding="utf-8")
+    client = FakeClient({None: ([{"id": 1}], None)})
+    n = run_fetch(client, max_items=10, out_path=out, state_path=state, stratum_key="s1")
+    assert n == 1
+    doc = json.loads(state.read_text())
+    assert doc["strata"]["s1"]["fetched"] == 1
+    assert doc["strata"]["s1"]["cursor"] is None
+    assert doc["strata"]["s1"]["done"] is True
+
+
+def test_migrate_to_v2_rejects_unknown_version_with_actionable_error(tmp_path):
+    """finding I-4(c)：version: 3（或其他非 1/2 的值）如果被當成 v1 原地包成
+    baseline 狀態，會把一份格式本來就看不懂的資料當合法資料用，實質上是資料毀損。
+    必須明確拒絕，訊息裡要點名那個意料之外的版本號。"""
+    with pytest.raises(StateFileError) as exc_info:
+        _migrate_to_v2({"version": 3, "strata": {}})
+    assert "3" in str(exc_info.value)
+
+
+def test_load_state_rejects_unknown_version_file(tmp_path):
+    path = tmp_path / "state.json"
+    path.write_text(json.dumps({"version": 3, "strata": {}}), encoding="utf-8")
+    with pytest.raises(StateFileError):
+        _load_state(path)

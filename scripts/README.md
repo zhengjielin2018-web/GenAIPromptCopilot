@@ -25,13 +25,20 @@ Civitai 公開 API → 清洗 → Gemini 結構化 → Gemini embedding → Post
 fetch 階段抓取邏輯見 `pipeline/strata.py` 的 9 層配額表（`baseModels x period`），
 用來解決「同一組固定查詢參數永遠抓到同一批熱門人物向內容」的題材偏斜問題，設計細節見
 [docs/superpowers/specs/2026-09-22-corpus-expansion-design.md](../docs/superpowers/specs/2026-09-22-corpus-expansion-design.md)。
-先用 `--quota-scale` 跑小規模驗證候選池是否符合預期，再跑全量：
+先用已抓好的 raw 小量跑過結構化，跑 `coverage_report.py` 驗證候選池是否符合預期，
+確認沒問題再跑全量結構化（`--quota-scale` 只影響 fetch 階段抓幾筆 raw，候選池要
+structure＋embed＋load 都跑過才量得出來，不能拿 `--quota-scale` 驗證候選池）：
 
     python seed_data.py --from structure --max-records 500   # 先用已抓好的 raw 小量跑過結構化
     python coverage_report.py                                # 檢查候選池與 facet 是否達門檻
     python seed_data.py --from structure                     # 確認沒問題後跑全量結構化
 
-    python seed_data.py --quota-scale 0.5   # fetch 階段只抓每層一半配額，用於快速試跑
+只想快速試跑 fetch 階段（免費）、不想連帶跑到付費的 structure 階段，要單獨呼叫
+fetch 這支模組，**不要**跑不帶 `--from` 的 `seed_data.py`——那會依序跑完 fetch／
+clean／structure／embed／load 全部五個階段，`--max-records` 預設不限筆數，等於把
+這次抓到的所有 clean 紀錄全部送進付費的 Gemini 結構化（約 2,800 次呼叫）：
+
+    python -m pipeline.fetch_civitai --quota-scale 0.5   # 只抓每層一半配額，用於快速試跑 fetch
 
 從某階段起跑：
 
@@ -82,7 +89,9 @@ fetch 階段抓取邏輯見 `pipeline/strata.py` 的 9 層配額表（`baseModel
 
 ## 查看資料庫內容
 
-以下都是唯讀查詢，可以直接貼。
+想看候選池大小、facet 分布是否達門檻，優先用 `python coverage_report.py`——它直接
+算的就是 `retrieval.py` 實際查詢用的池子，不用手動拼 SQL。以下這些是唯讀查詢，留給
+不想跑腳本、只想直接貼指令看資料的人。
 
 總覽：
 
@@ -126,7 +135,7 @@ fetch 階段抓取邏輯見 `pipeline/strata.py` 的 9 層配額表（`baseModel
 
 | 階段 | 讀 | 寫 | 續跑機制 |
 | --- | --- | --- | --- |
-| fetch | Civitai API | `data/raw/images.jsonl` | `state.json` 的 cursor |
+| fetch | Civitai API | `data/raw/images.jsonl` | `state.json` 的各層 cursor |
 | clean | raw | `data/clean/records.jsonl` | 全量重算（便宜） |
 | structure | clean | `data/structured/{histories,presets}.jsonl` | 跳過已有 `source_ref` |
 | embed | structured | `data/embedded/*.jsonl` | 跳過已有 `source_ref`；`--reindex` 重算 |
