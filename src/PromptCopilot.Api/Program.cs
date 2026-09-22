@@ -6,6 +6,7 @@ using Pgvector.Npgsql;
 using PromptCopilot.Api.Configuration;
 using PromptCopilot.Api.Data;
 using PromptCopilot.Api.Llm;
+using PromptCopilot.Api.Orchestration;
 using PromptCopilot.Api.Safety;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -36,6 +37,11 @@ builder.Services.AddSingleton<IChatCompletionService>(sp =>
 builder.Services.AddSingleton(sp => new Denylist(builder.Configuration.GetSection("Safety:Denylist").Get<string[]>() ?? Array.Empty<string>()));
 builder.Services.AddSingleton<SafetyClassifier>();
 builder.Services.AddSingleton<SafetyGuard>();
+builder.Services.AddSingleton(sp => FacetCatalog.Load(Path.Combine(AppContext.BaseDirectory, "Configuration", "facets.yaml")));
+builder.Services.AddSingleton(sp => new SystemPromptBuilder(
+    sp.GetRequiredService<FacetCatalog>(),
+    sp.GetRequiredService<IOptions<OrchestratorOptions>>().Value,
+    Path.Combine(AppContext.BaseDirectory, "Prompts", "system.md")));
 
 var app = builder.Build();
 app.UseSwagger();
