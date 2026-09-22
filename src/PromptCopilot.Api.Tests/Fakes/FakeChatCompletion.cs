@@ -3,22 +3,23 @@ using Microsoft.SemanticKernel.ChatCompletion;
 
 namespace PromptCopilot.Api.Tests.Fakes;
 
-/// <summary>腳本化的 chat completion：每次呼叫吐 Script 的下一項。項目可以丟例外。</summary>
+/// <summary>腳本化的 chat completion：每次呼叫吐 Script 的下一項。項目可以丟例外、可以拿到 kernel 去 invoke plugin 模擬 auto-invoke 的結果。</summary>
 public sealed class FakeChatCompletion : IChatCompletionService
 {
-    public Queue<Func<ChatHistory, IReadOnlyList<ChatMessageContent>>> Script { get; } = new();
+    public Queue<Func<ChatHistory, Kernel?, Task<IReadOnlyList<ChatMessageContent>>>> Script { get; } = new();
     public List<ChatHistory> Calls { get; } = new();
     public IReadOnlyDictionary<string, object?> Attributes { get; } = new Dictionary<string, object?>();
 
-    public FakeChatCompletion Then(Func<ChatHistory, IReadOnlyList<ChatMessageContent>> step) { Script.Enqueue(step); return this; }
+    public FakeChatCompletion ThenAsync(Func<ChatHistory, Kernel?, Task<IReadOnlyList<ChatMessageContent>>> step) { Script.Enqueue(step); return this; }
+    public FakeChatCompletion Then(Func<ChatHistory, IReadOnlyList<ChatMessageContent>> step) => ThenAsync((h, _) => Task.FromResult(step(h)));
     public FakeChatCompletion Then(ChatMessageContent msg) => Then(_ => new[] { msg });
     public FakeChatCompletion Throw(Exception e) => Then(_ => throw e);
 
-    public Task<IReadOnlyList<ChatMessageContent>> GetChatMessageContentsAsync(ChatHistory chatHistory, PromptExecutionSettings? executionSettings = null, Kernel? kernel = null, CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<ChatMessageContent>> GetChatMessageContentsAsync(ChatHistory chatHistory, PromptExecutionSettings? executionSettings = null, Kernel? kernel = null, CancellationToken cancellationToken = default)
     {
         Calls.Add(new ChatHistory(chatHistory));
         if (Script.Count == 0) throw new InvalidOperationException("FakeChatCompletion script exhausted");
-        return Task.FromResult(Script.Dequeue()(chatHistory));
+        return await Script.Dequeue()(chatHistory, kernel);
     }
 
     public IAsyncEnumerable<StreamingChatMessageContent> GetStreamingChatMessageContentsAsync(ChatHistory chatHistory, PromptExecutionSettings? executionSettings = null, Kernel? kernel = null, CancellationToken cancellationToken = default)

@@ -42,6 +42,12 @@ builder.Services.AddSingleton(sp => new SystemPromptBuilder(
     sp.GetRequiredService<FacetCatalog>(),
     sp.GetRequiredService<IOptions<OrchestratorOptions>>().Value,
     Path.Combine(AppContext.BaseDirectory, "Prompts", "system.md")));
+builder.Services.AddSingleton(sp => sp.GetRequiredService<IOptions<OrchestratorOptions>>().Value);
+builder.Services.AddSingleton<AgentKernelFactory>();
+builder.Services.AddSingleton<IPromptOrchestrator>(sp => new AgenticOrchestrator(
+    sp.GetRequiredService<IChatCompletionService>(), sp.GetRequiredService<FacetCatalog>(), sp.GetRequiredService<SafetyGuard>(),
+    sp.GetRequiredService<SystemPromptBuilder>(), sp.GetRequiredService<IAuditSink>(), sp.GetRequiredService<OrchestratorOptions>(),
+    kernelFactory: sp.GetRequiredService<AgentKernelFactory>().Create));
 
 var app = builder.Build();
 app.UseSwagger();
