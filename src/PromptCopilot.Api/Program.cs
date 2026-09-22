@@ -6,6 +6,7 @@ using Pgvector.Npgsql;
 using PromptCopilot.Api.Configuration;
 using PromptCopilot.Api.Data;
 using PromptCopilot.Api.Llm;
+using PromptCopilot.Api.Safety;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.Configure<LlmOptions>(builder.Configuration.GetSection(LlmOptions.Section));
@@ -31,6 +32,9 @@ builder.Services.AddSingleton<IChatCompletionService>(sp =>
     var raw = new GoogleAIGeminiChatCompletionService(llm.Value.Model, llm.Value.ApiKey);
     return new ResilientChatCompletion(raw, llm);
 });
+builder.Services.AddSingleton(sp => new Denylist(builder.Configuration.GetSection("Safety:Denylist").Get<string[]>() ?? Array.Empty<string>()));
+builder.Services.AddSingleton<SafetyClassifier>();
+builder.Services.AddSingleton<SafetyGuard>();
 
 var app = builder.Build();
 app.UseSwagger();
