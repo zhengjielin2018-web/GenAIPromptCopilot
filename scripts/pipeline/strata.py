@@ -18,12 +18,12 @@ class Stratum:
 
 STRATA: tuple[Stratum, ...] = (
     Stratum(key="baseline", base_models=None, period="AllTime", quota=600),
-    Stratum(key="sd15/year", base_models=["SD 1.5"], period="Year", quota=1600),
-    Stratum(key="sdxl10/alltime", base_models=["SDXL 1.0"], period="AllTime", quota=1600),
-    Stratum(key="sdxl10/year", base_models=["SDXL 1.0"], period="Year", quota=1200),
-    Stratum(key="noobai/year", base_models=["NoobAI"], period="Year", quota=1200),
-    Stratum(key="noobai/alltime", base_models=["NoobAI"], period="AllTime", quota=800),
-    Stratum(key="sd15/alltime", base_models=["SD 1.5"], period="AllTime", quota=800),
+    Stratum(key="sd15/year", base_models=["SD 1.5"], period="Year", quota=2200),
+    Stratum(key="sdxl10/alltime", base_models=["SDXL 1.0"], period="AllTime", quota=2600),
+    Stratum(key="sdxl10/year", base_models=["SDXL 1.0"], period="Year", quota=2000),
+    Stratum(key="noobai/year", base_models=["NoobAI"], period="Year", quota=1800),
+    Stratum(key="noobai/alltime", base_models=["NoobAI"], period="AllTime", quota=1200),
+    Stratum(key="sd15/alltime", base_models=["SD 1.5"], period="AllTime", quota=1200),
     Stratum(key="illustrious/alltime", base_models=["Illustrious"], period="AllTime", quota=700),
     Stratum(key="pony/alltime", base_models=["Pony"], period="AllTime", quota=500),
 )
