@@ -258,6 +258,7 @@ LLM 吐散文時想做的九成是講話，不是追問；包成追問會憑空�
 - chip 點選是**填入輸入框可累積**，不是點了就送；否則三個維度要送三次。
 - chip 送出時帶維度前綴：`[風格] 寫實攝影`，讓 LLM 能對回 `asks` 的哪一則。
 - `options[].presetId` 非 null 的選項可點開 preset 抽屜（主規格 §11.1 已有）。
+- 任何 `error` / `blocked`：失敗的訊息保留顯示並標記原因，附「重試」按鈕；按下把原文填回輸入框，使用者可改可直接送（§5.6）。
 
 ### 5.5 上游內容攔截與重試（新增）
 
@@ -295,8 +296,9 @@ Gemini 有可能對某些輸入**完全不回應**：HTTP 200，但 `candidates`
 
 #### 攔截時的對話行為
 
-比照 §5.2 `OutputSafetyFilter` 命中：發 `blocked` 事件、Terminate、**任何計數器都不動**
-（不算 `DiscussStreak`、不算 `AskCount`、不計 tool 預算）。使用者不該因為上游攔截損失輪次。
+比照 §5.2 `OutputSafetyFilter` 命中：發 `blocked` 事件、Terminate、**session 回滾至本輪開始前**（§5.6）。
+回滾涵蓋「任何計數器都不動」（`DiscussStreak`、`AskCount`、tool 預算），還多了一件事：被擋的那句話不留在
+history——否則下一輪 LLM 會看到它，可能再觸發一次。使用者不該因為上游攔截損失輪次。
 
 訊息要說清楚三件事：這是上游模型的判定**不是程式錯誤**、**不是知識庫的問題**、
 **下一步在使用者手上**（由人決定要不要改寫自己的需求）。
@@ -311,6 +313,77 @@ Gemini 有可能對某些輸入**完全不回應**：HTTP 200，但 `candidates`
 
 `scripts/pipeline/gemini_client.py` 的 `UnusableResponse.is_content_block` 與
 `generate_structured` 的重試條件；使用者訊息見 `scripts/demo.py::unusable_message`。
+
+### 5.6 錯誤復原：回滾、內部重試、手動重試（新增）
+
+Gemini 會出錯：傳輸層（429／5xx／逾時）、空回應（§5.5 的非攔截情形）、內容攔截（§5.5）。
+主規格 §4.6 對逾時說「session 狀態回滾到本輪開始前」，但只針對逾時；其他失敗要嘛回結構化錯誤給 LLM，
+要嘛沒講。多輪對話下一個 session 可能累積十幾輪的狀態，**任何一種失敗都不能把它毀掉**。
+
+#### 一輪是一個交易
+
+```text
+RunTurnAsync(session, text, ct):
+  snapshot = session.Snapshot()     // AskCount, DiscussStreak, Status, Profile, AutoFill,
+                                    // FacetStates, PresetLedger, ChatHistory.Count
+  try:
+    agent loop …
+    終止型 tool 成功 → 交易成立，snapshot 丟棄
+  catch (任何失敗，含 ct 取消):
+    session.Restore(snapshot)
+    發 error 或 blocked 事件
+```
+
+回滾之後 session 跟這一輪沒發生過一樣：使用者訊息不在 history、計數器沒動、ledger 沒多東西。
+這把主規格 §4.6 的逾時回滾與 §5.5 的「計數器不動」一般化成同一個機制——不用逐項講哪個不動，整個 session 都回去了。
+
+`PresetLedger` 也回滾。重試會重撈，代價是一次 embed + 幾條 SQL，換來「一輪 = 原子」這個好講的性質。
+`ChatHistory` 的 snapshot 是訊息數、restore 是截回該長度；其餘欄位淺複製，都很便宜。
+
+#### 內部重試：三層，對應 Python 端的三層
+
+| 層 | 觸發 | 次數 | 對應 `gemini_client.py` |
+| :--- | :--- | :--- | :--- |
+| 傳輸 | 429／5xx／逾時 | **3 次**，退避 1s／2s／4s | `_call` 的 6 次。互動場景每輪有 3–4 次上游呼叫，6 次退避會吃掉整輪預算 |
+| 空回應 | 200 但無可用內容、`MAX_TOKENS`、無 `blockReason` | **3 次** | `UNUSABLE_ATTEMPTS = 3` |
+| 內容攔截 | §5.5 的那組 reason | **0 次** | `is_content_block` → 不重試 |
+
+分類邏輯放在一個 `IChatCompletionService` 的 decorator 裡，跟 connector 無關——§4.8 說 connector 還沒選，
+而 Google connector 與 OpenAI 相容端點回「被擋」的形狀不同（前者 `promptFeedback.blockReason`，
+後者大概是 `finish_reason: content_filter`）。這是 C# 版的 `_response_problem`。
+
+**逾時跟著調**：單輪 60s → **120s**。一輪有 1 次 embed + 2–3 次 LLM 呼叫，每次最多重試 3 次加退避，60s 不夠。
+退避等待吃同一個 `CancellationToken`：token 一到就停止重試、回滾，不會出現「逾時了還在退避」。
+
+| 組態鍵 | 預設 |
+| :--- | :--- |
+| `Llm:TransportRetries` | 3 |
+| `Llm:UnusableRetries` | 3 |
+| `Orchestrator:TurnTimeoutSeconds` | 120 |
+
+#### 手動重試：不加端點、不分原因
+
+內部重試耗盡或被攔截 → 回滾 → 發事件。session 已經回到本輪開始前，**再送一次同一段文字跟第一次送完全等價**：
+不需要 `/retry` 端點，也沒有「重試會不會重複計數」的問題——沒有東西可以被重複計。
+
+事件不分 `error` 或 `blocked`，前端一律：失敗的訊息保留顯示並標記原因，附「重試」按鈕；按下把**原文填回輸入框**，
+使用者可改可直接送。輸入什麼是使用者的決定——不給按鈕他也只是重打一次，區分只是做樣子。
+
+這跟 §5.5「內容攔截不得重試」不衝突：那條管的是**系統自動**重送同一份輸入到過為止；使用者自己決定再送是他的判斷，
+一次一則，每則都有 audit。
+
+`error` 事件維持主規格 `{ code, message }`，不加 `retryable` 欄位。
+
+#### 前端也要回滾
+
+失敗前已串出去的 `tool_call` 卡片、`dimensions` 更新都是這一輪的半成品。主規格 §11.3 的 reducer 是純函式，
+做法對稱：收到 `session` 事件（輪次開始）時 snapshot store，收到 `error` / `blocked` 時 restore。
+後端回滾、前端回滾，兩邊一致。
+
+#### Audit
+
+一輪失敗寫**一筆** `Turn_Failed`，`payload` 記 `{ stage, errorClass, attempts }`。每次內部重試不各寫一筆，會淹掉有用的紀錄。
+`Blocked_Upstream` 維持 §5.5 的定義，不併進來。
 
 ## 6. 對話記憶
 
@@ -416,6 +489,14 @@ history：
 - call args 壓縮後 `options` 無 `tags`
 - 超過 10 輪時最舊的被丟，system message 保留
 
+錯誤復原（§5.6）：
+- 任一階段拋例外 → session 所有欄位等於 snapshot，`ChatHistory.Count` 回到輪次開始，`PresetLedger` 無本輪新增
+- 終止型 tool 成功後再拋例外（例如 SSE 寫入失敗）→ 不回滾，狀態已提交
+- decorator 分類：內容攔截 reason → 不重試、拋 `UpstreamBlocked`；空回應 → 重試至 `UnusableRetries` 次；429／5xx → 重試至 `TransportRetries` 次；每一類用 fake `IChatCompletionService` 各一案例
+- 退避等待中 `CancellationToken` 取消 → 立即停止、回滾，不再打下一次
+- 失敗後重送同一段文字 → 計數器、history 長度、ledger 與首次送出時完全相同
+- 失敗一輪只寫一筆 `Turn_Failed`，`attempts` 等於實際嘗試次數
+
 ### 8.2 契約測試（主規格 §12.2）
 
 `Discuss` 與改版 `AskUser` 的結構化輸出形狀：真打 Gemini，只斷言 schema。
@@ -429,6 +510,9 @@ history：
 5. 「一個少女」六缺五 → 第一次 `AskUser` 問三個維度、第二次問剩下的
 6. 「都你決定」→ 該輪直接定稿，沒有中間的 `Discuss`
 7. 定稿後說「風格改成動漫」→ LLM 用 `FinalizePrompt` 不是 `Discuss`（或被 §4.4 拒絕後改用）
+8. 以 fake connector 讓第二次 LLM 呼叫 500 兩次後成功 → 使用者無感，audit 無 `Turn_Failed`
+9. 讓它連續失敗超過重試次數 → `error` 事件、儀表板回到輪次開始、按「重試」後正常完成、`AskCount` 只算一次
+10. 送出會觸發上游攔截的描述 → `blocked` 事件、訊息保留、按「重試」原文回到輸入框、改寫後送出正常完成
 
 ## 9. 主規格改寫清單
 
@@ -440,13 +524,15 @@ history：
 | §4.3 工具清單組裝規則 | 換成 §3.3；`wantsAutoComplete` 命中同時移除 `Discuss` |
 | §4.4 Session 狀態機 | 加 `DiscussStreak`、`PresetLedger`；狀態轉移表換成 §3.4；「`Finalized` 後使用者要求修改」那條補「純討論走 `Discuss`」 |
 | §4.5 Filters | `TerminalToolFilter` 加 `Discuss` 與 §4.4 檢查；`OutputSafetyFilter` 範圍換成 §5.2 |
-| §4.6 失敗模式處理 | 第一列換成 §5.3；新增「`Finalized` 下 `Discuss` 變更 facet」與「`asks` 清洗後為空」兩列 |
+| §4.6 失敗模式處理 | 第一列換成 §5.3；新增「`Finalized` 下 `Discuss` 變更 facet」與「`asks` 清洗後為空」兩列；逾時那列的回滾一般化成所有失敗（§5.6）；新增 LLM 呼叫三層重試列；逾時 60s → 120s |
 | §4.7 Chat history 修剪 | 換成 §6.3 |
+| §7 資料模型 | `audit_logs.event_type` 加 `Turn_Failed`、`Blocked_Upstream` |
 | §4.9 System prompt | 加 §6.2 的注入段；加兩條要求：使用者描述題材時不得 `Discuss` 要推進；`Finalized` 後 facet 有變必須 `FinalizePrompt` |
 | §5.4 Facet 四態 | 「`AutoFill` 一旦為 true 保持」後補一句：使用者透過討論把某項變成 `covered` 或 `waived`，`AutoFill` 即管不到它 |
 | §6.2 輸出側 | 範圍換成 §5.2；命中時的計數器規則 |
-| §10.2 SSE 事件 | `final` 換成 §5.1 |
-| §11.1 版面 | 追問卡多維度版；`message` 氣泡與參考方向；chip 累積與前綴（§5.4） |
+| §10.2 SSE 事件 | `final` 換成 §5.1；`error` / `blocked` 的前端反應改為「保留訊息 + 重試按鈕」（§5.6） |
+| §11.1 版面 | 追問卡多維度版；`message` 氣泡與參考方向；chip 累積與前綴；失敗訊息的重試按鈕（§5.4） |
+| §11.3 狀態管理 | reducer 加 turn snapshot / restore（§5.6） |
 | §12.1 / §12.3 | 補 §8.1 / §8.3 |
 | §14 子專案 2 驗收 | 「追問 → 回答 → 定稿」改成「追問 → 討論 → 回答 → 定稿 → 討論 → 修改」 |
 | §15 決定紀錄 | 加 §10 的各條 |
@@ -469,6 +555,10 @@ history：
 | ledger 只收 presets | 是 | histories 是參考不是選項，不會被回頭引用 |
 | history 截斷 | 最近 10 輪 | session 事實都在 ledger / `FacetStates` / `LastFinal`，history 只需最近脈絡 |
 | session 總輪次上限 | 不加 | 純成本護欄，既有設計就沒有，不在本次範圍 |
+| 一輪失敗的處理 | 回滾至本輪開始前，所有失敗一律 | 一般化主規格 §4.6 的逾時回滾；「不全毀」靠原子性保證，不靠逐項列舉哪個欄位不動 |
+| 手動重試 | 不加端點；不分 `error` / `blocked` 一律給重試按鈕，原文填回輸入框 | session 已回滾，重送等價首次送出；不給按鈕使用者也只是重打一次，區分是做樣子。§5.5 的「不得重試」管的是系統自動重送，不是使用者的決定 |
+| 傳輸重試次數 | 3（Python 管線是 6） | 互動場景每輪 3–4 次上游呼叫，6 次退避會吃掉整輪預算 |
+| 單輪逾時 | 120s（原 60s） | 給三層重試留空間；退避吃同一個 `CancellationToken`，不會逾時了還在等 |
 
 ## 11. 已知限制
 
@@ -477,3 +567,5 @@ history：
 - **`Discuss` 的 `options` 是 LLM 自己挑的**，程式只驗 `presetId` 存在，不驗 label 跟 preset 內容相符。跟單輪 demo 的「借用驗證是字面比對」同一類限制。
 - **history 截斷 10 輪是拍腦袋的數字**，要看 eval 才知道對不對。
 - **每個討論回合多一次分類呼叫**是 A 方案的固定成本，長對話的成本線性成長。
+- **重試按鈕對確定性攔截無效**：輸入側 denylist 命中，原文重送必然再被擋。按鈕留著是為了行為一致，使用者按了會再看到同一則攔截訊息，然後自己改。
+- **前端整頁重載後 session 狀態拿不回來**：session 在 `IMemoryCache` 還活著（2 小時），但主規格沒有 `GET /api/sessions/{id}` 讓前端重建畫面。不在本次範圍，但跟「不全毀」是同一類問題，子專案 3 要處理。
