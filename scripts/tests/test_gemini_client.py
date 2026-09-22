@@ -115,3 +115,82 @@ def test_generate_structured_raises_unusable_response_when_text_is_none():
     with pytest.raises(UnusableResponse) as ei:
         client.generate_structured("p", Out)
     assert "SAFETY" in str(ei.value)
+
+
+class _Feedback(SimpleNamespace):
+    pass
+
+
+def _blocked_sdk(*, block_reason=None, finish_reason=None, succeed_after=None):
+    """回 200 但沒有文字的假 SDK。succeed_after=N 時，第 N+1 次呼叫改回正常文字。"""
+    calls = []
+
+    class models:
+        @staticmethod
+        def generate_content(**kwargs):
+            calls.append(kwargs)
+            if succeed_after is not None and len(calls) > succeed_after:
+                return SimpleNamespace(text='{"title": "雨夜", "n": 3}')
+            return SimpleNamespace(
+                text=None,
+                candidates=([SimpleNamespace(finish_reason=finish_reason)] if finish_reason else None),
+                prompt_feedback=(_Feedback(block_reason=block_reason) if block_reason else None),
+            )
+
+    return SimpleNamespace(models=models), calls
+
+
+def test_unusable_response_carries_the_block_reason_instead_of_unknown():
+    """Gemini 唯一給出的資訊就是 block_reason；把它吞成 unknown 等於讓使用者無從判斷
+    是該換個說法、還是程式壞了。"""
+    from pipeline.gemini_client import UnusableResponse
+
+    sdk, _ = _blocked_sdk(block_reason="PROHIBITED_CONTENT")
+    with pytest.raises(UnusableResponse) as ei:
+        _client(sdk.models).generate_structured("p", Out)
+    assert "PROHIBITED_CONTENT" in str(ei.value)
+    assert ei.value.block_reason == "PROHIBITED_CONTENT"
+    assert ei.value.is_content_block
+
+
+def test_generate_structured_does_not_retry_a_content_block():
+    """攔截是機率性的，重送到過為止等於規避安全判定。只送一次。"""
+    from pipeline.gemini_client import UnusableResponse
+
+    sdk, calls = _blocked_sdk(block_reason="PROHIBITED_CONTENT")
+    with pytest.raises(UnusableResponse):
+        _client(sdk.models).generate_structured("p", Out)
+    assert len(calls) == 1
+
+
+def test_generate_structured_retries_a_truncated_response():
+    """MAX_TOKENS 截斷跟內容無關，重送是正當的。"""
+    sdk, calls = _blocked_sdk(finish_reason="MAX_TOKENS", succeed_after=2)
+    assert _client(sdk.models).generate_structured("p", Out).n == 3
+    assert len(calls) == 3
+
+
+def test_generate_structured_retries_an_empty_response_with_no_block_reason():
+    sdk, calls = _blocked_sdk(succeed_after=1)
+    assert _client(sdk.models).generate_structured("p", Out).n == 3
+    assert len(calls) == 2
+
+
+def test_generate_structured_gives_up_on_repeated_truncation():
+    from pipeline.gemini_client import UnusableResponse
+
+    sdk, calls = _blocked_sdk(finish_reason="MAX_TOKENS")
+    with pytest.raises(UnusableResponse) as ei:
+        _client(sdk.models).generate_structured("p", Out)
+    assert not ei.value.is_content_block
+    assert len(calls) > 1
+
+
+def test_unusable_response_treats_safety_as_a_content_block_too():
+    from pipeline.gemini_client import UnusableResponse
+
+    sdk, calls = _blocked_sdk(block_reason="SAFETY")
+    with pytest.raises(UnusableResponse) as ei:
+        _client(sdk.models).generate_structured("p", Out)
+    assert ei.value.is_content_block
+    assert len(calls) == 1

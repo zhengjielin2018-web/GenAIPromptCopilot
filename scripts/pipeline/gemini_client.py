@@ -20,9 +20,34 @@ BATCH_SIZE = 32
 TaskType = Literal["RETRIEVAL_DOCUMENT", "RETRIEVAL_QUERY"]
 
 
+# Gemini 判定「這個內容不該生成」的理由。可能出現在 prompt_feedback.block_reason
+# （擋輸入）或 candidates[0].finish_reason（擋輸出）。
+CONTENT_BLOCK_REASONS: frozenset[str] = frozenset({
+    "PROHIBITED_CONTENT", "SAFETY", "IMAGE_SAFETY", "BLOCKLIST", "JAILBREAK", "MODEL_ARMOR",
+})
+UNUSABLE_ATTEMPTS = 3  # 非內容攔截的空回應重試次數（傳輸錯誤另有 _call 的 6 次）
+
+
 class UnusableResponse(Exception):
-    """模型回了 200 但沒有可用的文字（安全性攔截、MAX_TOKENS 截斷、空 candidate）。
-    這不是傳輸錯誤，retry 沒有意義——同一份輸入重送結果一樣，呼叫端應該跳過這筆。"""
+    """模型回了 200 但沒有可用的文字。
+
+    `is_content_block` 為真代表 Gemini 判定這個內容不該生成。**這種不重試**：
+    攔截是機率性的（實測同一份輸入 2/3 被擋、1/3 通過），重送到過為止等於利用
+    分類器的不確定性規避安全判定。呼叫端該做的是告訴使用者換個說法。
+
+    其餘情形（MAX_TOKENS 截斷、空 candidate）與內容無關，重試是正當的，
+    由 generate_structured 自己重試，呼叫端不必處理。
+    """
+
+    def __init__(self, message: str, *, block_reason: str | None = None,
+                 finish_reason: str | None = None):
+        super().__init__(message)
+        self.block_reason = block_reason
+        self.finish_reason = finish_reason
+
+    @property
+    def is_content_block(self) -> bool:
+        return bool({self.block_reason, self.finish_reason} & CONTENT_BLOCK_REASONS)
 
 
 
@@ -32,13 +57,28 @@ def _is_transient(e: Exception) -> bool:
     return isinstance(e, (httpx.TimeoutException, httpx.TransportError))
 
 
-def _finish_reason(resp) -> str:
-    """從回應裡挖出 finish_reason 供錯誤訊息使用；挖不到就回 unknown，不要因為
-    取錯誤訊息本身再炸一次。"""
-    try:
-        return str(resp.candidates[0].finish_reason)
-    except Exception:  # noqa: BLE001 - 純診斷用途
-        return "unknown"
+def _name(value) -> str | None:
+    """列舉轉成純字串（BlockedReason.PROHIBITED_CONTENT → "PROHIBITED_CONTENT"）。"""
+    if value is None:
+        return None
+    return str(getattr(value, "value", value))
+
+
+def _response_problem(resp) -> tuple[str | None, str | None]:
+    """挖出 (block_reason, finish_reason)。被擋掉的輸入 candidates 會是 None，
+    真正的理由只在 prompt_feedback 裡——早期版本只看 candidates，等於把它丟掉。
+    取診斷資訊本身不得再炸一次，所以全程 getattr。"""
+    feedback = getattr(resp, "prompt_feedback", None)
+    block = _name(getattr(feedback, "block_reason", None)) if feedback is not None else None
+    candidates = getattr(resp, "candidates", None) or ()
+    finish = _name(getattr(candidates[0], "finish_reason", None)) if candidates else None
+    return block, finish
+
+
+def _unusable_message(block: str | None, finish: str | None) -> str:
+    if block:
+        return f"Gemini 攔截了這次請求的內容（block_reason={block}）"
+    return f"回應沒有文字內容（finish_reason={finish or 'unknown'}）"
 
 
 def _l2_normalize(v: list[float]) -> list[float]:
@@ -79,14 +119,24 @@ class GeminiClient:
             response_schema=schema,
             temperature=temperature,
         )
-        resp = self._call(
-            lambda: self._sdk.models.generate_content(
-                model=self._structure_model, contents=prompt, config=config
+
+        def attempt() -> M:
+            resp = self._call(
+                lambda: self._sdk.models.generate_content(
+                    model=self._structure_model, contents=prompt, config=config
+                )
             )
+            if not resp.text:
+                block, finish = _response_problem(resp)
+                raise UnusableResponse(_unusable_message(block, finish),
+                                       block_reason=block, finish_reason=finish)
+            return schema.model_validate_json(resp.text)
+
+        return retry(
+            attempt, attempts=UNUSABLE_ATTEMPTS, base_delay_s=2.0,
+            should_retry=lambda e: isinstance(e, UnusableResponse) and not e.is_content_block,
+            sleep=self._sleep,
         )
-        if not resp.text:
-            raise UnusableResponse(f"回應沒有文字內容（finish_reason={_finish_reason(resp)}）")
-        return schema.model_validate_json(resp.text)
 
     def _embed_chunk(self, chunk: list[str], task_type: TaskType) -> list[list[float]]:
         config = types.EmbedContentConfig(task_type=task_type, output_dimensionality=self._dimensions)
