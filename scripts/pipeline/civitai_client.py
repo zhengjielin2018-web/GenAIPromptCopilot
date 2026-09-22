@@ -46,6 +46,8 @@ class CivitaiClient:
         limit: int = 200,
         cursor: str | None = None,
         base_models: list[str] | None = None,
+        sort: str = "Most Reactions",
+        period: str = "AllTime",
     ) -> Iterator[tuple[dict, str | None]]:
         """Yield (item, cursor_used_to_fetch_this_page) for every item, page by page.
 
@@ -59,8 +61,8 @@ class CivitaiClient:
             "nsfw": "None",
             "withMeta": "true",
             "type": "image",
-            "sort": "Most Reactions",
-            "period": "AllTime",
+            "sort": sort,
+            "period": period,
         }
         if base_models:
             params["baseModels"] = ",".join(base_models)

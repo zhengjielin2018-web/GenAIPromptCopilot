@@ -58,3 +58,27 @@ def test_iter_images_passes_base_models_csv():
 
     list(_client(handler).iter_images(base_models=["Illustrious", "SDXL 1.0"]))
     assert captured["baseModels"] == "Illustrious,SDXL 1.0"
+
+
+def test_iter_images_uses_given_sort_and_period():
+    captured = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        captured.update(dict(req.url.params))
+        return httpx.Response(200, json=_page([], None))
+
+    list(_client(handler).iter_images(sort="Newest", period="Year"))
+    assert captured["sort"] == "Newest"
+    assert captured["period"] == "Year"
+
+
+def test_iter_images_defaults_to_most_reactions_alltime_when_not_given():
+    captured = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        captured.update(dict(req.url.params))
+        return httpx.Response(200, json=_page([], None))
+
+    list(_client(handler).iter_images())
+    assert captured["sort"] == "Most Reactions"
+    assert captured["period"] == "AllTime"
