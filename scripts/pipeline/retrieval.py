@@ -114,7 +114,7 @@ def annotate_coverage(cands: list[Candidate], states: dict[str, str]) -> None:
 # ---------- 以下吃 conn ----------
 
 PRESETS_SQL = """
-SELECT id, title, category, facet_ids, tags, prompt_snippet, negative_snippet,
+SELECT id, title, category, facet_ids, prompt_snippet, negative_snippet,
        preset_embedding <=> %(q)s AS dist
 FROM prompt_knowledge_presets
 WHERE facet_ids && %(facets)s
@@ -154,10 +154,10 @@ def retrieve_presets(
         hits = [
             Candidate(
                 preset={
-                    "id": r[0], "title": r[1], "category": r[2], "facet_ids": list(r[3]), "tags": list(r[4]),
-                    "prompt_snippet": r[5], "negative_snippet": r[6],
+                    "id": r[0], "title": r[1], "category": r[2], "facet_ids": list(r[3]),
+                    "prompt_snippet": r[4], "negative_snippet": r[5],
                 },
-                dimension=q.dimension, dist=float(r[7]), band=band(float(r[7])), grounded=q.grounded,
+                dimension=q.dimension, dist=float(r[6]), band=band(float(r[6])), grounded=q.grounded,
             )
             for r in conn.execute(PRESETS_SQL, {"q": v, "facets": facets, "k": q.k})
         ]

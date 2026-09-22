@@ -86,7 +86,7 @@ def test_normalize_honours_custom_k_values():
 def _cand(pid, dim, dist, facet_ids=(), grounded=True):
     return Candidate(
         preset={
-            "id": pid, "title": f"t{pid}", "category": "X", "facet_ids": list(facet_ids), "tags": [],
+            "id": pid, "title": f"t{pid}", "category": "X", "facet_ids": list(facet_ids),
             "prompt_snippet": "", "negative_snippet": None,
         },
         dimension=dim, dist=dist, band=band(dist), grounded=grounded,
@@ -145,7 +145,7 @@ def test_retrieve_presets_only_returns_rows_touching_the_dimension_and_respects_
                 assert c.grounded is dh.query.grounded
                 assert c.band == band(c.dist)
                 assert set(c.preset) == {
-                    "id", "title", "category", "facet_ids", "tags", "prompt_snippet", "negative_snippet",
+                    "id", "title", "category", "facet_ids", "prompt_snippet", "negative_snippet",
                 }
 
 

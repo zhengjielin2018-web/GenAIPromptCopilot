@@ -33,7 +33,7 @@ CAT = load_facets(FACETS_PATH)
 def _cand(pid, dim, dist, snippet, negative=None, grounded=True, title=None):
     return Candidate(
         preset={
-            "id": pid, "title": title or f"t{pid}", "category": dim.title(), "facet_ids": [], "tags": [],
+            "id": pid, "title": title or f"t{pid}", "category": dim.title(), "facet_ids": [],
             "prompt_snippet": snippet, "negative_snippet": negative,
         },
         dimension=dim, dist=dist, band=band(dist), grounded=grounded,
@@ -266,13 +266,13 @@ def test_format_facet_states_uses_the_profile_specific_dimension_label_for_objec
 def test_format_candidates_marks_band_usage_and_facet_coverage():
     a = Candidate(
         preset={"id": 144, "title": "雙馬尾少女", "category": "Appearance",
-                "facet_ids": ["appearance.hair", "appearance.face"], "tags": [],
+                "facet_ids": ["appearance.hair", "appearance.face"],
                 "prompt_snippet": "1girl, twintails", "negative_snippet": None},
         dimension="appearance", dist=0.19, band="高", grounded=True,
         facet_coverage={"appearance.hair": "covered", "appearance.face": "missing"},
     )
     b = Candidate(
-        preset={"id": 900, "title": "新海誠動畫風", "category": "Style", "facet_ids": ["style.reference"], "tags": [],
+        preset={"id": 900, "title": "新海誠動畫風", "category": "Style", "facet_ids": ["style.reference"],
                 "prompt_snippet": "(Makoto Shinkai Style:1.4)", "negative_snippet": "lowres"},
         dimension="style", dist=0.234, band="高", grounded=False, facet_coverage={"style.reference": "missing"},
     )
@@ -363,12 +363,12 @@ def _fake_retrieve_presets(conn, queries, vectors, catalog, profile):
     for q in queries:
         if q.dimension == "appearance":
             hits = [Candidate(preset={"id": 144, "title": "雙馬尾少女", "category": "Appearance",
-                                      "facet_ids": ["appearance.hair"], "tags": [],
+                                      "facet_ids": ["appearance.hair"],
                                       "prompt_snippet": "1girl, twintails, grey eyes", "negative_snippet": None},
                               dimension="appearance", dist=0.19, band="高", grounded=q.grounded)]
         elif q.dimension == "style":
             hits = [Candidate(preset={"id": 900, "title": "新海誠動畫風", "category": "Style",
-                                      "facet_ids": ["style.reference"], "tags": [],
+                                      "facet_ids": ["style.reference"],
                                       "prompt_snippet": "anime, Makoto Shinkai Style", "negative_snippet": None},
                               dimension="style", dist=0.23, band="高", grounded=q.grounded)]
         else:
