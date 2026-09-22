@@ -94,13 +94,20 @@ class Candidate:
         return self.preset["id"]
 
 
+def _attribution_key(c: Candidate) -> tuple[bool, float]:
+    """grounded 優先、距離次之。歸屬決定借用資格（見 validate_borrowed），而 grounded 是
+    「這個維度使用者講了沒」的屬性，不是片段的屬性——不能讓某個 missing 維度的推想查詢
+    只因為距離剛好更近，就把一個 grounded 維度正當撈到的片段降級成「僅供建議」。"""
+    return (not c.grounded, c.dist)
+
+
 def dedupe(hits: list[Candidate]) -> list[Candidate]:
-    """同一 preset 跨維度命中只留距離最小的那個（每維用不同子查詢向量，最小即最像該維需求）。
-    輸出依 (維度順序, 距離) 排序。"""
+    """同一 preset 跨維度命中只留一個：grounded 的維度優先，同為 grounded 才比距離
+    （每維用不同子查詢向量，最小即最像該維需求）。輸出依 (維度順序, 距離) 排序。"""
     best: dict[int, Candidate] = {}
     for c in hits:
         cur = best.get(c.id)
-        if cur is None or c.dist < cur.dist:
+        if cur is None or _attribution_key(c) < _attribution_key(cur):
             best[c.id] = c
     return sorted(best.values(), key=lambda c: (DIMENSIONS.index(c.dimension), c.dist))
 

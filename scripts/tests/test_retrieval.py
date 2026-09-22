@@ -93,10 +93,30 @@ def _cand(pid, dim, dist, facet_ids=(), grounded=True):
     )
 
 
-def test_dedupe_keeps_the_closest_dimension_and_its_grounded_flag():
+def test_dedupe_prefers_a_grounded_dimension_even_when_an_ungrounded_one_is_closer():
+    """歸屬決定借用資格——demo.validate_borrowed 讀的就是去重後的 c.grounded。若照最小距離歸屬，
+    一個 grounded 維度正當撈到的片段，會因為某個 missing 維度的推想查詢剛好更近，
+    被降級成「僅供建議」而失去借用資格。grounded 是「這個維度使用者講了沒」的屬性，
+    不是片段的屬性，不該被一句推想出來的查詢抹掉。"""
     hits = [_cand(1, "scene", 0.30, grounded=True), _cand(1, "camera", 0.22, grounded=False), _cand(2, "scene", 0.28)]
     out = dedupe(hits)
-    assert [(c.id, c.dimension, c.grounded) for c in out] == [(2, "scene", True), (1, "camera", False)]
+    assert [(c.id, c.dimension, c.grounded) for c in out] == [(2, "scene", True), (1, "scene", True)]
+
+
+def test_dedupe_picks_the_closest_among_the_grounded_dimensions():
+    """grounded 優先只是第一順位，同為 grounded 時仍比距離。"""
+    hits = [
+        _cand(1, "style", 0.28, grounded=True),
+        _cand(1, "scene", 0.21, grounded=True),
+        _cand(1, "camera", 0.15, grounded=False),
+    ]
+    assert [(c.id, c.dimension) for c in dedupe(hits)] == [(1, "scene")]
+
+
+def test_dedupe_falls_back_to_the_closest_when_no_dimension_is_grounded():
+    """全部維度都是推想的，沒有 grounded 可優先，退回原本的最小距離規則。"""
+    hits = [_cand(1, "style", 0.30, grounded=False), _cand(1, "camera", 0.22, grounded=False)]
+    assert [(c.id, c.dimension, c.grounded) for c in dedupe(hits)] == [(1, "camera", False)]
 
 
 def test_dedupe_orders_by_dimension_then_distance():

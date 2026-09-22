@@ -1,7 +1,7 @@
 # 分維度檢索與兩段式組裝 — 設計規格
 
 日期：2026-09-22
-狀態：待審閱
+狀態：已實作並驗收（`scripts/demo.py`、`scripts/pipeline/retrieval.py`，2026-09-22）；§10 改寫稿已併入主規格 §9，待子專案 2 採用
 範圍：`scripts/demo.py` 的檢索與組裝流程；同時改寫主規格 [§9 檢索策略](2026-09-21-genai-prompt-copilot-design.md#9-檢索策略)，供子專案 2 的 `SearchPresets` 遵循。
 
 ---
@@ -186,7 +186,16 @@ ORDER BY dist LIMIT %(k)s
 
 ### 5.3 跨維度去重
 
-一筆 preset 的 `facet_ids` 可能橫跨數維（Combined 類），會在多個候選池出現。只留一次，**歸到距離最小的維度**。每維用不同子查詢向量，所以「哪一維最小」就是「這筆最像哪一維的需求」，有意義。`grounded` 取歸屬維度的值。
+一筆 preset 的 `facet_ids` 可能橫跨數維（Combined 類），會在多個候選池出現（實測 859 筆裡有 134 筆、15.6% 橫跨 2 維以上）。只留一次，歸屬規則是 **grounded 優先、距離次之**：
+
+1. 若有任何 grounded 維度撈到它，歸給這些維度中距離最小的那個。
+2. 完全沒有 grounded 維度撈到，才退回全體最小距離。
+
+`grounded` 取歸屬維度的值。
+
+**為什麼不是單純的最小距離。** 歸屬決定借用資格——§6.2 的驗證讀的就是去重後的 `grounded`，False 即整筆降級成「僅供建議」。而 `grounded` 不是片段的屬性，是「這個維度使用者講了沒」的屬性。單純比距離的話，一個 grounded 維度正當撈到的片段，會因為某個 missing 維度**推想出來**的查詢剛好更近，就失去借用資格。同為 grounded 時才比距離——每維用不同子查詢向量，「哪一維最小」就是「這筆最像哪一維的需求」，那時比距離有意義。
+
+（初版實作是單純的最小距離，2026-09-22 修正為本節規則，見 `test_dedupe_prefers_a_grounded_dimension_even_when_an_ungrounded_one_is_closer`。）
 
 ### 5.4 facet 覆蓋標記
 
@@ -323,3 +332,4 @@ ORDER BY dist LIMIT %(k)s
 - **知識庫覆蓋缺口**：vehicle pose 池 2 筆、object appearance 池 51 筆、「坐欄杆＋拿相機」類 pose 無命中。畫面會暴露，補資料另案。
 - **分級門檻是絕對值**，跨四種 profile 驗過但只有數個題目。若之後發現漂移，改成池內相對分位。
 - **missing 維度的推想子查詢已隱含創作決定**（推想「動漫」就只撈動漫）。兩句對比方向是緩解不是解決；子專案 2 的追問流程才是正解。
+- **本檔的去重是「一次看得到全部維度」的模型**，子專案 2 的 `SearchPresets` 逐維度各自呼叫，看不到全局。對應作法見主規格 §9：不在檢索時去重，改由 session ledger 累積 `presetId → [(dimension, dist, grounded)]`，到定稿驗證時才套 §5.3 的歸屬規則。
