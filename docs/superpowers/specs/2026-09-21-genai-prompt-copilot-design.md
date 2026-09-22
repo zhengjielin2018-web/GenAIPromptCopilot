@@ -16,7 +16,7 @@
 
 - Semantic Kernel：全 agentic Function Calling 編排、Filters、RAG
 - ASP.NET Core：SSE 事件串流、Session 狀態機
-- PostgreSQL + pgvector：向量 + GIN 混合檢索
+- PostgreSQL + pgvector：向量檢索 + GIN 陣列索引
 - Python：分階段、可重跑的資料管線
 - Nuxt 3：即時儀表板與 tool call 可視化
 
@@ -97,7 +97,7 @@ LLM：**`gemini-3.5-flash-lite`**（子專案 1 執行時實測定案。注意�
 | Plugin.Function | 參數 | 性質 |
 | :--- | :--- | :--- |
 | `KnowledgePlugin.SearchSimilarPrompts` | `intent: string, topK: int = 3` | 可重複；RAG 1，查 `shared_prompt_histories`，以 session profile 過濾 |
-| `KnowledgePlugin.SearchPresets` | `query: string, facetIds: string[], tags: string[], topK: int = 5` | 可重複；RAG 2，混合檢索 `prompt_knowledge_presets` |
+| `KnowledgePlugin.SearchPresets` | `query: string, facetIds: string[], topK: int = 5` | 可重複；RAG 2，**分維度檢索** `prompt_knowledge_presets`：一次呼叫一個維度，`query` 是該維度專屬語句，見 §9 |
 | `SessionPlugin.SetProfile` | `profile: portrait \| landscape \| object \| vehicle` | 可重複；設定題材 profile，重置 facet 狀態 |
 | `SessionPlugin.SetFacetStates` | `updates: { facetId: string, state: FacetState, note?: string }[]` | 可重複；主要用於 `waived` |
 | `DialogPlugin.AskUser` | `question: string, missingFacetIds: string[], suggestedOptions: string[], facetStates: Dictionary<string, FacetState>` | **終止型**；`suggestedOptions` 2–4 個 |
@@ -445,10 +445,22 @@ scripts/
 
 | Tool | 策略 | SQL 概念 |
 | :--- | :--- | :--- |
-| `SearchPresets` | 混合：GIN 先過濾候選，向量再排序 | `WHERE facet_ids && $1 OR tags && $2 ORDER BY preset_embedding <=> $3 LIMIT k`；若 `facetIds` 與 `tags` 皆空則純向量 |
+| `SearchPresets` | **分維度**：每次呼叫鎖定一個維度，用該維度專屬的查詢語句，GIN 過濾該維度 facet 後向量排序 | `WHERE facet_ids && $facetIdsOfDimension ORDER BY preset_embedding <=> $dimensionQueryVec LIMIT k` |
 | `SearchSimilarPrompts` | 向量 Top-K + profile 過濾 | `WHERE subject_profile = $1 ORDER BY intent_embedding <=> $2 LIMIT k` |
 
-查詢向量於 runtime 以同一 embedding 模型計算（每次 tool 呼叫多一次 embedding API 請求，可接受）。
+**GIN 過濾本身不夠。** 實測（2026-09-22）：同樣過濾到 Style 候選池，用使用者整句描述的向量排序撈回無關片段（dist 0.354），用該維度專屬的查詢語句撈回正確風格（0.229–0.234）。單一整句向量是六維度的模糊平均，只會貼近最泛用的片段，且使用者沒提到的維度永遠撈不到。因此 agent 呼叫 `SearchPresets` 時：
+
+- 一次呼叫一個維度，`facetIds` 給該維度在當前 profile 下的 facet 集合。
+- `query` 是該維度的專屬語句：使用者已描述的維度用其原話；未描述的維度由 agent 依整體畫面推想，且應給對比方向（例：寫實攝影 vs 動漫插畫）分兩次呼叫。
+- 使用者未描述的維度撈到的片段只可用於追問與建議，不得直接寫入提示詞。
+- 不設距離門檻；tool result 帶相似度分級（`<0.25` 高、`<0.30` 中、其餘低），由 agent 判斷。
+- `tags && $2` 決定不做：OR 上 tags 會把候選池撐到維度外，與分維度前提衝突。
+- **跨維度去重沒有 C# 對應機制，實作前要先定規則。** Python 參考實作一次呼叫看得到全部維度，把橫跨多維度的 preset 歸到距離最小的那個維度（分維度檢索設計 §5.3）。C# 的 `SearchPresets` 逐維度各自呼叫，agent 可能對同一個 preset 從兩個維度分別拿到兩份結果、兩個不同的 `grounded` 值，沒有東西決定哪個算數。**其後果是：一個被某個 grounded 維度撈到、理應可借入提示詞的 preset，可能只因為它在另一個維度的查詢下距離剛好更近一點，就被那個維度判定成「僅供建議」而失去借用資格。** 子專案 2 實作時需要自行定出歸屬規則（例如比較兩次呼叫的距離、或以 grounded 優先），這裡先把落差點出來。
+- **候選池大小要跟著 tool result 一起回。** `池 2 → 2` 這種「這維度過濾後有多少候選、其中命中幾筆」的資訊，是分維度檢索最有價值的副產品：它讓知識庫覆蓋缺口（例如 vehicle 的 pose 只有 2 筆）在使用當下就看得見，不必事後查資料庫才發現。tool result 除了相似度分級，也要帶上 GIN 過濾後的候選池筆數，否則子專案 2 會失去這個可見度。
+
+查詢向量於 runtime 以同一 embedding 模型計算；多個維度的查詢語句合併為單次 `embed_batch` 呼叫。
+
+完整推導與 Python 參考實作見 [2026-09-22-dimension-scoped-retrieval-design.md](2026-09-22-dimension-scoped-retrieval-design.md)。
 
 ## 10. API 與 SSE 協定
 
