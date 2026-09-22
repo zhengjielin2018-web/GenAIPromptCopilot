@@ -85,7 +85,9 @@ public sealed class AgenticOrchestrator(
             }
             if (turn.Outcome is null)
             {
-                var lastText = session.ChatHistory.LastOrDefault(m => m.Role == AuthorRole.Assistant && !string.IsNullOrWhiteSpace(m.Content))?.Content;
+                // 只看這一輪：純文字訊息會跨輪留在 history 裡，掃全部會把上一輪的回答當成這一輪的答案
+                var lastText = session.ChatHistory.Skip(startIdx)
+                    .LastOrDefault(m => m.Role == AuthorRole.Assistant && !string.IsNullOrWhiteSpace(m.Content))?.Content;
                 if (tools.Contains(ToolNames.Discuss) && lastText is not null)
                 {
                     // 仍為純文字：包成 Discuss（options 空、facetStates 用現值）；走正規 plugin 路徑，DiscussStreak 才會照常累加

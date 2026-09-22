@@ -337,4 +337,22 @@ public class AgenticOrchestratorTests
         Assert.Single(events.OfType<FinalEvent>()); Assert.Empty(events.OfType<ErrorEvent>());
         Assert.Equal(1, h.Session.DiscussStreak);
     }
+
+    /// <summary>純文字訊息會留在 history 裡跨輪存活：包裝只能看這一輪，否則會把上一輪的回答當成這一輪的答案再發一次。</summary>
+    [Fact]
+    public async Task Plain_text_wrap_ignores_previous_turn_assistant_text()
+    {
+        var h = new Harness();
+        h.Chat.Then(FakeChatCompletion.Text("寫實走光影，動漫走筆觸。"))
+              .Then(FakeChatCompletion.Text("寫實走光影，動漫走筆觸。"));
+        var first = await h.RunAsync("寫實跟動漫差在哪");
+        Assert.Equal("message", Assert.Single(first.OfType<FinalEvent>()).Kind);
+        Assert.Equal(1, h.Session.DiscussStreak);
+
+        h.Chat.Then(FakeChatCompletion.Text("")).Then(FakeChatCompletion.Text(""));   // 這一輪什麼文字都沒產
+        var second = await h.RunAsync("那動漫呢");
+        Assert.Equal("protocol_violation", Assert.Single(second.OfType<ErrorEvent>()).Code);
+        Assert.Empty(second.OfType<FinalEvent>());
+        Assert.Equal(1, h.Session.DiscussStreak);                                     // 沒有拿上一輪的句子再包一次
+    }
 }
