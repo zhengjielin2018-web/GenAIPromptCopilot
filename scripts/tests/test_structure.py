@@ -160,3 +160,118 @@ def test_strip_boilerplate_keeps_bad_as_an_ordinary_word():
 
 def test_strip_boilerplate_survives_an_embedded_newline():
     assert _strip_boilerplate("forest\nlit by dappled sun, masterpiece") == "forest\nlit by dappled sun"
+
+
+def test_run_structure_concurrent_produces_same_records_as_sequential(tmp_path):
+    """併發只改變「何時呼叫 LLM」，不得改變寫出的內容或順序。"""
+    records = [{**REC, "source_id": i} for i in range(1, 13)]
+    seq_dir, con_dir = tmp_path / "seq", tmp_path / "con"
+    seq_dir.mkdir()
+    con_dir.mkdir()
+    inp = tmp_path / "records.jsonl"
+    write_jsonl(inp, records)
+
+    sh, sp = seq_dir / "h.jsonl", seq_dir / "p.jsonl"
+    ch, cp = con_dir / "h.jsonl", con_dir / "p.jsonl"
+    seq = run_structure(FakeGemini(), CAT, in_path=inp, histories_path=sh, presets_path=sp)
+    con = run_structure(FakeGemini(), CAT, in_path=inp, histories_path=ch, presets_path=cp, concurrency=4)
+
+    assert seq == con
+    assert [r["source_ref"] for r in read_jsonl(sh)] == [r["source_ref"] for r in read_jsonl(ch)]
+    assert list(read_jsonl(sp)) == list(read_jsonl(cp))
+
+
+def test_run_structure_concurrent_still_skips_already_done_records(tmp_path):
+    """續跑語意在併發下必須不變：已有 source_ref 的不得重新呼叫 LLM。"""
+    inp = tmp_path / "records.jsonl"
+    write_jsonl(inp, [{**REC, "source_id": i} for i in range(1, 9)])
+    h, p = tmp_path / "h.jsonl", tmp_path / "p.jsonl"
+
+    g1 = FakeGemini()
+    run_structure(g1, CAT, in_path=inp, histories_path=h, presets_path=p, max_records=5, concurrency=4)
+    assert g1.calls == 5
+
+    g2 = FakeGemini()
+    run_structure(g2, CAT, in_path=inp, histories_path=h, presets_path=p, concurrency=4)
+    assert g2.calls == 3  # 只補剩下的 3 筆，不重跑已完成的 5 筆
+    assert [r["source_ref"] for r in read_jsonl(h)] == [f"civitai:{i}" for i in range(1, 9)]
+
+
+def test_run_structure_concurrent_actually_overlaps_calls(tmp_path):
+    """證明併發真的並行：若仍是序列，最大同時進行數會是 1。"""
+    import threading
+    import time
+
+    class SlowGemini:
+        def __init__(self):
+            self.lock = threading.Lock()
+            self.inflight = 0
+            self.peak = 0
+
+        def generate_structured(self, prompt, schema, *, temperature=0.2):
+            with self.lock:
+                self.inflight += 1
+                self.peak = max(self.peak, self.inflight)
+            time.sleep(0.05)
+            with self.lock:
+                self.inflight -= 1
+            return _result()
+
+    inp = tmp_path / "records.jsonl"
+    write_jsonl(inp, [{**REC, "source_id": i} for i in range(1, 9)])
+    g = SlowGemini()
+    run_structure(g, CAT, in_path=inp, histories_path=tmp_path / "h.jsonl",
+                  presets_path=tmp_path / "p.jsonl", concurrency=4)
+    assert g.peak > 1
+
+
+class FlakyGemini:
+    """第 bad_index 筆丟 UnusableResponse（模擬安全性攔截／MAX_TOKENS 截斷）。"""
+
+    def __init__(self, bad_index):
+        self.bad_index = bad_index
+        self.calls = 0
+
+    def generate_structured(self, prompt, schema, *, temperature=0.2):
+        from pipeline.gemini_client import UnusableResponse
+
+        i = self.calls
+        self.calls += 1
+        if i == self.bad_index:
+            raise UnusableResponse("回應沒有文字內容（finish_reason=SAFETY）")
+        return _result()
+
+
+def test_run_structure_skips_unusable_response_instead_of_aborting(tmp_path):
+    """一筆被模型擋掉不能毀掉整個 6000 筆的跑批——其餘的都要寫出來。"""
+    inp = tmp_path / "records.jsonl"
+    write_jsonl(inp, [{**REC, "source_id": i} for i in range(1, 6)])
+    h, p = tmp_path / "h.jsonl", tmp_path / "p.jsonl"
+    n_hist, _ = run_structure(FlakyGemini(bad_index=2), CAT, in_path=inp,
+                              histories_path=h, presets_path=p)
+    assert n_hist == 4
+    assert [r["source_ref"] for r in read_jsonl(h)] == [
+        "civitai:1", "civitai:2", "civitai:4", "civitai:5"]
+
+
+def test_concurrent_batch_keeps_paid_siblings_when_one_record_is_unusable(tmp_path):
+    """併發下一筆壞掉時，同 batch 其他『已經付費』的結果不得跟著作廢。"""
+    inp = tmp_path / "records.jsonl"
+    write_jsonl(inp, [{**REC, "source_id": i} for i in range(1, 9)])
+    h, p = tmp_path / "h.jsonl", tmp_path / "p.jsonl"
+    n_hist, _ = run_structure(FlakyGemini(bad_index=3), CAT, in_path=inp,
+                              histories_path=h, presets_path=p, concurrency=8)
+    assert n_hist == 7  # 8 筆送出、1 筆壞，其餘 7 筆都必須留下
+    assert len(list(read_jsonl(h))) == 7
+
+
+def test_skipped_record_is_retried_on_resume_not_marked_done(tmp_path):
+    """被跳過的那筆不能被當成已完成——續跑時要再試一次。"""
+    inp = tmp_path / "records.jsonl"
+    write_jsonl(inp, [{**REC, "source_id": i} for i in range(1, 4)])
+    h, p = tmp_path / "h.jsonl", tmp_path / "p.jsonl"
+    run_structure(FlakyGemini(bad_index=1), CAT, in_path=inp, histories_path=h, presets_path=p)
+    assert [r["source_ref"] for r in read_jsonl(h)] == ["civitai:1", "civitai:3"]
+    run_structure(FakeGemini(), CAT, in_path=inp, histories_path=h, presets_path=p)
+    assert sorted(r["source_ref"] for r in read_jsonl(h)) == [
+        "civitai:1", "civitai:2", "civitai:3"]

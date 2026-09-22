@@ -28,3 +28,6 @@ scripts/data/
 .DS_Store
 Thumbs.db
 .idea/
+
+# 擴增前的語料備份（本機保險，不入版控）
+.backup-pre-expansion/

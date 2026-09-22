@@ -123,24 +123,32 @@ class Stratum:
 
 | key | base_models | period | quota (raw) | 依據（§4.2） |
 | :--- | :--- | :--- | ---: | :--- |
-| `baseline` | 無 | AllTime | 600 | 續用現有 cursor（已有 420/600），與既有語料同分布 |
-| `sd15/year` | SD 1.5 | Year | 1,600 | 風景主力（景 75%） |
-| `sdxl10/alltime` | SDXL 1.0 | AllTime | 1,600 | 最均衡、載具最高（車 6%） |
-| `sdxl10/year` | SDXL 1.0 | Year | 1,200 | 風景次要 + 載具 4% |
-| `noobai/year` | NoobAI | Year | 1,200 | 物件 42% + 載具 6% |
-| `noobai/alltime` | NoobAI | AllTime | 800 | 物件 |
-| `sd15/alltime` | SD 1.5 | AllTime | 800 | 通用 |
-| `illustrious/alltime` | Illustrious | AllTime | 700 | 人物 + 物件 |
-| `pony/alltime` | Pony | AllTime | 500 | 人物（已飽和，刻意少給） |
-| **合計** | | | **9,000** | |
+| `baseline` | 無 | AllTime | 600 | 續用現有 cursor，與既有語料同分布（未加碼：不過濾 baseModel，是自然語言方言的唯一入口） |
+| `sd15/year` | SD 1.5 | Year | 2,200 | 風景主力（實測 clean 後風景 51%，為各層最高） |
+| `sdxl10/alltime` | SDXL 1.0 | AllTime | 2,600 | 最均衡（人物僅 21%），載具絕對數最高 |
+| `sdxl10/year` | SDXL 1.0 | Year | 2,000 | 同上，第二順位加碼 |
+| `noobai/year` | NoobAI | Year | 1,800 | 存活率最高（63%），物件 34% |
+| `noobai/alltime` | NoobAI | AllTime | 1,200 | 物件 |
+| `sd15/alltime` | SD 1.5 | AllTime | 1,200 | 通用 + 風景 |
+| `illustrious/alltime` | Illustrious | AllTime | 700 | 未加碼：人物已飽和（實測 84%） |
+| `pony/alltime` | Pony | AllTime | 500 | 未加碼：人物 60%、載具僅 2%，是各層最低 |
+| **合計** | | | **12,800** | |
 
 配額表寫成模組層級常數（非設定檔），因為它是這次擴增一次性的決定，不是長期可調參數；
 若要重新配置，改程式碼、走 code review，比隱藏在設定檔裡更誠實。`fetch_civitai.py` 提供
 `--quota-scale FLOAT`（乘上每層 quota，四捨五入），用於 §9 的分階段驗收先跑小規模。
 
-估算：9,000 raw × 平均 meta 命中率約 85% × clean 存活率約 79% ≈ 6,000，扣掉跨層重複
-（不同分層抓到同一張熱門圖，baseline 與其他分層有限重疊）估計 10–15% → **落在
-5,200–5,500 clean**，對應約 17,300 presets、約 5,200 次結構化呼叫。
+**配額修訂紀錄（2026-09-22，實跑後回填）**：初版配額合計 9,000，實跑得 9,000 raw →
+**4,499 clean（存活率 50%，非原估的 79%）**，低於 §2 的 5,000 目標。原估算用首頁 100 筆
+抽樣推得，高估了深層分頁的 meta 命中率與跨層去重後的存活率。
+
+同一批實跑資料也修正了兩個分層假設：**載具率在各層幾乎相同（SDXL 1.0／NoobAI／SD 1.5
+皆約 5%）**，不是抽樣所示的 6% vs 1%，所以載具無法靠選層集中，只能靠總量；而
+**各層 clean 存活率差異很大**（NoobAI 63%、Pony 54%、SDXL 1.0 48%、SD 1.5 僅 40%）。
+
+修訂後合計 12,800（+3,800），加碼集中在 SDXL 1.0（人物佔比最低、載具絕對數最高）與
+SD 1.5（風景 51%），人物已飽和的 Illustrious／Pony 不加碼。以實測邊際存活率 49.4% 保守
+折到約 42% 估算，預期 **+1,600 以上 clean → 總計約 6,100**，仍在 5,000 目標之上。
 
 ## 7. 抓取順序：逐層循序（非交錯）
 

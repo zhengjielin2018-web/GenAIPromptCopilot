@@ -10,8 +10,9 @@ def test_strata_keys_are_unique():
     assert len(keys) == len(set(keys))
 
 
-def test_strata_quota_sums_to_nine_thousand():
-    assert sum(s.quota for s in STRATA) == 9000
+def test_strata_quota_sums_to_the_documented_total():
+    """配額總量是 spec §6 的決定，改了要連同 spec 與 README 一起改（見 2026-09-22 retune）。"""
+    assert sum(s.quota for s in STRATA) == 12800
 
 
 def test_every_stratum_has_a_positive_quota():

@@ -20,10 +20,25 @@ BATCH_SIZE = 32
 TaskType = Literal["RETRIEVAL_DOCUMENT", "RETRIEVAL_QUERY"]
 
 
+class UnusableResponse(Exception):
+    """模型回了 200 但沒有可用的文字（安全性攔截、MAX_TOKENS 截斷、空 candidate）。
+    這不是傳輸錯誤，retry 沒有意義——同一份輸入重送結果一樣，呼叫端應該跳過這筆。"""
+
+
+
 def _is_transient(e: Exception) -> bool:
     if isinstance(e, errors.APIError):
         return e.code in (429, 500, 502, 503, 504)
     return isinstance(e, (httpx.TimeoutException, httpx.TransportError))
+
+
+def _finish_reason(resp) -> str:
+    """從回應裡挖出 finish_reason 供錯誤訊息使用；挖不到就回 unknown，不要因為
+    取錯誤訊息本身再炸一次。"""
+    try:
+        return str(resp.candidates[0].finish_reason)
+    except Exception:  # noqa: BLE001 - 純診斷用途
+        return "unknown"
 
 
 def _l2_normalize(v: list[float]) -> list[float]:
@@ -69,6 +84,8 @@ class GeminiClient:
                 model=self._structure_model, contents=prompt, config=config
             )
         )
+        if not resp.text:
+            raise UnusableResponse(f"回應沒有文字內容（finish_reason={_finish_reason(resp)}）")
         return schema.model_validate_json(resp.text)
 
     def _embed_chunk(self, chunk: list[str], task_type: TaskType) -> list[list[float]]:

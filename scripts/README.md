@@ -210,7 +210,8 @@ LLM「不要把這些當成片段」。原因是：純靠 prompt 指令這件事
 
 擴增前的正式語料是用舊版單層 CLI 抓 400 筆建立的（420 raw / 258 clean）。分層抓取的配額表與規模換算見
 [docs/superpowers/specs/2026-09-22-corpus-expansion-design.md](../docs/superpowers/specs/2026-09-22-corpus-expansion-design.md) §2、§6：
-9 層合計 9,000 raw，預估落在 5,200–5,500 clean。要調整規模就改
+9 層合計 12,800 raw（初版 9,000，實跑 clean 只有 4,499、存活率 50%，已依實測回填；
+見 spec §6 的「配額修訂紀錄」）。要調整規模就改
 `pipeline/strata.py::STRATA` 裡各層的 `quota`（程式碼常數，改了要走 code review，
 不是隱藏在設定檔裡的旋鈕）。
 

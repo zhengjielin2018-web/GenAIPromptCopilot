@@ -93,3 +93,25 @@ def test_default_client_requires_api_key(monkeypatch):
     monkeypatch.setattr(gemini_client.settings, "gemini_api_key", "")
     with pytest.raises(RuntimeError, match="GEMINI_API_KEY"):
         gemini_client.default_client()
+
+
+def test_generate_structured_raises_unusable_response_when_text_is_none():
+    """模型回 200 但沒有文字（安全性攔截／MAX_TOKENS）時，必須是可辨識的例外，
+    而不是讓 pydantic 丟出看不懂的 json_type 錯誤。"""
+    from pipeline.gemini_client import UnusableResponse
+
+    class Resp:
+        text = None
+        candidates = [SimpleNamespace(finish_reason="SAFETY")]
+
+    class SDK:
+        class models:
+            @staticmethod
+            def generate_content(**kwargs):
+                return Resp()
+
+    client = GeminiClient(SDK(), structure_model="m", embedding_model="e", dimensions=4,
+                          limiter=RateLimiter(0, sleep=lambda s: None), sleep=lambda s: None)
+    with pytest.raises(UnusableResponse) as ei:
+        client.generate_structured("p", Out)
+    assert "SAFETY" in str(ei.value)

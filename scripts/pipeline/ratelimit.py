@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 import time
 from collections.abc import Callable
 
@@ -17,13 +18,18 @@ class RateLimiter:
         self._sleep = sleep
         self._now = now
         self._last: float | None = None
+        self._lock = threading.Lock()
 
     def wait(self) -> None:
-        if self._last is not None:
-            elapsed = self._now() - self._last
-            if elapsed < self._min:
-                self._sleep(self._min - elapsed)
-        self._last = self._now()
+        """間隔是從「上一次請求開始」起算（_last 在送出前就更新）。
+        必須互斥：多執行緒同時進來時，若各自讀到同一個 _last 再睡同樣長度，
+        會一起衝出去，最小間隔就形同虛設。"""
+        with self._lock:
+            if self._last is not None:
+                elapsed = self._now() - self._last
+                if elapsed < self._min:
+                    self._sleep(self._min - elapsed)
+            self._last = self._now()
 
 
 def retry[T](
