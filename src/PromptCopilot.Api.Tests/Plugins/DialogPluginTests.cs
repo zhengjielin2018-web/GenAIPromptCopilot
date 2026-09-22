@@ -77,6 +77,21 @@ public class DialogPluginTests
         Assert.Equal(FacetState.Missing, s.FacetStates["pose.gaze"]);
     }
 
+    /// <summary>SetFacetStates 每一輪都在工具清單裡。拿「現在的」狀態比對，等於先用 SetFacetStates
+    /// 改掉再用 Discuss 回報同一組值就永遠相等——定稿後的變更閘門（主規格 §4.5）等於不存在。
+    /// 要比的是這一輪開始時的狀態。</summary>
+    [Fact]
+    public void Discuss_when_finalized_rejects_facets_changed_earlier_in_the_same_turn()
+    {
+        var (p, turn, s) = Make(finalized: true);
+        Assert.Equal("ok：套用 1 筆", new SessionPlugin(turn, Catalog).SetFacetStates(States(("pose.gaze", "covered"))));
+
+        var r = p.Discuss("好的", States(("pose.gaze", "covered")));
+
+        Assert.Contains("FinalizePrompt", r);
+        Assert.Null(turn.Outcome);
+    }
+
     [Fact]
     public void Discuss_when_finalized_with_same_facets_succeeds_and_streak_unchanged()
     {

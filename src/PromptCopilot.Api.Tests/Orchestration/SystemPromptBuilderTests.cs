@@ -59,6 +59,26 @@ public class SystemPromptBuilderTests
         Assert.Contains("snip3", prompt); Assert.Contains("snip2", prompt); Assert.DoesNotContain("snip1", prompt);
     }
 
+    /// <summary>版本 hash 是 eval 對得上 prompt 的鑰匙。樣板的換行在別台機器上可能被 git 轉成
+    /// CRLF，組出來的 Facts 也用 Environment.NewLine——同一份 prompt 就會有兩個 hash。</summary>
+    [Fact]
+    public void Version_is_stable_across_line_ending_styles()
+    {
+        var lf = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Prompts", "system.md")).Replace("\r\n", "\n");
+        var crlfPath = Path.Combine(Path.GetTempPath(), $"system-crlf-{Guid.NewGuid():N}.md");
+        File.WriteAllText(crlfPath, lf.Replace("\n", "\r\n"));
+        try
+        {
+            var s = new Session("s"); s.ApplyProfile("portrait", Catalog);
+            var lfBuilt = Make().Build(s, ToolNames.Always);
+            var crlfBuilt = new SystemPromptBuilder(Catalog, new OrchestratorOptions(), crlfPath).Build(s, ToolNames.Always);
+
+            Assert.Equal(lfBuilt.Version, crlfBuilt.Version);
+            Assert.DoesNotContain("\r\n", crlfBuilt.Prompt);
+        }
+        finally { File.Delete(crlfPath); }
+    }
+
     [Fact]
     public void Version_changes_when_facts_change()
     {

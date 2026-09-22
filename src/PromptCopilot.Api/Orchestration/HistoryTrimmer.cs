@@ -84,6 +84,7 @@ public static class HistoryTrimmer
     /// <summary>保留 system（若在 index 0）+ 最近 keepTurns 輪；一輪從一則 user message 起。</summary>
     public static void Truncate(ChatHistory h, int keepTurns)
     {
+        if (keepTurns <= 0) return;            // userIdx[^0] 會直接 IndexOutOfRange，把整輪炸掉
         var hasSystem = h.Count > 0 && h[0].Role == AuthorRole.System;
         var userIdx = Enumerable.Range(hasSystem ? 1 : 0, Math.Max(0, h.Count - (hasSystem ? 1 : 0)))
             .Where(i => h[i].Role == AuthorRole.User).ToList();

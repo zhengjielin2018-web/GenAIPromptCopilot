@@ -14,7 +14,9 @@ public sealed class AuditFilter(IAuditSink sink) : IAutoFunctionInvocationFilter
         var callId = $"{context.RequestSequenceIndex}-{context.FunctionSequenceIndex}";
         turn.Emit(new ToolCallEvent(callId, context.Function.Name, TurnContextExtensions.Summary(context.Arguments)));
         var sw = Stopwatch.StartNew();
-        await next(context);
+        turn.CurrentCallId = callId;            // plugin 發 tool_result 時要用同一個 id（主規格 §10.2）
+        try { await next(context); }
+        finally { turn.CurrentCallId = null; }
         var result = context.Result.ToString();
         try
         {

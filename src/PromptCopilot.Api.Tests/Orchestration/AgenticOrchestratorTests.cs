@@ -44,12 +44,18 @@ public class AgenticOrchestratorTests
         public OrchestratorOptions Options { get; } = new() { MaxToolCallsPerTurn = 8, HistoryTurns = 10 };
         public Session Session { get; } = new("s1");
 
+        /// <summary>把 Chat 包進真的重試層。要驗 attempts 就不能繞過它。</summary>
+        public bool Resilient { get; set; }
+
         public AgenticOrchestrator Build()
         {
             var llm = Microsoft.Extensions.Options.Options.Create(new LlmOptions());
             var guard = new SafetyGuard(new Denylist(Deny), new SafetyClassifier(GuardChat, llm));
             var prompts = new SystemPromptBuilder(Catalog, Options, Path.Combine(AppContext.BaseDirectory, "Prompts", "system.md"));
-            return new AgenticOrchestrator(Chat, Catalog, guard, prompts, SinkOverride ?? Audit, Options,
+            IChatCompletionService chat = Resilient
+                ? new ResilientChatCompletion(Chat, llm, (_, _) => Task.CompletedTask)
+                : Chat;
+            return new AgenticOrchestrator(chat, Catalog, guard, prompts, SinkOverride ?? Audit, Options,
                 new SafetyClassifier(ClassifierChat, llm),
                 kernelFactory: (turn, tools, _) =>
                 {
@@ -139,7 +145,11 @@ public class AgenticOrchestratorTests
         Assert.Equal(FacetState.Covered, h.Session.FacetStates["appearance.hair"]);
         Assert.Equal(1, h.Session.TurnIndex);
         Assert.Equal(AuthorRole.System, h.Session.ChatHistory[0].Role);
-        Assert.Contains(h.Audit.Entries, a => a.EventType == "Turn_Completed" && a.PromptVersion!.Length == 12);
+        var completed = Assert.Single(h.Audit.Entries, a => a.EventType == "Turn_Completed");
+        Assert.Equal(12, completed.PromptVersion!.Length);
+        // 主規格 §5.1：LLM 挑了哪些 facet 追問要看得見；不另開事件，寫在 Turn_Completed 的 payload 裡
+        Assert.Contains("""askedFacetIds":["style.genre"]""", completed.PayloadJson!);
+        Assert.Contains("waivedFacetIds", completed.PayloadJson!);
         var askCall = h.Session.ChatHistory.SelectMany(m => m.Items.OfType<FunctionCallContent>()).Single(c => c.FunctionName == "AskUser");
         Assert.DoesNotContain("photo realism", askCall.Arguments!["asks"]!.ToString());   // history 已壓縮
     }
@@ -157,6 +167,84 @@ public class AgenticOrchestratorTests
         Assert.Empty(h.Session.ChatHistory);
         Assert.Equal(0, h.Session.TurnIndex);
         Assert.Contains(h.Audit.Entries, a => a.EventType == "Turn_Failed" && a.PayloadJson!.Contains("InvalidOperationException"));
+    }
+
+    /// <summary>I8：guard 在 try 外面時，它丟的例外（上游攔截、分類器壞掉）會整個飛出
+    /// ExecuteAsync——使用者拿到端點那個泛用錯誤 frame，audit 一筆都沒有。</summary>
+    [Fact]
+    public async Task Guard_failure_is_reported_as_blocked_not_as_a_raw_exception()
+    {
+        var h = new Harness();
+        h.GuardChat.Throw(new UpstreamBlockedException("SAFETY"));
+        var events = new List<AgentEvent>();
+        await foreach (var e in h.Build().RunTurnAsync(h.Session, "一個少女", default)) events.Add(e);
+
+        var b = Assert.Single(events.OfType<BlockedEvent>());
+        Assert.Equal("Blocked_Upstream", b.Reason);
+        Assert.Contains(h.Audit.Entries, a => a.EventType == "Blocked_Upstream");
+        Assert.Empty(h.Chat.Calls);
+        Assert.Empty(h.Session.ChatHistory);
+        Assert.Equal(0, h.Session.TurnIndex);
+    }
+
+    /// <summary>I11 + 主規格 §12.1：一輪失敗只寫一筆，payload 要記實際嘗試次數。</summary>
+    [Fact]
+    public async Task Upstream_block_writes_one_row_carrying_the_attempt_count()
+    {
+        var h = new Harness { Resilient = true };
+        h.Chat.Throw(new KernelException("Prompt was blocked due to Gemini API safety reasons."))
+              .Throw(new KernelException("Prompt was blocked due to Gemini API safety reasons."));
+        var events = await h.RunAsync("一個少女");
+
+        Assert.Equal("Blocked_Upstream", Assert.Single(events.OfType<BlockedEvent>()).Reason);
+        Assert.Equal(2, h.Chat.Calls.Count);                       // 預設 ContentBlockRetries = 1
+        var row = Assert.Single(h.Audit.Entries, a => a.EventType == "Blocked_Upstream");
+        Assert.Contains("\"attempts\":2", row.PayloadJson!);
+        Assert.DoesNotContain(h.Audit.Entries, a => a.EventType == "Turn_Failed");
+    }
+
+    /// <summary>失敗的內文留在 audit，不送到使用者眼前。</summary>
+    [Fact]
+    public async Task Generic_failure_writes_one_turn_failed_row_and_keeps_the_message_out_of_the_stream()
+    {
+        var h = new Harness();
+        h.Chat.Throw(new InvalidOperationException("pgbouncer pool exhausted"));
+        var events = await h.RunAsync("一個少女");
+
+        var err = Assert.Single(events.OfType<ErrorEvent>());
+        Assert.Equal("turn_failed", err.Code);
+        Assert.DoesNotContain("pgbouncer", err.Message);
+        var row = Assert.Single(h.Audit.Entries, a => a.EventType == "Turn_Failed");
+        Assert.Contains("pgbouncer", row.PayloadJson!);
+    }
+
+    /// <summary>I3：客戶端中途斷線時，端點的 finally 會放掉 session 鎖。若列舉器 dispose 不等
+    /// 背景那一輪收尾，下一輪就能在還在回滾的 Session 上開跑。</summary>
+    [Fact]
+    public async Task Enumerator_disposal_waits_for_the_turn_to_finish_unwinding()
+    {
+        var h = new Harness();
+        var gate = new TaskCompletionSource();
+        h.GuardChat.Then(FakeChatCompletion.Text(OkVerdict));
+        h.Chat.ThenAsync(async (hist, k) =>
+        {
+            await Invoke(hist, k!, "Session", "SetProfile", new { profile = "portrait" });
+            await gate.Task;
+            throw new InvalidOperationException("boom");
+        });
+
+        var e = h.Build().RunTurnAsync(h.Session, "一個少女", default).GetAsyncEnumerator();
+        Assert.True(await e.MoveNextAsync());
+        Assert.IsType<SessionEvent>(e.Current);
+
+        var disposal = e.DisposeAsync().AsTask();
+        Assert.False(disposal.IsCompleted);          // 還在跑就回來＝鎖會被提早放掉
+        gate.SetResult();
+        await disposal;
+
+        Assert.Equal(0, h.Session.TurnIndex);        // 回滾已經做完
+        Assert.Null(h.Session.Profile);
+        Assert.Empty(h.Session.ChatHistory);
     }
 
     [Fact]

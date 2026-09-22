@@ -16,7 +16,10 @@ public sealed class SystemPromptBuilder(FacetCatalog catalog, OrchestratorOption
             .Replace("{{TOOLS}}", string.Join("\n", tools.Order().Select(t => $"- `{t}`")))
             .Replace("{{FACETS}}", s.Profile is null ? catalog.PromptListing() : catalog.ProfileListing(s.Profile))
             .Replace("{{SESSION_FACTS}}", Facts(s))
-            .Replace("{{OFFERED}}", Offered(s));
+            .Replace("{{OFFERED}}", Offered(s))
+            // 樣板的換行在別台機器上可能被 git 轉成 CRLF，Facts/Offered 又是用 Environment.NewLine 接的：
+            // 同一份 prompt 會算出兩個 hash，eval 就對不回 prompt 版本。統一成 \n 再算。
+            .Replace("\r\n", "\n");
         var hash = SHA256.HashData(Encoding.UTF8.GetBytes(prompt));
         return (prompt, Convert.ToHexString(hash)[..12].ToLowerInvariant());
     }

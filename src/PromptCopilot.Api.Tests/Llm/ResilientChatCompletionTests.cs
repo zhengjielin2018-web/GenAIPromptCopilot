@@ -44,6 +44,32 @@ public class ResilientChatCompletionTests
         Assert.Equal(4, inner.Calls.Count);
     }
 
+    /// <summary>Google connector 把「連線被切／DNS 解不到」包成 HttpOperationException，
+    /// StatusCode 填 BadRequest，真正的線索在 inner 的 HttpRequestException.StatusCode == null
+    /// （沒收到任何回應）。照字面看成 400 就變成 Fatal，一次都不重試。
+    /// 真的 Gemini 400 則是 inner.StatusCode == BadRequest，仍然不該重試。</summary>
+    private static HttpOperationException Dropped() =>
+        new(HttpStatusCode.BadRequest, null, "Bad Request", new HttpRequestException("The SSL connection could not be established."));
+    private static HttpOperationException Gemini400() =>
+        new(HttpStatusCode.BadRequest, null, "Role 'function' is not supported.", new HttpRequestException("Bad Request", null, HttpStatusCode.BadRequest));
+
+    [Fact]
+    public void Dropped_connection_is_transport_but_a_real_400_is_not()
+    {
+        Assert.Equal(LlmFailureKind.Transport, LlmFailureClassifier.Classify(Dropped()));
+        Assert.NotEqual(LlmFailureKind.Transport, LlmFailureClassifier.Classify(Gemini400()));
+    }
+
+    [Fact]
+    public async Task Dropped_connection_retries_with_backoff_then_rethrows()
+    {
+        var (sut, inner, delays) = Make(transport: 2);
+        for (var i = 0; i < 3; i++) inner.Throw(Dropped());
+        await Assert.ThrowsAsync<HttpOperationException>(() => sut.GetChatMessageContentsAsync(new ChatHistory()));
+        Assert.Equal(3, inner.Calls.Count);
+        Assert.Equal(new[] { TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(2) }, delays);
+    }
+
     [Fact]
     public async Task Non_transient_http_error_is_not_retried()
     {
@@ -61,6 +87,7 @@ public class ResilientChatCompletionTests
         var ex = await Assert.ThrowsAsync<UpstreamBlockedException>(() => sut.GetChatMessageContentsAsync(new ChatHistory()));
         Assert.Equal("PROHIBITED_CONTENT", ex.Reason);
         Assert.Equal(2, inner.Calls.Count);
+        Assert.Equal(inner.Calls.Count, ex.Attempts);   // Turn_Failed/Blocked_Upstream 的 payload 要記幾次（主規格 §4.6）
         Assert.Empty(delays);
     }
 
@@ -90,6 +117,7 @@ public class ResilientChatCompletionTests
         var ex = await Assert.ThrowsAsync<UnusableResponseException>(() => sut.GetChatMessageContentsAsync(new ChatHistory()));
         Assert.Equal("MAX_TOKENS", ex.FinishReason);
         Assert.Equal(4, inner.Calls.Count);
+        Assert.Equal(4, ex.Attempts);
     }
 
     [Fact]

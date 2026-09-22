@@ -96,4 +96,17 @@ public class HistoryTrimmerTests
         HistoryTrimmer.Truncate(h, 10);
         Assert.Equal(2, h.Count);
     }
+
+    /// <summary>組態填 0（或負數）時 userIdx[^keepTurns] 會直接 IndexOutOfRange，把整輪炸掉。</summary>
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void Truncate_with_non_positive_keep_turns_is_a_noop(int keepTurns)
+    {
+        var h = new ChatHistory();
+        h.AddSystemMessage("sys");
+        for (var i = 1; i <= 3; i++) { h.AddUserMessage($"u{i}"); h.AddAssistantMessage($"a{i}"); }
+        HistoryTrimmer.Truncate(h, keepTurns);
+        Assert.Equal(7, h.Count);
+    }
 }

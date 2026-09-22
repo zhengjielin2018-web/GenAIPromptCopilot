@@ -236,6 +236,23 @@ public class FiltersTests
         Assert.Contains("SetProfile", row.PayloadJson);
     }
 
+    /// <summary>tool_result.callId 要對得上 tool_call.callId（主規格 §10.2）。call id 只有
+    /// AuditFilter 算得出來，所以由它掛到 TurnContext 上讓 plugin 取用。</summary>
+    [Fact]
+    public async Task Audit_publishes_the_call_id_for_the_plugins_to_reuse()
+    {
+        var (k, turn, ch) = Kernel();
+        string? seen = null;
+        await new AuditFilter(new MemorySink()).OnAutoFunctionInvocationAsync(
+            Ctx(k, "SearchPresets", ("dimension", "style")), _ => { seen = turn.CurrentCallId; return Task.CompletedTask; });
+
+        Assert.True(ch.Reader.TryRead(out var e));
+        var call = Assert.IsType<ToolCallEvent>(e);
+        Assert.Equal("0-0", seen);                    // {RequestSequenceIndex}-{FunctionSequenceIndex}
+        Assert.Equal(call.CallId, seen);
+        Assert.Null(turn.CurrentCallId);              // 跑完就清掉，不會漏到下一個 tool
+    }
+
     [Fact]
     public async Task Audit_failure_does_not_fail_the_tool_call()
     {

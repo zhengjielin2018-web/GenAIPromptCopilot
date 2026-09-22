@@ -52,7 +52,7 @@ public sealed class KnowledgePlugin(TurnContext turn, FacetCatalog catalog, IEmb
                 positive = h.PromptSnippet, negative = h.NegativeSnippet ?? "(無)",
             });
         }
-        turn.Emit(new ToolResultEvent(Guid.NewGuid().ToString("N"), ToolNames.SearchPresets,
+        turn.Emit(new ToolResultEvent(turn.CurrentCallId ?? Guid.NewGuid().ToString("N"), ToolNames.SearchPresets,
             $"{catalog.DimensionLabel(dimension, s.Profile)} 池 {pool} → {hits.Count}", hits.Select(h => new PresetRef(h.Id, h.Title, h.ImageUrl)).ToList()));
         return JsonSerializer.Serialize(new { dimension, grounded, poolSize = pool, hits = rows }, Json);
     }
@@ -68,7 +68,7 @@ public sealed class KnowledgePlugin(TurnContext turn, FacetCatalog catalog, IEmb
         if (s.Profile is null) return "錯誤：請先呼叫 SetProfile";
         var vec = (await embed.EmbedAsync(new[] { intent }, GeminiEmbeddingClient.RetrievalQuery, ct))[0];
         var hits = await histories.SearchAsync(vec, s.Profile, Math.Clamp(topK, 1, 5), ct);
-        turn.Emit(new ToolResultEvent(Guid.NewGuid().ToString("N"), ToolNames.SearchSimilarPrompts, $"相似作品 {hits.Count}（{s.Profile}）", null));
+        turn.Emit(new ToolResultEvent(turn.CurrentCallId ?? Guid.NewGuid().ToString("N"), ToolNames.SearchSimilarPrompts, $"相似作品 {hits.Count}（{s.Profile}）", null));
         return JsonSerializer.Serialize(hits.Select(h => new { intent = h.UserIntent, positive = h.PositivePrompt, profile = h.SubjectProfile, dist = Math.Round(h.Dist, 3) }), Json);
     }
 }

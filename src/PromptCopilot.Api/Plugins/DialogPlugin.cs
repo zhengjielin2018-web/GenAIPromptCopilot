@@ -86,7 +86,7 @@ public sealed class DialogPlugin(TurnContext turn, FacetCatalog catalog, Orchest
         foreach (var e in incoming)
         {
             if (!applicable.Contains(e.FacetId) || !FacetStateParser.TryParse(e.State, out var st)) continue;
-            if (S.FacetStates.GetValueOrDefault(e.FacetId) != st) return true;
+            if (turn.TurnStartFacetStates.GetValueOrDefault(e.FacetId) != st) return true;
         }
         return false;
     }

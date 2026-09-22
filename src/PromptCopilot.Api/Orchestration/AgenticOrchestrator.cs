@@ -35,8 +35,19 @@ public sealed class AgenticOrchestrator(
             try { await ExecuteAsync(session, userMessage, channel.Writer, ct); }
             finally { channel.Writer.Complete(); }
         }, CancellationToken.None);
-        await foreach (var e in channel.Reader.ReadAllAsync(CancellationToken.None)) yield return e;
-        await work;   // 讓取消例外浮出來給呼叫端
+        var drained = false;
+        try
+        {
+            await foreach (var e in channel.Reader.ReadAllAsync(CancellationToken.None)) yield return e;
+            drained = true;
+        }
+        finally
+        {
+            // 客戶端中途斷線時，端點的 finally 會立刻放掉 session 鎖。列舉器 dispose 若不等背景這一輪
+            // 收完尾（Restore、audit），下一輪就能在還在回滾的 Session 上開跑，兩輪互相踩。
+            if (drained) await work;                                    // 正常走完：例外照舊浮到呼叫端
+            else { try { await work; } catch (OperationCanceledException) { } }   // 提早離開：只吞取消
+        }
     }
 
     internal async Task ExecuteAsync(Session session, string text, ChannelWriter<AgentEvent> writer, CancellationToken ct)
@@ -44,31 +55,33 @@ public sealed class AgenticOrchestrator(
         var turnIndex = session.TurnIndex + 1;
         writer.TryWrite(new SessionEvent(session.Id, turnIndex, session.Status.ToString()));
 
-        // ① 輸入側：不進 kernel、不計任何東西
-        var g = await guard.CheckAsync(text, ct);
-        if (g.Blocked)
-        {
-            writer.TryWrite(new BlockedEvent(g.BlockCode!, g.Message!));
-            await TryAuditAsync(new AuditEntry(session.Id, turnIndex, g.BlockCode!, RawInput: text,
-                PayloadJson: g.BlockDetail is null ? null : JsonSerializer.Serialize(new { term = g.BlockDetail }, Json)));
-            return;
-        }
-
-        // ② 一輪是一個交易（多輪 §5.6）
+        // 一輪是一個交易（多輪 §5.6）。快照要在 guard 之前取：guard 自己也會丟例外
+        // （上游攔截、分類器壞掉），那些一樣要走下面的攔截／失敗路徑，不能整包飛出去。
         var snapshot = session.Snapshot();
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(TimeSpan.FromSeconds(options.TurnTimeoutSeconds));
         var tct = timeout.Token;
         var sw = Stopwatch.StartNew();
-        var stage = "setup";
+        var stage = "guard";
         string version = "";
         try
         {
+            // ① 輸入側：不進 kernel、不計任何東西
+            var g = await guard.CheckAsync(text, ct);
+            if (g.Blocked)
+            {
+                writer.TryWrite(new BlockedEvent(g.BlockCode!, g.Message!));
+                await TryAuditAsync(new AuditEntry(session.Id, turnIndex, g.BlockCode!, RawInput: text,
+                    PayloadJson: g.BlockDetail is null ? null : JsonSerializer.Serialize(new { term = g.BlockDetail }, Json)));
+                return;
+            }
+
+            stage = "setup";
             tct.ThrowIfCancellationRequested();
             session.TurnIndex = turnIndex;
             var tools = ToolSetBuilder.Build(session, g.WantsAutoComplete, options);
             if (g.WantsAutoComplete) session.AutoFill = true;
-            var turn = new TurnContext(session, turnIndex, g, tools, writer);
+            var turn = new TurnContext(session, turnIndex, g, tools, writer, snapshot.FacetStates);
             (var systemPrompt, version) = prompts.Build(session, tools);
             EnsureSystemMessage(session.ChatHistory, systemPrompt);
             session.ChatHistory.AddUserMessage(text);
@@ -122,50 +135,68 @@ public sealed class AgenticOrchestrator(
             writer.TryWrite(final);
             writer.TryWrite(dimensions);
 
+            // 主規格 §5.1：LLM 挑了哪些 facet 追問、哪些被使用者放掉，要在紀錄裡看得見。
+            // 不另開事件（沒有行為掛在上面），寫進這一筆的 payload。
             await TryAuditAsync(new AuditEntry(session.Id, turnIndex, "Turn_Completed", version, text,
-                JsonSerializer.Serialize(new { outcome = turn.Outcome.GetType().Name, toolCalls = turn.ToolCalls, rejections = turn.Rejections }, Json),
+                Payload(("outcome", turn.Outcome.GetType().Name), ("toolCalls", turn.ToolCalls), ("rejections", turn.Rejections),
+                    ("askedFacetIds", turn.Outcome is AskOutcome ask ? ask.Asks.SelectMany(a => a.MissingFacetIds).Distinct().ToArray() : null),
+                    ("waivedFacetIds", session.FacetStates.Where(kv => kv.Value == FacetState.Waived).Select(kv => kv.Key).ToArray())),
                 LatencyMs: (int)sw.ElapsedMilliseconds));
         }
         catch (OutputBlockedException e)
         {
             session.Restore(snapshot);
             writer.TryWrite(new BlockedEvent("Blocked_Output", $"這一輪的輸出被攔截：{e.Reason}。你可以改寫需求後再送。"));
-            await TryAuditAsync(new AuditEntry(session.Id, turnIndex, "Blocked_Output", version, text, JsonSerializer.Serialize(new { e.Reason }, Json)));
+            await TryAuditAsync(new AuditEntry(session.Id, turnIndex, "Blocked_Output", version, text, Payload(("reason", e.Reason))));
         }
         catch (UpstreamBlockedException e)
         {
             session.Restore(snapshot);
             writer.TryWrite(new BlockedEvent("Blocked_Upstream",
                 $"Gemini 判定這次的內容不該生成，已攔截（{e.Reason}）。這不是程式錯誤，也不是知識庫的問題；下一步在你手上——改寫需求或直接再送一次。"));
-            await TryAuditAsync(new AuditEntry(session.Id, turnIndex, "Blocked_Upstream", version, text, JsonSerializer.Serialize(new { e.Reason, stage }, Json)));
+            await TryAuditAsync(new AuditEntry(session.Id, turnIndex, "Blocked_Upstream", version, text,
+                Payload(("reason", e.Reason), ("stage", stage), ("attempts", AttemptsOf(e)))));
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
             session.Restore(snapshot);
-            await TryAuditAsync(new AuditEntry(session.Id, turnIndex, "Turn_Failed", version, text, JsonSerializer.Serialize(new { stage, errorClass = "ClientDisconnected" }, Json)));
+            await TryAuditAsync(new AuditEntry(session.Id, turnIndex, "Turn_Failed", version, text, Payload(("stage", stage), ("errorClass", "ClientDisconnected"))));
             throw;
         }
         catch (OperationCanceledException)
         {
             session.Restore(snapshot);
             writer.TryWrite(new ErrorEvent("timeout", $"這一輪超過 {options.TurnTimeoutSeconds} 秒沒完成，已取消。可以直接再送一次。"));
-            await TryAuditAsync(new AuditEntry(session.Id, turnIndex, "Turn_Failed", version, text, JsonSerializer.Serialize(new { stage, errorClass = "Timeout" }, Json)));
+            await TryAuditAsync(new AuditEntry(session.Id, turnIndex, "Turn_Failed", version, text, Payload(("stage", stage), ("errorClass", "Timeout"))));
         }
         catch (ProtocolViolationException e)
         {
             session.Restore(snapshot);
             writer.TryWrite(new ErrorEvent("protocol_violation", "模型這一輪沒有給出可用的回應，已還原。可以直接再送一次。"));
             await TryAuditAsync(new AuditEntry(session.Id, turnIndex, "Turn_Failed", version, text,
-                JsonSerializer.Serialize(new { stage, errorClass = nameof(ProtocolViolationException), message = e.Message }, Json)));
+                Payload(("stage", stage), ("errorClass", nameof(ProtocolViolationException)), ("message", e.Message))));
         }
         catch (Exception e)
         {
             session.Restore(snapshot);
-            writer.TryWrite(new ErrorEvent("turn_failed", $"這一輪失敗，已還原到送出前的狀態：{e.Message}。可以直接再送一次。"));
+            // 例外訊息可能帶連線字串、路徑、上游原文：留在 audit 就好，不送到使用者眼前
+            writer.TryWrite(new ErrorEvent("turn_failed", "這一輪失敗，已還原到送出前的狀態。可以直接再送一次。"));
             await TryAuditAsync(new AuditEntry(session.Id, turnIndex, "Turn_Failed", version, text,
-                JsonSerializer.Serialize(new { stage, errorClass = e.GetType().Name, message = e.Message }, Json)));
+                Payload(("stage", stage), ("errorClass", e.GetType().Name), ("message", e.Message), ("attempts", AttemptsOf(e)))));
         }
     }
+
+    /// <summary>null 的欄位直接不寫進去（主規格 §4.6：attempts 沒有就不要硬塞一個 0）。</summary>
+    private static string Payload(params (string Key, object? Value)[] fields) =>
+        JsonSerializer.Serialize(fields.Where(f => f.Value is not null).ToDictionary(f => f.Key, f => f.Value), Json);
+
+    /// <summary>只有重試層包出來的兩種例外知道自己打了幾次。</summary>
+    private static object? AttemptsOf(Exception e) => e switch
+    {
+        UpstreamBlockedException { Attempts: > 0 } u => u.Attempts,
+        UnusableResponseException { Attempts: > 0 } r => r.Attempts,
+        _ => null,
+    };
 
     /// <summary>稽核是旁路：寫不進去不該回滾已成立的一輪，也不該吃掉使用者該看到的事件。
     /// 失敗由 DB 監控發現；不另發事件，免得前端誤出重試按鈕。</summary>
