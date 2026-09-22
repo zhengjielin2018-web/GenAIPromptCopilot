@@ -97,17 +97,21 @@ LLM：**`gemini-3.5-flash-lite`**（子專案 1 執行時實測定案。注意�
 | Plugin.Function | 參數 | 性質 |
 | :--- | :--- | :--- |
 | `KnowledgePlugin.SearchSimilarPrompts` | `intent: string, topK: int = 3` | 可重複；RAG 1，查 `shared_prompt_histories`，以 session profile 過濾 |
-| `KnowledgePlugin.SearchPresets` | `query: string, facetIds: string[], topK: int = 5` | 可重複；RAG 2，**分維度檢索** `prompt_knowledge_presets`：一次呼叫一個維度，`query` 是該維度專屬語句，見 §9 |
+| `KnowledgePlugin.SearchPresets` | `dimension: string, query: string` | 可重複；RAG 2，**分維度檢索** `prompt_knowledge_presets`：一次呼叫一個維度，`query` 是該維度專屬語句，見 §9 |
 | `SessionPlugin.SetProfile` | `profile: portrait \| landscape \| object \| vehicle` | 可重複；設定題材 profile，重置 facet 狀態 |
-| `SessionPlugin.SetFacetStates` | `updates: { facetId: string, state: FacetState, note?: string }[]` | 可重複；主要用於 `waived` |
-| `DialogPlugin.AskUser` | `preamble: string, asks: { dimension, question, missingFacetIds, options }[], facetStates: Dictionary<string, FacetState>` | **終止型**；`asks` 1–3 則，每則 `options` 2–4 個 |
-| `DialogPlugin.Discuss` | `message: string, options?: { label, tags, presetId? }[], facetStates: Dictionary<string, FacetState>` | **終止型**；`options` 0–4 個參考方向，不帶 `missingFacetIds` |
-| `DialogPlugin.FinalizePrompt` | `positivePrompt: string, negativePrompt: string, tips: string, facetStates: Dictionary<string, FacetState>` | **終止型** |
+| `SessionPlugin.SetFacetStates` | `updates: FacetStateEntry[]` | 可重複；主要用於 `waived` |
+| `DialogPlugin.AskUser` | `preamble: string, asks: { dimension, question, missingFacetIds, options }[], facetStates: FacetStateEntry[]` | **終止型**；`asks` 1–3 則，每則 `options` 2–4 個 |
+| `DialogPlugin.Discuss` | `message: string, facetStates: FacetStateEntry[], options: { label, tags, presetId? }[]? = null` | **終止型**；`options` 0–4 個參考方向，不帶 `missingFacetIds` |
+| `DialogPlugin.FinalizePrompt` | `positivePrompt: string, negativePrompt: string, tips: string, facetStates: FacetStateEntry[]` | **終止型** |
 | `DialogPlugin.RequestSaveConsent` | 無 | **終止型**；不碰 DB，只觸發前端確認卡片 |
 
 `FacetState = covered | missing | waived | notApplicable`。
 
 `facetStates` 在 `AskUser` / `Discuss` / `FinalizePrompt` 為必填，後端以此更新 session 並發 `dimensions` 事件。
+
+**`facetStates` 是陣列不是 dictionary。** `FacetStateEntry = { facetId: string, state: FacetState, note?: string }`，與 `SetFacetStates.updates` 同一個型別。SK 由 C# 型別產 function declaration 給 Gemini，`Dictionary<string, X>` 會變成「任意鍵的物件」——Gemini 的 schema 不支援開放鍵的 map，描述不出「鍵必須是 facet id」。陣列則能把 `facetId` 寫成具名欄位，順便讓 `note`（「使用者委託此項」）有地方放。
+
+**`SearchPresets` 只收 `dimension` 與 `query`，`facetIds` 與 `k` 由伺服器導出。** 維度 → facet 集合是 `facets.yaml` 加 session profile 的函式，LLM 傳進來只是多一個可被捏造的欄位（同 §9 的 `grounded` 原則）；`k` 則取決於該維度 grounded 與否（grounded 5、missing 3），也是伺服器才知道的事。
 
 **`AskUser` 完整簽名**
 
@@ -120,7 +124,7 @@ AskUser(
     missingFacetIds: string[],
     options:         [{ label: string, tags: string, presetId: int? }]   // 2–4 個，必須不同方向
   }],
-  facetStates: Dictionary<string, FacetState>
+  facetStates: FacetStateEntry[]
 )
 ```
 
@@ -139,10 +143,12 @@ LLM 該先問哪三個維度由 system prompt 引導（風格是最大的槓桿�
 ```text
 Discuss(
   message:     string,                                   // 繁中回覆內容
-  options:     [{ label: string, tags: string, presetId: int? }]?,   // 0–4 個參考方向
-  facetStates: Dictionary<string, FacetState>            // 必填
+  facetStates: FacetStateEntry[],                        // 必填
+  options:     [{ label: string, tags: string, presetId: int? }]? = null   // 0–4 個參考方向
 )
 ```
+
+`options` 排在最後而且有預設值：SK 只看「有沒有預設值」決定必填與否（可為 null 不算）。沒有預設值時，Gemini 照描述省略它會丟 `KernelException`，白白吃掉一格 tool 預算。
 
 **語意：回應。** 這是我對你問題的回答；你可以無視它繼續講別的。使用者發起的討論與提問走這裡，不消耗 `AskCount`（§4.3、§4.4）。
 
@@ -274,14 +280,20 @@ LedgerEntry {
 
 | Filter | 介面 | 職責 |
 | :--- | :--- | :--- |
-| `TerminalToolFilter` | `IAutoFunctionInvocationFilter` | `AskUser` / `Discuss` / `FinalizePrompt` / `RequestSaveConsent` 執行後設 `context.Terminate = true`；§4.6 的三個擋回檢查（`Profile == null`、`Finalized` 下 `Discuss` 變更 facet、`asks` 清洗後為空）在此判定，不終止並回結構化錯誤 |
+| `TerminalToolFilter` | `IAutoFunctionInvocationFilter` | 終止型 tool 成功（plugin 設了 `TurnContext.Outcome`）後設 `context.Terminate = true` |
 | `ToolBudgetFilter` | `IAutoFunctionInvocationFilter` | 計數單輪 tool 呼叫，超過 `MaxToolCallsPerTurn`（預設 8）→ `Terminate`，觸發強制定稿（§4.6） |
-| `OutputSafetyFilter` | `IFunctionInvocationFilter` | 掛在 `FinalizePrompt` / `AskUser` / `Discuss`；檢查範圍見 §6.2，命中則改寫結果為 blocked、中止，並回滾本輪（§4.6） |
-| `AuditFilter` | `IAutoFunctionInvocationFilter` | 每次 tool 呼叫、每次攔截、token 與延遲寫入 `audit_logs` |
+| `OutputSafetyFilter` | `IAutoFunctionInvocationFilter` | 掛在 `FinalizePrompt` / `AskUser` / `Discuss`；檢查範圍見 §6.2，命中則設 `BlockedOutcome` + `Terminate`，由 orchestrator 回滾本輪（§4.6） |
+| `AuditFilter` | `IAutoFunctionInvocationFilter` | 每次 tool 呼叫、每次攔截、token 與延遲寫入 `audit_logs`；也把本次的 `callId` 掛上 `TurnContext` 供 plugin 發 `tool_result`（§10.2） |
 
-輸入側安全檢查（`SafetyGuard`）在 service 層、進 kernel 之前執行，不是 SK filter——因為 agentic chat completion 路徑不會觸發 `IPromptRenderFilter`。
+**四個都是 `IAutoFunctionInvocationFilter`。** `IFunctionInvocationFilter` 在 auto-invoke 路徑上拿不到這一輪的 `AutoFunctionInvocationContext`（`Terminate`、`RequestSequenceIndex`），而攔截要能停下整個迴圈，不只是讓一次呼叫失敗。
 
-**`Finalized` 之下 `Discuss` 不得變更 facet 狀態。** 定稿後使用者說「風格改成動漫」，LLM 可能 `Discuss` 回「好的」並帶著改過的 `facetStates`，但沒有 `FinalizePrompt`——儀表板變了、定稿卡沒變。任何 facet 變動都意味著 prompt 該重組。程式碼保證：`Status == Finalized` 且 `Discuss.facetStates` 與 session 現值不同 → `TerminalToolFilter` 不終止，回結構化錯誤「facet 狀態有變更，請改用 `FinalizePrompt`」，計入 tool 預算。跟 `Profile == null` 的處理同一個模式。
+**攔截一律走 `Terminate` + outcome，不丟例外。** SK 的 auto-invoke 迴圈會把 filter 丟出的例外當成連線層失敗往上冒，重試層看不懂；改成在 `TurnContext` 上留下 `BlockedOutcome`、把 `context.Result` 換成一句錯誤字串，再由 orchestrator 在迴圈外判定要回滾還是繼續。
+
+**擋回檢查在 plugin 裡，不在 filter 裡。** `Profile == null`、`asks` 清洗後為空、`Finalized` 下變更 facet 這三件事都是「這個 tool 的參數不合格」，plugin 直接回結構化錯誤字串、不設 outcome，迴圈自然繼續、也自然計入 tool 預算。filter 不需要知道每個 tool 的參數語意。
+
+**`Finalized` 之下 `Discuss` 不得變更 facet 狀態。** 定稿後使用者說「風格改成動漫」，LLM 可能 `Discuss` 回「好的」並帶著改過的 `facetStates`，但沒有 `FinalizePrompt`——儀表板變了、定稿卡沒變。任何 facet 變動都意味著 prompt 該重組。程式碼保證：`Status == Finalized` 且 `Discuss.facetStates` 與**本輪開始時**的狀態不同 → 回結構化錯誤「facet 狀態有變更，請改用 `FinalizePrompt`」，計入 tool 預算。比的是本輪開始時而不是現值：`SetFacetStates` 每輪都在清單裡，先用它改掉再用 `Discuss` 回報同一組值，比現值就永遠相等，這道閘門等於不存在。
+
+輸入側安全檢查（`SafetyGuard`）在 service 層、進 kernel 之前執行，不是 SK filter——因為 agentic chat completion 路徑不會觸發 `IPromptRenderFilter`。它本身也會失敗（上游攔截、分類器回不出 JSON），所以呼叫點在 orchestrator 的交易 `try` 之內，失敗走跟其他階段一樣的 `blocked`／`error` 事件與 audit。
 
 ### 4.6 失敗模式處理
 
@@ -351,7 +363,9 @@ RunTurnAsync(session, text, ct):
 - **對話**：`Llm:Provider = Gemini | OpenAI`、`Llm:Model`、`Llm:ApiKey`、`Llm:Endpoint?`。DI 時依組態註冊對應 SK connector。
 - **Embedding**：`Embedding:Provider`、`Embedding:Model`、`Embedding:Dimensions`。**換 embedding 模型 = 整個向量庫必須重算**，README 與組態檔明確標註；管線 `embed.py --reindex` 對應。
 
-**Connector 選擇是子專案 2 的第一項任務**：優先驗證「SK OpenAI connector 對 Gemini 的 OpenAI 相容端點」能否穩定跑 function calling + streaming。若可，Gemini 與 OpenAI 共用同一 connector，切換 provider 為純組態；若不可，改用 `Microsoft.SemanticKernel.Connectors.Google`。
+**Connector 選擇（子專案 2 已定案）：`Microsoft.SemanticKernel.Connectors.Google` 1.80.1-alpha。** 原本的計畫是先試「SK OpenAI connector 對 Gemini 的 OpenAI 相容端點」，共用一個 connector 就能把切換 provider 變成純組態。否決的理由是可觀測性：相容層不會把 `promptFeedback.blockReason` / `finishReason` 帶進 `ChatMessageContent.Metadata`，而上游內容攔截（§6.2）必須跟一般失敗分開記、分開回話——沒有那兩個欄位就只剩猜。Google connector 會把它們放進 `GeminiMetadata`，`Blocked_Upstream` 才有依據。代價是 OpenAI 要另外接一個 connector，`IChatCompletionService` 這層抽象仍在。
+
+**`GeminiRoleFixHandler`（暫時的 workaround）。** 1.80.1-alpha 把 tool 回覆那一則 content 標成 `"role":"function"`，Gemini API 只收 user／model，直接回 400（`Role 'function' is not supported`）。第一趟往返（只有 user）永遠沒事，第二趟（帶 `functionResponse`）必炸——也就是只要模型呼叫了任何 tool，這一輪就結束不了。做法是插一個 `DelegatingHandler`，送出前把請求 JSON 裡的 `"role":"function"` 改成 `"role":"user"`。**移除條件**：connector 升版後，拿掉 handler 跑 `GeminiContractTests.Auto_invoke_survives_sending_a_tool_result_back` 仍綠，就刪掉整個檔案與 `Program.cs` 裡的注入。
 
 ### 4.9 System prompt
 
@@ -393,7 +407,7 @@ interface IPromptOrchestrator {
 
 ### 5.1 結構
 
-六個維度，每個維度下掛一組 facet。**充足度判定與追問優先級皆由 LLM 於 runtime 判斷**，不做靜態的 critical/helpful 標註——哪個 facet 重要高度依題材而定，靜態標註反而不準。LLM 挑了哪些 facet 追問會寫入 `audit_logs`（`Ask_Facets_Selected`），使其可觀察。
+六個維度，每個維度下掛一組 facet。**充足度判定與追問優先級皆由 LLM 於 runtime 判斷**，不做靜態的 critical/helpful 標註——哪個 facet 重要高度依題材而定，靜態標註反而不準。LLM 挑了哪些 facet 追問仍要可觀察，但不另開事件：寫在該輪 `Turn_Completed` 的 `payload` 裡（`askedFacetIds` = 這輪 `AskUser` 全部的 `missingFacetIds`，沒追問就不寫這個欄位；`waivedFacetIds` = 當下處於 `waived` 的 facet）。獨立事件要有自己的觸發時機與消費者才划算，這兩筆資料的問法都是「那一輪發生了什麼」，跟 `Turn_Completed` 同一個鍵。
 
 ### 5.2 `portrait` profile
 
@@ -514,9 +528,13 @@ profiles:
 
 | Tool | 檢查欄位 |
 | :--- | :--- |
-| `FinalizePrompt` | `positivePrompt` |
+| `FinalizePrompt` | `positivePrompt`、`tips` |
 | `Discuss` | `message`、`options[].label`、`options[].tags` |
-| `AskUser` | `asks[].question`、`asks[].options[].label`、`asks[].options[].tags` |
+| `AskUser` | `preamble`、`asks[].question`、`asks[].options[].label`、`asks[].options[].tags` |
+
+**是這張表，不是「把全部參數串起來」。** `negativePrompt` 與 `facetStates` 不在表內，而且不能在：SD 的負向詞常態就是 `nsfw, nude, naked`——那是排除清單，把它餵給分類器等於要它攔我們自己的排除詞，每一次定稿都會被自己擋下來。`facetStates` 則是機器狀態，沒有人會看到。
+
+**純文字補救那條路要自己檢一次。** §4.6 的「兩次都回純文字就包成 `Discuss`」是在 kernel 外面直接呼叫 plugin 的，filter 不會跑；但包出來的 `message` 一樣會送到使用者眼前，所以包之前先跑同一個分類器，命中就走一樣的 `Blocked_Output` 回滾。
 
 理由是「防止無害輸入配上 preset 組出不當內容」對 `options` 一字不差地成立：`options` 直接來自 `prompt_knowledge_presets`，走的是跟定稿一模一樣的來源；輸入側擋不到（輸入無害），出口不一致難講。代價是每個討論回合多一次 Gemini Flash 分類呼叫；討論回合本來就不跑六次 `SearchPresets`，延遲在這種輪次裡幾乎看不出來。
 
@@ -568,7 +586,9 @@ Python 管線在 `clean.py` 階段過濾 NSFW（Civitai API `nsfw=None` 參數 +
 
 ## 7. 資料模型
 
-`db/init/001_schema.sql` 為 schema 單一真實來源，由 docker-compose 於首次啟動執行。**不用 EF Core Migration**——Python 與 C# 共用資料庫，且 pgvector 型別與 HNSW 索引用 migration 表達不自然。EF Core 只負責讀寫。
+`db/init/001_schema.sql` 為 schema 單一真實來源，由 docker-compose 於首次啟動執行。**不用 EF Core Migration**——Python 與 C# 共用資料庫，且 pgvector 型別與 HNSW 索引用 migration 表達不自然。
+
+**讀寫也不用 EF Core：直接 Npgsql + Pgvector 寫原生 SQL**（`NpgsqlDataSourceBuilder.UseVector()`）。全部的查詢就是三張表各一到兩句、都帶向量運算子（`<=>`）與陣列運算子（`&&`），EF 對這兩者都要走 raw SQL 或第三方擴充，等於為了一層映射多一層翻譯。`Data/` 底下因此是 `PresetRepository`／`HistoryRepository`／`AuditRepository` 三個 repository，沒有 `DbContext`、沒有 entity 類別。
 
 向量維度 `<DIM>` = **768**，模型 `gemini-embedding-001`（stable、支援逐筆批次與 `task_type`；`gemini-embedding-2` 仍為 preview 且多輸入會合併成單一向量，不採用）。與 `.env` 的 `EMBEDDING_DIMENSIONS` 及 `appsettings` 的 `Embedding:Dimensions` 保持一致。
 
@@ -630,7 +650,11 @@ CREATE TABLE audit_logs (
 CREATE INDEX idx_audit_session ON audit_logs (session_id, created_at);
 ```
 
-`event_type` 值：`Blocked_NSFW`、`Blocked_Celebrity`、`Blocked_Output`、`Blocked_Upstream`（上游模型拒絕產出，§6.2；與 `Blocked_NSFW` 分開記）、`Tool_Invoked`、`Turn_Budget_Exhausted`、`Tool_Budget_Exhausted`、`Facet_Waived`、`Ask_Facets_Selected`、`Protocol_Violation`、`Turn_Failed`（一輪失敗一筆，`payload` 記 `{ stage, errorClass, attempts }`，§4.6）、`Saved_To_Shared`（`/save-to-shared` 寫入成功）、`Turn_Completed`（含 token 與延遲）。
+`event_type` 值：`Blocked_NSFW`（denylist 命中時 `payload` 記 `{ term }`——命中的詞只進這裡，不回給使用者）、`Blocked_Celebrity`、`Blocked_Output`、`Blocked_Upstream`（上游模型拒絕產出，§6.2；與 `Blocked_NSFW` 分開記，`payload` 記 `{ reason, stage, attempts? }`）、`Tool_Invoked`、`Tool_Budget_Exhausted`、`Protocol_Violation`、`Turn_Failed`（一輪失敗一筆，`payload` 記 `{ stage, errorClass, message, attempts? }`，§4.6）、`Saved_To_Shared`（`/save-to-shared` 寫入成功）、`Turn_Completed`（含 token 與延遲，`payload` 另記 `outcome`、`toolCalls`、`rejections`、`askedFacetIds?`、`waivedFacetIds`，§5.1）。
+
+`attempts` 只有在例外是由重試層（§4.6）包出來、知道自己實際打了幾次時才寫；不知道就不寫，不硬塞 0。
+
+原草稿還列了 `Turn_Budget_Exhausted`、`Facet_Waived`、`Ask_Facets_Selected` 三個，**不實作**：`AskCount` 用盡的表現是工具從清單裡消失（§4.3），不是一個事件；後兩者的資料都在 `Turn_Completed` 的 `payload` 裡（§5.1）。
 
 ## 8. Python 管線
 
@@ -683,6 +707,8 @@ scripts/
 
 查詢向量於 runtime 以同一 embedding 模型計算；多個維度的查詢語句合併為單次 `embed_batch` 呼叫。
 
+**embedding 不走 SK 抽象，直接打 REST `:batchEmbedContents`。** 要保證的是三件事跟 Python 管線逐字一致：`taskType`（查詢用 `RETRIEVAL_QUERY`、入庫用 `RETRIEVAL_DOCUMENT`）、`outputDimensionality: 768`、回來之後自己做 L2 正規化（`gemini-embedding-001` 在非預設維度下不保證單位長度，而 `vector_cosine_ops` 的距離只有在單位向量上才跟管線算出來的值可比）。SK 的 embedding 抽象當時蓋不到 `taskType` 與 `outputDimensionality`，包一層反而要繞過它。`Llm/GeminiEmbeddingClient` 因此是一個 `HttpClient` 的薄封裝，介面 `IEmbeddingClient` 只有 `EmbedAsync(texts, taskType, ct)`。
+
 完整推導與 Python 參考實作見 [2026-09-22-dimension-scoped-retrieval-design.md](2026-09-22-dimension-scoped-retrieval-design.md)。
 
 ## 10. API 與 SSE 協定
@@ -692,11 +718,15 @@ scripts/
 | 方法 | 路徑 | 說明 |
 | :--- | :--- | :--- |
 | `POST` | `/api/sessions` | 建立 session → `{ sessionId }` |
-| `POST` | `/api/sessions/{id}/messages` | body `{ text }`；回 `text/event-stream` |
-| `POST` | `/api/sessions/{id}/save-to-shared` | 需 `Finalized`；寫 `shared_prompt_histories` 並向量化；**唯一的寫入路徑** |
+| `POST` | `/api/sessions/{id}/messages` | body `{ text }`；回 `text/event-stream`；同一 session 已有一輪在跑 → `409` |
+| `POST` | `/api/sessions/{id}/save-to-shared` | body `{ intent }`；需 `Finalized`，否則 `409`；寫 `shared_prompt_histories` 並向量化；**唯一的寫入路徑** |
 | `GET` | `/api/config/facets` | 回 `facets.yaml` 內容供前端渲染 |
 | `GET` | `/api/presets/{id}` | preset 詳情（抽屜用） |
 | `GET` | `/health` | |
+
+`save-to-shared` 的 `intent` 是使用者這次需求的整句繁中原話（會被向量化成 `intent_embedding`，即 RAG 1 的檢索鍵），不是定稿的英文提示詞；定稿內容從 session 的 `LastFinal` 取，不由客戶端送。
+
+`save-to-shared` 與 `/messages` **共用同一把 session 鎖**：它要讀 `FacetStates` 與 `LastFinal`，那一輪還在跑（而且隨時可能被回滾）時讀到的是半途的狀態，所以拿不到鎖一樣回 `409`。資料列寫進去之後的稽核寫入失敗不影響回應——否則使用者一重試就多一筆重複的共享紀錄。
 
 前端以 `fetch` + `ReadableStream` 消費 SSE（`EventSource` 不支援 POST）。
 
@@ -706,7 +736,7 @@ scripts/
 | :--- | :--- | :--- |
 | `session` | `{ sessionId, turnIndex, status }` | 初始化 |
 | `tool_call` | `{ callId, name, argsSummary }` | 對話流插入行內卡片 |
-| `tool_result` | `{ callId, name, summary, presets?: [{id, title, imageUrl}] }` | 展開卡片；餵抽屜 |
+| `tool_result` | `{ callId, name, summary, presets?: [{id, title, imageUrl}] }` | 展開卡片；餵抽屜。`callId` **等於**對應 `tool_call` 的 `callId`（同一次呼叫的兩個事件），前端據此配對 |
 | `dimensions` | `{ profile, facetStates: {facetId: state} }` | 儀表板更新 |
 | `token` | `{ text }` | 打字機 |
 | `final` | 四種 `kind`，見下 | 追問卡／對話氣泡／定稿卡片／高亮入庫按鈕 |
@@ -880,10 +910,12 @@ GenAIPromptCopilot/
 │  │  │                                  # StateMachineOrchestrator(空殼), ToolSetBuilder
 │  │  ├─ Plugins/                        # KnowledgePlugin, DialogPlugin, SessionPlugin
 │  │  ├─ Filters/                        # TerminalTool, ToolBudget, OutputSafety, Audit
-│  │  ├─ Safety/                         # SafetyGuard (輸入側), SafetyClassifier
+│  │  ├─ Safety/                         # SafetyGuard (輸入側), SafetyClassifier, Denylist
+│  │  ├─ Llm/                            # ResilientChatCompletion, 失敗分類,
+│  │  │                                  # GeminiEmbeddingClient, GeminiRoleFixHandler
 │  │  ├─ Streaming/                      # AgentEvent, Channel 基礎建設, SSE writer
-│  │  ├─ Sessions/                       # Session, SessionStore
-│  │  ├─ Data/                           # DbContext, entities, repositories
+│  │  ├─ Sessions/                       # Session, SessionStore, PresetLedger
+│  │  ├─ Data/                           # repositories（Npgsql 原生 SQL，無 DbContext／entity）
 │  │  ├─ Prompts/system.md
 │  │  └─ Configuration/facets.yaml
 │  ├─ PromptCopilot.Api.Tests/
@@ -952,3 +984,20 @@ Azure 部署排除。
 | 上游內容攔截的內部重試 | 1 次（原 0 次） | 實測同一份 SFW 內容會被誤擋，重送一次常會過；送到上游的內容已先過我們自己的 `SafetyGuard`，容忍第二個分類器一次誤判合理。上限 1 是為了不變成「重送到過為止」——那才是規避安全判定 |
 | 傳輸重試次數 | 3（Python 管線是 6） | 互動場景每輪 3–4 次上游呼叫，6 次退避會吃掉整輪預算 |
 | 單輪逾時 | 120s（原 60s） | 給三層重試留空間；退避吃同一個 `CancellationToken`，不會逾時了還在等 |
+| 對話 connector | `Connectors.Google`（否決 OpenAI 相容端點） | 相容層不回 `blockReason`／`finishReason`，`Blocked_Upstream` 就只剩猜（§4.8） |
+| `GeminiRoleFixHandler` | 暫時保留，附移除條件 | connector 1.80.1-alpha 把 tool 回覆標成 `role:"function"`，Gemini 回 400；只要模型呼叫任何 tool 這一輪就結束不了（§4.8） |
+| 資料存取 | Npgsql + Pgvector 原生 SQL，不用 EF Core | 查詢全帶 `<=>` 與 `&&`，EF 對兩者都要走 raw SQL，多一層翻譯沒有收益（§7） |
+| embedding 客戶端 | 自己打 REST `:batchEmbedContents` | 要鎖住 `taskType`／`outputDimensionality`／L2 正規化與 Python 管線一致，SK 抽象當時蓋不到（§9） |
+| `facetStates` 形狀 | `FacetStateEntry[]`，不是 dictionary | Gemini 的 function declaration schema 描述不出開放鍵的 map；陣列還能放 `note`（§4.2） |
+| `SearchPresets` 參數 | 只收 `dimension` 與 `query` | `facetIds` 與 `k` 都是伺服器算得出來的，傳進來只是多一個可被捏造的欄位（§4.2、§9） |
+| filter 介面 | 四個都是 `IAutoFunctionInvocationFilter` | `IFunctionInvocationFilter` 拿不到 `Terminate`，攔截停不了整個迴圈（§4.5） |
+| 攔截的表達方式 | `Terminate` + `BlockedOutcome`，不丟例外 | filter 的例外會被 SK 當成連線層失敗往上冒，重試層看不懂（§4.5） |
+| `Discuss` 變更閘門比對基準 | 本輪開始時的 facet 狀態 | 比現值的話，先 `SetFacetStates` 改掉再 `Discuss` 回報同值就永遠相等，閘門等於不存在（§4.5） |
+| 輸出審核的取材方式 | 照 §6.2 的欄位表逐 tool 取，不是把參數整包串起來 | 範圍仍是全檢（上一列），但 `negativePrompt` 常態含 `nsfw, nude, naked`（那是排除清單），整包餵進去等於拿自己的排除詞去問分類器 |
+| 分類器 prompt 的形狀 | 待審內容夾在 `<<<INPUT` / `INPUT>>>` 之間，並註明是資料不是指令 | 原本直接把使用者文字接在指示後面，等於邀請它自稱是指示 |
+| 分類器判定缺 `reason` | 當成解析失敗丟例外 | `{}` 也是合法 JSON，反序列化出來剛好是「全 false」——那是漏判，不是乾淨（fail-open） |
+| denylist 命中的訊息 | 不複述命中的詞，詞只進 audit payload | 複述等於把清單一個一個唸給使用者聽 |
+| `Ask_Facets_Selected` 等三個事件 | 不實作 | `AskCount` 用盡表現為工具消失；另兩者的資料放 `Turn_Completed` 的 payload（§5.1、§7） |
+| `tool_result.callId` | 等於 `tool_call.callId` | 前端要配對；id 由 `AuditFilter` 算好掛在 `TurnContext` 上（§10.2） |
+| 錯誤 frame 的內容 | 固定句子，不帶例外訊息 | 例外訊息可能帶連線字串、路徑、上游原文；內文留在 audit 與 log |
+| `save-to-shared` 的併發 | 與 `/messages` 共用 session 鎖，拿不到回 409 | 它讀的 `FacetStates`／`LastFinal` 在一輪跑完之前都還可能被回滾（§10.1） |
