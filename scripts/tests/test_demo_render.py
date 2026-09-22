@@ -98,7 +98,7 @@ P = Palette(False)
 
 def _cand(pid, dim, dist, grounded=True, coverage=None, title=None):
     return Candidate(
-        preset={"id": pid, "title": title or f"t{pid}", "category": dim.title(), "facet_ids": [], "tags": [],
+        preset={"id": pid, "title": title or f"t{pid}", "category": dim.title(), "facet_ids": [],
                 "prompt_snippet": "1girl, twintails", "negative_snippet": None},
         dimension=dim, dist=dist, band=band(dist), grounded=grounded, facet_coverage=coverage or {},
     )

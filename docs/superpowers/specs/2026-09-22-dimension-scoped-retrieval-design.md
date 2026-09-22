@@ -126,7 +126,7 @@ class AssemblyResult(BaseModel):
 ```python
 @dataclass
 class Candidate:
-    preset: dict            # id, title, category, facet_ids, tags, prompt_snippet, negative_snippet
+    preset: dict            # id, title, category, facet_ids, prompt_snippet, negative_snippet
     dimension: Dimension    # 去重後歸屬的維度
     dist: float
     band: Literal["高", "中", "低"]
@@ -160,7 +160,7 @@ class Candidate:
 ### 5.1 SQL
 
 ```sql
-SELECT id, title, category, facet_ids, tags, prompt_snippet, negative_snippet,
+SELECT id, title, category, facet_ids, prompt_snippet, negative_snippet,
        preset_embedding <=> %(q)s AS dist
 FROM prompt_knowledge_presets
 WHERE facet_ids && %(facets)s          -- idx_presets_facet_ids (GIN)
