@@ -23,5 +23,6 @@ public sealed record MessageOutcome(string Message, IReadOnlyList<OptionItem> Op
 public sealed record FinalizedOutcome(FinalPrompt Final) : TurnOutcome;
 public sealed record SaveConsentOutcome : TurnOutcome;
 public sealed record BudgetExhaustedOutcome : TurnOutcome;
+public sealed record BlockedOutcome(string Reason) : TurnOutcome;
 
 public sealed record CleanResult<T>(IReadOnlyList<T> Kept, IReadOnlyList<string> Rejected);

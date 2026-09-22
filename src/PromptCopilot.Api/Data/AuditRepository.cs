@@ -6,7 +6,12 @@ namespace PromptCopilot.Api.Data;
 public sealed record AuditEntry(string? SessionId, int? TurnIndex, string EventType, string? PromptVersion = null,
     string? RawInput = null, string? PayloadJson = null, int? PromptTokens = null, int? CompletionTokens = null, int? LatencyMs = null);
 
-public sealed class AuditRepository(NpgsqlDataSource ds)
+public interface IAuditSink
+{
+    Task WriteAsync(AuditEntry entry, CancellationToken ct);
+}
+
+public sealed class AuditRepository(NpgsqlDataSource ds) : IAuditSink
 {
     private const string Sql = """
         INSERT INTO audit_logs (session_id, turn_index, event_type, prompt_version, raw_input, payload, prompt_tokens, completion_tokens, latency_ms)

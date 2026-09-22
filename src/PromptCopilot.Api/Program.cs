@@ -25,6 +25,7 @@ builder.Services.AddSingleton(sp =>
 builder.Services.AddSingleton<PresetRepository>();
 builder.Services.AddSingleton<HistoryRepository>();
 builder.Services.AddSingleton<AuditRepository>();
+builder.Services.AddSingleton<IAuditSink>(sp => sp.GetRequiredService<AuditRepository>());
 builder.Services.AddHttpClient<IEmbeddingClient, GeminiEmbeddingClient>();
 builder.Services.AddSingleton<IChatCompletionService>(sp =>
 {
