@@ -180,7 +180,7 @@ public class AgenticOrchestratorTests
         Assert.Contains(h.Audit.Entries, a => a.EventType == "Blocked_Output");
     }
 
-    /// <summary>Task 16 才會做純文字補救；現在「沒有終止型 tool」是協定違反，整輪回滾。</summary>
+    /// <summary>補救過後仍沒有終止型 tool、又沒有可包裝的純文字（兩次都空白）：協定違反，整輪回滾。</summary>
     [Fact]
     public async Task No_outcome_is_protocol_violation_and_rolls_back()
     {
@@ -188,11 +188,11 @@ public class AgenticOrchestratorTests
         h.Chat.ThenAsync(async (hist, k) =>
         {
             await Invoke(hist, k!, "Session", "SetProfile", new { profile = "portrait" });
-            return new[] { FakeChatCompletion.Text("我再想想") };
-        });
+            return new[] { FakeChatCompletion.Text("  ") };            // 空白：包不成 Discuss
+        }).Then(FakeChatCompletion.Text("  "));
         var events = await h.RunAsync("一個少女");
 
-        Assert.Equal("turn_failed", Assert.Single(events.OfType<ErrorEvent>()).Code);
+        Assert.Equal("protocol_violation", Assert.Single(events.OfType<ErrorEvent>()).Code);
         Assert.Empty(events.OfType<FinalEvent>());
         Assert.Null(h.Session.Profile);
         Assert.Empty(h.Session.ChatHistory);
@@ -267,5 +267,74 @@ public class AgenticOrchestratorTests
         await h.RunAsync("寫實跟動漫差在哪");
         Assert.Single(h.Session.ChatHistory, m => m.Role == AuthorRole.System);
         Assert.Equal(2, h.Session.TurnIndex);
+    }
+
+    [Fact]
+    public async Task Plain_text_twice_is_wrapped_into_discuss_when_available()
+    {
+        var h = new Harness();
+        h.Chat.Then(FakeChatCompletion.Text("寫實走光影，動漫走筆觸。"))
+              .Then(hist =>
+              {
+                  Assert.Equal(AuthorRole.System, hist.Last().Role);          // 補了一則系統提示
+                  Assert.Contains("必須", hist.Last().Content!);
+                  return new[] { FakeChatCompletion.Text("寫實走光影，動漫走筆觸。") };
+              });
+        var events = await h.RunAsync("寫實跟動漫差在哪");
+        var final = Assert.Single(events.OfType<FinalEvent>());
+        Assert.Equal("message", final.Kind); Assert.Contains("光影", final.Message!);
+        Assert.Equal(1, h.Session.DiscussStreak);
+        Assert.Contains(h.Audit.Entries, a => a.EventType == "Protocol_Violation");
+    }
+
+    [Fact]
+    public async Task Plain_text_twice_without_discuss_is_an_error_and_rolls_back()
+    {
+        var h = new Harness();
+        for (var i = 0; i < h.Options.MaxDiscussStreak; i++) h.Session.RecordDiscuss();   // Discuss 已被移除
+        h.Chat.Then(FakeChatCompletion.Text("嗯")).Then(FakeChatCompletion.Text("嗯"));
+        var events = await h.RunAsync("x");
+        Assert.Equal("protocol_violation", Assert.Single(events.OfType<ErrorEvent>()).Code);
+        Assert.Equal(h.Options.MaxDiscussStreak, h.Session.DiscussStreak);
+        Assert.Empty(h.Session.ChatHistory);
+    }
+
+    [Fact]
+    public async Task Budget_exhausted_forces_finalize_with_only_that_tool()
+    {
+        var h = new Harness();
+        h.Chat.ThenAsync(async (hist, k) =>
+        {
+            await Invoke(hist, k!, "Session", "SetProfile", new { profile = "portrait" });
+            k!.Turn().Outcome = new BudgetExhaustedOutcome();       // 模擬 ToolBudgetFilter 超限
+            return new[] { FakeChatCompletion.Text("") };
+        })
+        .ThenAsync(async (hist, k) =>
+        {
+            Assert.Contains("定稿", hist.Last().Content!);
+            Assert.Single(k!.Plugins);                                 // 只剩 Dialog
+            Assert.Single(k.Plugins["Dialog"]);                        // 只剩 FinalizePrompt
+            return new[] { await Invoke(hist, k, "Dialog", "FinalizePrompt", new { positivePrompt = "1girl", negativePrompt = "lowres", tips = "t", facetStates = Array.Empty<object>() }) };
+        });
+        var events = await h.RunAsync("一個少女");
+        Assert.Equal("finalized", Assert.Single(events.OfType<FinalEvent>()).Kind);
+        Assert.Equal(SessionStatus.Finalized, h.Session.Status);
+        Assert.Contains(h.Audit.Entries, a => a.EventType == "Tool_Budget_Exhausted");
+    }
+
+    private sealed class ThrowingSink : IAuditSink
+    {
+        public Task WriteAsync(AuditEntry e, CancellationToken ct) =>
+            e.EventType == "Turn_Completed" ? throw new IOException("db down") : Task.CompletedTask;
+    }
+
+    [Fact]
+    public async Task Audit_failure_after_commit_does_not_roll_back()
+    {
+        var h = new Harness { SinkOverride = new ThrowingSink() };
+        h.Chat.ThenAsync(async (hist, k) => new[] { await Invoke(hist, k!, "Dialog", "Discuss", DiscussArgs("好")) });
+        var events = await h.RunAsync("x");
+        Assert.Single(events.OfType<FinalEvent>()); Assert.Empty(events.OfType<ErrorEvent>());
+        Assert.Equal(1, h.Session.DiscussStreak);
     }
 }

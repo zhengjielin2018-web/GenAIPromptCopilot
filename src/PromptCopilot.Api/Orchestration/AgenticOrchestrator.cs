@@ -76,10 +76,33 @@ public sealed class AgenticOrchestrator(
             stage = "loop";
             await CallAsync(turn, kernel, tct);
 
+            if (turn.Outcome is null)
+            {
+                // 多輪 §5.3：補一則系統提示重試一次
+                await TryAuditAsync(new AuditEntry(session.Id, turnIndex, "Protocol_Violation", version, text, """{"attempt":1}"""));
+                session.ChatHistory.AddSystemMessage("你必須呼叫 AskUser、Discuss、FinalizePrompt 或 RequestSaveConsent 之一來結束這一輪，不要只回純文字。");
+                await CallAsync(turn, kernel, tct);
+            }
+            if (turn.Outcome is null)
+            {
+                var lastText = session.ChatHistory.LastOrDefault(m => m.Role == AuthorRole.Assistant && !string.IsNullOrWhiteSpace(m.Content))?.Content;
+                if (tools.Contains(ToolNames.Discuss) && lastText is not null)
+                {
+                    // 仍為純文字：包成 Discuss（options 空、facetStates 用現值）；走正規 plugin 路徑，DiscussStreak 才會照常累加
+                    var current = session.FacetStates.Select(kv => new FacetStateEntry(kv.Key, FacetStateParser.ToWire(kv.Value))).ToArray();
+                    new DialogPlugin(turn, catalog, options).Discuss(lastText, current);
+                }
+                else throw new ProtocolViolationException("LLM 兩次都未以終止型 tool 結束本輪");
+            }
+            if (turn.Outcome is BudgetExhaustedOutcome)
+            {
+                await TryAuditAsync(new AuditEntry(session.Id, turnIndex, "Tool_Budget_Exhausted", version, text, JsonSerializer.Serialize(new { turn.ToolCalls }, Json)));
+                await ForcedFinalizeAsync(turn, tct);
+            }
+
             stage = "apply";
             if (turn.Outcome is BlockedOutcome blocked) throw new OutputBlockedException(blocked.Reason);
-            if (turn.Outcome is null) throw new ProtocolViolationException("LLM 未以終止型 tool 結束本輪");
-            if (turn.Outcome is BudgetExhaustedOutcome) throw new ProtocolViolationException("tool 預算耗盡");
+            if (turn.Outcome is null or BudgetExhaustedOutcome) throw new ProtocolViolationException("強制定稿後仍無定稿");
             // 事件先算好再修剪：宣告出去的那一刻起，這一輪不能再被任何失敗回滾
             var final = ToFinal(turn.Outcome);
             var dimensions = turn.DimensionsSnapshot();
@@ -117,6 +140,13 @@ public sealed class AgenticOrchestrator(
             writer.TryWrite(new ErrorEvent("timeout", $"這一輪超過 {options.TurnTimeoutSeconds} 秒沒完成，已取消。可以直接再送一次。"));
             await TryAuditAsync(new AuditEntry(session.Id, turnIndex, "Turn_Failed", version, text, JsonSerializer.Serialize(new { stage, errorClass = "Timeout" }, Json)));
         }
+        catch (ProtocolViolationException e)
+        {
+            session.Restore(snapshot);
+            writer.TryWrite(new ErrorEvent("protocol_violation", "模型這一輪沒有給出可用的回應，已還原。可以直接再送一次。"));
+            await TryAuditAsync(new AuditEntry(session.Id, turnIndex, "Turn_Failed", version, text,
+                JsonSerializer.Serialize(new { stage, errorClass = nameof(ProtocolViolationException), message = e.Message }, Json)));
+        }
         catch (Exception e)
         {
             session.Restore(snapshot);
@@ -144,6 +174,15 @@ public sealed class AgenticOrchestrator(
         var msg = (await chat.GetChatMessageContentsAsync(history, settings, kernel, ct))[0];
         if (msg.Role == AuthorRole.Assistant && !msg.Items.OfType<FunctionCallContent>().Any() && !string.IsNullOrWhiteSpace(msg.Content))
             history.Add(msg);
+    }
+
+    /// <summary>主規格 §4.6：預算耗盡後只掛 FinalizePrompt 再跑一次；kernel 不掛 budget filter，否則第一個 call 又被擋。</summary>
+    private async Task ForcedFinalizeAsync(TurnContext turn, CancellationToken ct)
+    {
+        turn.Outcome = null;
+        var kernel = kernelFactory(turn, new HashSet<string> { ToolNames.FinalizePrompt }, false);
+        turn.Session.ChatHistory.AddSystemMessage("tool 呼叫預算已用盡。請立即以現有資訊呼叫 FinalizePrompt 定稿；missing 的 facet 留白，不要再檢索。");
+        await CallAsync(turn, kernel, ct);
     }
 
     private static void EnsureSystemMessage(ChatHistory h, string prompt)
