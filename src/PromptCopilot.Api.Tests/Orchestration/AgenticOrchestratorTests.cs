@@ -36,16 +36,21 @@ public class AgenticOrchestratorTests
     {
         public FakeChatCompletion Chat { get; } = new();
         public FakeChatCompletion GuardChat { get; } = new();
+        /// <summary>輸出側分類器：純文字包成 Discuss 之前那一次檢查走它（C1）。</summary>
+        public FakeChatCompletion ClassifierChat { get; } = new();
         public MemorySink Audit { get; } = new();
         public IAuditSink? SinkOverride { get; set; }
+        public string[] Deny { get; set; } = Array.Empty<string>();
         public OrchestratorOptions Options { get; } = new() { MaxToolCallsPerTurn = 8, HistoryTurns = 10 };
         public Session Session { get; } = new("s1");
 
         public AgenticOrchestrator Build()
         {
-            var guard = new SafetyGuard(new Denylist(Array.Empty<string>()), new SafetyClassifier(GuardChat, Microsoft.Extensions.Options.Options.Create(new LlmOptions())));
+            var llm = Microsoft.Extensions.Options.Options.Create(new LlmOptions());
+            var guard = new SafetyGuard(new Denylist(Deny), new SafetyClassifier(GuardChat, llm));
             var prompts = new SystemPromptBuilder(Catalog, Options, Path.Combine(AppContext.BaseDirectory, "Prompts", "system.md"));
             return new AgenticOrchestrator(Chat, Catalog, guard, prompts, SinkOverride ?? Audit, Options,
+                new SafetyClassifier(ClassifierChat, llm),
                 kernelFactory: (turn, tools, _) =>
                 {
                     var k = Kernel.CreateBuilder().Build();
@@ -59,6 +64,7 @@ public class AgenticOrchestratorTests
         public async Task<List<AgentEvent>> RunAsync(string text, CancellationToken ct = default)
         {
             GuardChat.Then(FakeChatCompletion.Text(OkVerdict));
+            ClassifierChat.Then(FakeChatCompletion.Text(OkVerdict));      // 用不到就留在佇列裡
             var events = new List<AgentEvent>();
             await foreach (var e in Build().RunTurnAsync(Session, text, ct)) events.Add(e);
             return events;
@@ -285,6 +291,42 @@ public class AgenticOrchestratorTests
         Assert.Equal("message", final.Kind); Assert.Contains("光影", final.Message!);
         Assert.Equal(1, h.Session.DiscussStreak);
         Assert.Contains(h.Audit.Entries, a => a.EventType == "Protocol_Violation");
+    }
+
+    /// <summary>C1：包裝那條路沒經過 kernel，OutputSafetyFilter 不會跑。模型散文照樣是送到使用者
+    /// 眼前的文字（主規格 §6.2），包之前必須自己檢一次。</summary>
+    [Fact]
+    public async Task Plain_text_wrap_is_blocked_when_the_output_classifier_flags_it()
+    {
+        var h = new Harness();
+        h.ClassifierChat.Then(FakeChatCompletion.Text("""{"nsfw":true,"realPerson":false,"personName":null,"wantsAutoComplete":false,"reason":"露骨描述"}"""));
+        h.Chat.Then(FakeChatCompletion.Text("一段沒人檢查過的散文。")).Then(FakeChatCompletion.Text("一段沒人檢查過的散文。"));
+
+        var events = await h.RunAsync("寫實跟動漫差在哪");
+
+        var b = Assert.Single(events.OfType<BlockedEvent>());
+        Assert.Equal("Blocked_Output", b.Reason);
+        Assert.Contains("露骨描述", b.Message);
+        Assert.Empty(events.OfType<FinalEvent>());
+        Assert.Empty(h.Session.ChatHistory);
+        Assert.Equal(0, h.Session.TurnIndex);
+        Assert.Equal(0, h.Session.DiscussStreak);
+        Assert.Contains(h.Audit.Entries, a => a.EventType == "Blocked_Output");
+    }
+
+    /// <summary>命中的詞只進 audit payload，不進回給使用者的訊息。</summary>
+    [Fact]
+    public async Task Denylist_term_goes_to_the_audit_payload_not_to_the_user()
+    {
+        var h = new Harness { Deny = new[] { "nude" } };
+        var events = await h.RunAsync("a nude girl");
+
+        var b = Assert.Single(events.OfType<BlockedEvent>());
+        Assert.Equal("Blocked_NSFW", b.Reason);
+        Assert.DoesNotContain("nude", b.Message);
+        var row = Assert.Single(h.Audit.Entries, a => a.EventType == "Blocked_NSFW");
+        Assert.Contains("nude", row.PayloadJson!);
+        Assert.Empty(h.Chat.Calls);
     }
 
     [Fact]

@@ -130,12 +130,84 @@ public class FiltersTests
         var (k, _, _) = Kernel();
         var chat = new FakeChatCompletion().Then(FakeChatCompletion.Text("""{"nsfw":false,"realPerson":false,"personName":null,"wantsAutoComplete":false,"reason":"ok"}"""));
         var f = new OutputSafetyFilter(new SafetyClassifier(chat, Options.Create(new LlmOptions())));
-        await f.OnAutoFunctionInvocationAsync(Ctx(k, "Discuss", ("payload", GeminiAsks)), Next());
+        await f.OnAutoFunctionInvocationAsync(Ctx(k, "AskUser", ("preamble", GeminiPreamble), ("asks", GeminiAsks)), Next());
 
         var sent = Assert.Single(chat.Calls)[0].Content;
         Assert.Contains("少女", sent);
         Assert.Contains("寫實", sent);
+        Assert.Contains("雨夜的霓虹街頭", sent);
         Assert.DoesNotContain("\\u", sent);
+    }
+
+    /// <summary>主規格 §6.2 把 FinalizePrompt 的輸出檢查限在 positivePrompt：SD 的負向詞本來就
+    /// 長成「nsfw, nude, naked」（那是排除清單），整包參數餵進去等於叫分類器攔自己的排除詞。</summary>
+    [Fact]
+    public void OutputTextFor_finalize_takes_positive_and_tips_only()
+    {
+        var text = TurnContextExtensions.OutputTextFor("FinalizePrompt", new KernelArguments
+        {
+            ["positivePrompt"] = "1girl, silver hair, neon street",
+            ["negativePrompt"] = "nsfw, nude, naked, lowres",
+            ["tips"] = "服裝留白，可自行補上",
+            ["facetStates"] = new[] { new { facetId = "appearance.hair", state = "covered" } },
+        });
+
+        Assert.Contains("silver hair", text);
+        Assert.Contains("服裝留白", text);
+        Assert.DoesNotContain("nsfw", text);
+        Assert.DoesNotContain("nude", text);
+        Assert.DoesNotContain("facetId", text);
+    }
+
+    [Fact]
+    public void OutputTextFor_askuser_keeps_nested_labels_and_drops_states()
+    {
+        var text = TurnContextExtensions.OutputTextFor("AskUser", new KernelArguments
+        {
+            ["preamble"] = GeminiPreamble,
+            ["asks"] = GeminiAsks,
+            ["facetStates"] = new[] { new { facetId = "style.genre", state = "missing" } },
+        });
+
+        Assert.Contains("雨夜的霓虹街頭", text);
+        Assert.Contains("少女在海邊", text);      // question
+        Assert.Contains("寫實", text);            // option label
+        Assert.Contains("photo", text);           // option tags
+        Assert.DoesNotContain("facetId", text);
+        Assert.DoesNotContain("\\u", text);
+    }
+
+    [Fact]
+    public void OutputTextFor_discuss_keeps_message_and_option_labels()
+    {
+        var text = TurnContextExtensions.OutputTextFor("Discuss", new KernelArguments
+        {
+            ["message"] = "寫實走光影，動漫走筆觸。",
+            ["options"] = new[] { new OptionItem("霓虹夜景", "neon night", 5L) },
+            ["facetStates"] = new[] { new { facetId = "style.genre", state = "covered" } },
+        });
+
+        Assert.Contains("光影", text);
+        Assert.Contains("霓虹夜景", text);
+        Assert.Contains("neon night", text);
+        Assert.DoesNotContain("facetId", text);
+    }
+
+    [Fact]
+    public async Task OutputSafety_never_sends_the_negative_prompt_to_the_classifier()
+    {
+        var (k, turn, _) = Kernel();
+        var chat = new FakeChatCompletion().Then(FakeChatCompletion.Text("""{"nsfw":false,"realPerson":false,"personName":null,"wantsAutoComplete":false,"reason":"ok"}"""));
+        var f = new OutputSafetyFilter(new SafetyClassifier(chat, Options.Create(new LlmOptions())));
+        var called = false;
+        await f.OnAutoFunctionInvocationAsync(
+            Ctx(k, "FinalizePrompt", ("positivePrompt", "1girl, silver hair"), ("negativePrompt", "nsfw, nude, naked"), ("tips", "t")),
+            Next(() => called = true));
+
+        var sent = Assert.Single(chat.Calls)[0].Content!;
+        Assert.Contains("silver hair", sent);
+        Assert.DoesNotContain("nude", sent);
+        Assert.True(called); Assert.Null(turn.Outcome);
     }
 
     // 這兩個 fixture 必須是「原文帶 \uXXXX」的 JsonElement，否則測不到東西：

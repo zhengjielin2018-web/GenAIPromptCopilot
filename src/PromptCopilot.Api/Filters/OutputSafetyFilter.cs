@@ -13,7 +13,7 @@ public sealed class OutputSafetyFilter(SafetyClassifier classifier) : IAutoFunct
     public async Task OnAutoFunctionInvocationAsync(AutoFunctionInvocationContext context, Func<AutoFunctionInvocationContext, Task> next)
     {
         if (!Guarded.Contains(context.Function.Name)) { await next(context); return; }
-        var v = await classifier.ClassifyOutputAsync(TurnContextExtensions.ArgsText(context.Arguments), context.CancellationToken);
+        var v = await classifier.ClassifyOutputAsync(TurnContextExtensions.OutputTextFor(context.Function.Name, context.Arguments), context.CancellationToken);
         if (v.Nsfw || v.RealPerson)
         {
             var turn = context.Kernel.Turn();

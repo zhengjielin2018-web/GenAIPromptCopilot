@@ -22,6 +22,7 @@ public sealed class AgenticOrchestrator(
     SystemPromptBuilder prompts,
     IAuditSink audit,
     OrchestratorOptions options,
+    SafetyClassifier classifier,
     Func<TurnContext, IReadOnlySet<string>, bool, Kernel> kernelFactory) : IPromptOrchestrator
 {
     private static readonly JsonSerializerOptions Json = new() { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
@@ -48,7 +49,8 @@ public sealed class AgenticOrchestrator(
         if (g.Blocked)
         {
             writer.TryWrite(new BlockedEvent(g.BlockCode!, g.Message!));
-            await TryAuditAsync(new AuditEntry(session.Id, turnIndex, g.BlockCode!, RawInput: text));
+            await TryAuditAsync(new AuditEntry(session.Id, turnIndex, g.BlockCode!, RawInput: text,
+                PayloadJson: g.BlockDetail is null ? null : JsonSerializer.Serialize(new { term = g.BlockDetail }, Json)));
             return;
         }
 
@@ -90,9 +92,16 @@ public sealed class AgenticOrchestrator(
                     .LastOrDefault(m => m.Role == AuthorRole.Assistant && !string.IsNullOrWhiteSpace(m.Content))?.Content;
                 if (tools.Contains(ToolNames.Discuss) && lastText is not null)
                 {
-                    // 仍為純文字：包成 Discuss（options 空、facetStates 用現值）；走正規 plugin 路徑，DiscussStreak 才會照常累加
-                    var current = session.FacetStates.Select(kv => new FacetStateEntry(kv.Key, FacetStateParser.ToWire(kv.Value))).ToArray();
-                    new DialogPlugin(turn, catalog, options).Discuss(lastText, current);
+                    // 這條路沒經過 kernel，OutputSafetyFilter 不會跑；但包出來的 message 一樣會送到
+                    // 使用者眼前（主規格 §6.2 點名 Discuss.message），所以這裡自己檢一次。
+                    var v = await classifier.ClassifyOutputAsync(lastText, tct);
+                    if (v.Nsfw || v.RealPerson) turn.Outcome = new BlockedOutcome(v.Reason);
+                    else
+                    {
+                        // 仍為純文字：包成 Discuss（options 空、facetStates 用現值）；走正規 plugin 路徑，DiscussStreak 才會照常累加
+                        var current = session.FacetStates.Select(kv => new FacetStateEntry(kv.Key, FacetStateParser.ToWire(kv.Value))).ToArray();
+                        new DialogPlugin(turn, catalog, options).Discuss(lastText, current);
+                    }
                 }
                 else throw new ProtocolViolationException("LLM 兩次都未以終止型 tool 結束本輪");
             }
