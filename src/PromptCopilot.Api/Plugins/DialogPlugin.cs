@@ -1,0 +1,97 @@
+using System.ComponentModel;
+using Microsoft.SemanticKernel;
+using PromptCopilot.Api.Configuration;
+using PromptCopilot.Api.Orchestration;
+using PromptCopilot.Api.Sessions;
+
+namespace PromptCopilot.Api.Plugins;
+
+public sealed class DialogPlugin(TurnContext turn, FacetCatalog catalog, OrchestratorOptions options)
+{
+    private Session S => turn.Session;
+
+    [KernelFunction(ToolNames.AskUser)]
+    [Description("索取：我需要使用者回答才能繼續。一次最多 3 個維度，每個維度 2–4 個不同方向的選項。只在使用者沒講、而且沒有這項就無法定稿時使用。")]
+    public string AskUser(
+        [Description("一句繁中開場")] string preamble,
+        [Description("每個維度一則：dimension、question（繁中）、missingFacetIds、options[{label 繁中, tags 英文, presetId 可 null}]")] AskItem[] asks,
+        [Description("目前每個 facet 的狀態")] FacetStateEntry[] facetStates)
+    {
+        if (S.Profile is null) return "錯誤：請先呼叫 SetProfile";
+        var cleaned = AskCleaner.CleanAsks(asks, S, catalog, options.MaxAsksPerCall);
+        turn.Rejections.AddRange(cleaned.Rejected);
+        var kept = new List<AskItem>();
+        foreach (var a in cleaned.Kept)
+        {
+            var opts = AskCleaner.CleanOptions(a.Options, S.Ledger, AskCleaner.MaxOptions);
+            turn.Rejections.AddRange(opts.Rejected);
+            kept.Add(a with { Options = opts.Kept });
+        }
+        if (kept.Count == 0) return "錯誤：asks 清洗後為空（每則需 2–4 個選項，missingFacetIds 必須是該維度且目前為 missing 的 facet），請重新呼叫";
+        SessionPlugin.Apply(turn, catalog, facetStates);
+        S.RecordAsk();
+        MarkOffered(kept.SelectMany(a => a.Options.Select(o => ((string?)a.Dimension, o))));
+        turn.Outcome = new AskOutcome(preamble, kept);
+        return "ok";
+    }
+
+    [KernelFunction(ToolNames.Discuss)]
+    [Description("回應：這是我對使用者問題的回答，使用者可以無視它繼續講別的。用於解說、比較、給參考方向。不宣告需求、不卡住流程。")]
+    public string Discuss(
+        [Description("繁中回覆")] string message,
+        [Description("0–4 個參考方向，可省略")] OptionItem[]? options,
+        [Description("目前每個 facet 的狀態")] FacetStateEntry[] facetStates)
+    {
+        if (S.Profile is not null && S.Status == SessionStatus.Finalized && StatesDiffer(facetStates))
+            return "錯誤：facet 狀態有變更；定稿後任何 facet 變動都必須改用 FinalizePrompt 重新定稿";
+        var opts = AskCleaner.CleanOptions(options ?? Array.Empty<OptionItem>(), S.Ledger, AskCleaner.MaxOptions);
+        turn.Rejections.AddRange(opts.Rejected);
+        SessionPlugin.Apply(turn, catalog, facetStates);
+        S.RecordDiscuss();
+        MarkOffered(opts.Kept.Select(o => ((string?)null, o)));
+        turn.Outcome = new MessageOutcome(message, opts.Kept);
+        return "ok";
+    }
+
+    [KernelFunction(ToolNames.FinalizePrompt)]
+    [Description("定稿：產出可直接用的 SD/SDXL 英文 tag 提示詞。使用者講的必須完整反映；missing 的 facet 不自行發明（AutoFill 除外）；基礎畫質詞與負向詞永遠生成。")]
+    public string FinalizePrompt(
+        [Description("英文、逗號分隔 tag")] string positivePrompt,
+        [Description("英文、逗號分隔 tag")] string negativePrompt,
+        [Description("繁中生成建議：哪些 facet 留白、可以怎麼補")] string tips,
+        [Description("目前每個 facet 的狀態")] FacetStateEntry[] facetStates)
+    {
+        if (S.Profile is null) return "錯誤：請先呼叫 SetProfile";
+        if (string.IsNullOrWhiteSpace(positivePrompt)) return "錯誤：positivePrompt 不可為空";
+        SessionPlugin.Apply(turn, catalog, facetStates);
+        S.RecordFinalize(new FinalPrompt(positivePrompt.Trim(), negativePrompt.Trim(), tips.Trim()));
+        turn.Outcome = new FinalizedOutcome(S.LastFinal!);
+        return "ok";
+    }
+
+    [KernelFunction(ToolNames.RequestSaveConsent)]
+    [Description("使用者表示要把定稿存進共享知識庫時呼叫。只觸發前端確認卡片，不寫資料庫。")]
+    public string RequestSaveConsent()
+    {
+        if (S.Status != SessionStatus.Finalized) return "錯誤：尚未定稿，無法儲存";
+        turn.Outcome = new SaveConsentOutcome();
+        return "ok";
+    }
+
+    private bool StatesDiffer(IEnumerable<FacetStateEntry> incoming)
+    {
+        var applicable = catalog.IdsForProfile(S.Profile!);
+        foreach (var e in incoming)
+        {
+            if (!applicable.Contains(e.FacetId) || !FacetStateParser.TryParse(e.State, out var st)) continue;
+            if (S.FacetStates.GetValueOrDefault(e.FacetId) != st) return true;
+        }
+        return false;
+    }
+
+    private void MarkOffered(IEnumerable<(string? dimension, OptionItem option)> offered)
+    {
+        foreach (var (dim, o) in offered)
+            if (o.PresetId is { } id) S.Ledger.MarkOffered(id, new OfferedRef(turn.TurnIndex, dim, o.Label));
+    }
+}
