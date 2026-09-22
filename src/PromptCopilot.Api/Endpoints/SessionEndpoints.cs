@@ -35,6 +35,16 @@ public static class SessionEndpoints
                 return Results.Empty;
             }
             catch (OperationCanceledException) when (http.RequestAborted.IsCancellationRequested) { return Results.Empty; }
+            // headers 已經送出去就改不了 status code，框架的 500 到不了客戶端，只會把連線砍掉、
+            // 留下一段被截斷的串流。補發一個 error frame，客戶端才知道這一輪結束了、結束在哪。
+            // 還沒開始寫就不接（走框架的 500 才是對的）。
+            catch (Exception e) when (http.Response.HasStarted && !http.RequestAborted.IsCancellationRequested)
+            {
+                await SseWriter.WriteOneAsync(http.Response,
+                    new ErrorEvent("turn_failed", $"這一輪失敗，已還原到送出前的狀態：{e.Message}。可以直接再送一次。"),
+                    http.RequestAborted);
+                return Results.Empty;
+            }
             finally { s.Lock.Release(); }
         }).Produces(200, contentType: "text/event-stream");
 
