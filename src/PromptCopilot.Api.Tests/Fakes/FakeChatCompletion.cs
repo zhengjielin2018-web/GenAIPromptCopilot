@@ -6,11 +6,13 @@ namespace PromptCopilot.Api.Tests.Fakes;
 /// <summary>腳本化的 chat completion：每次呼叫吐 Script 的下一項。項目可以丟例外、可以拿到 kernel 去 invoke plugin 模擬 auto-invoke 的結果。</summary>
 public sealed class FakeChatCompletion : IChatCompletionService
 {
-    public Queue<Func<ChatHistory, Kernel?, Task<IReadOnlyList<ChatMessageContent>>>> Script { get; } = new();
+    public Queue<Func<ChatHistory, Kernel?, CancellationToken, Task<IReadOnlyList<ChatMessageContent>>>> Script { get; } = new();
     public List<ChatHistory> Calls { get; } = new();
     public IReadOnlyDictionary<string, object?> Attributes { get; } = new Dictionary<string, object?>();
 
-    public FakeChatCompletion ThenAsync(Func<ChatHistory, Kernel?, Task<IReadOnlyList<ChatMessageContent>>> step) { Script.Enqueue(step); return this; }
+    /// <summary>拿得到呼叫端傳進來的 token：可以用它模擬「這次呼叫一直不回來，直到逾時」。</summary>
+    public FakeChatCompletion ThenAsync(Func<ChatHistory, Kernel?, CancellationToken, Task<IReadOnlyList<ChatMessageContent>>> step) { Script.Enqueue(step); return this; }
+    public FakeChatCompletion ThenAsync(Func<ChatHistory, Kernel?, Task<IReadOnlyList<ChatMessageContent>>> step) => ThenAsync((h, k, _) => step(h, k));
     public FakeChatCompletion Then(Func<ChatHistory, IReadOnlyList<ChatMessageContent>> step) => ThenAsync((h, _) => Task.FromResult(step(h)));
     public FakeChatCompletion Then(ChatMessageContent msg) => Then(_ => new[] { msg });
     public FakeChatCompletion Throw(Exception e) => Then(_ => throw e);
@@ -19,7 +21,7 @@ public sealed class FakeChatCompletion : IChatCompletionService
     {
         Calls.Add(new ChatHistory(chatHistory));
         if (Script.Count == 0) throw new InvalidOperationException("FakeChatCompletion script exhausted");
-        return await Script.Dequeue()(chatHistory, kernel);
+        return await Script.Dequeue()(chatHistory, kernel, cancellationToken);
     }
 
     public IAsyncEnumerable<StreamingChatMessageContent> GetStreamingChatMessageContentsAsync(ChatHistory chatHistory, PromptExecutionSettings? executionSettings = null, Kernel? kernel = null, CancellationToken cancellationToken = default)

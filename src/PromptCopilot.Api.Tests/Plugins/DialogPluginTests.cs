@@ -61,7 +61,7 @@ public class DialogPluginTests
     public void Discuss_without_profile_ignores_states_but_succeeds()
     {
         var (p, turn, s) = Make(profile: false);
-        var r = p.Discuss("這個系統可以幫你…", null, States(("pose.gaze", "covered")));
+        var r = p.Discuss("這個系統可以幫你…", States(("pose.gaze", "covered")));
         Assert.Equal("ok", r);
         Assert.IsType<MessageOutcome>(turn.Outcome);
         Assert.Empty(s.FacetStates);
@@ -72,7 +72,7 @@ public class DialogPluginTests
     public void Discuss_when_finalized_rejects_changed_facets()
     {
         var (p, turn, s) = Make(finalized: true);
-        var r = p.Discuss("好的", null, States(("pose.gaze", "covered")));
+        var r = p.Discuss("好的", States(("pose.gaze", "covered")));
         Assert.Contains("FinalizePrompt", r); Assert.Null(turn.Outcome);
         Assert.Equal(FacetState.Missing, s.FacetStates["pose.gaze"]);
     }
@@ -81,7 +81,7 @@ public class DialogPluginTests
     public void Discuss_when_finalized_with_same_facets_succeeds_and_streak_unchanged()
     {
         var (p, turn, s) = Make(finalized: true);
-        var r = p.Discuss("blurry 是基礎負向詞", new[] { new OptionItem("x", "t", 99) }, States(("pose.gaze", "missing")));
+        var r = p.Discuss("blurry 是基礎負向詞", States(("pose.gaze", "missing")), new[] { new OptionItem("x", "t", 99) });
         Assert.Equal("ok", r);
         var o = Assert.IsType<MessageOutcome>(turn.Outcome);
         Assert.Null(o.Options[0].PresetId);           // 99 不在 ledger → 降級
@@ -112,7 +112,7 @@ public class DialogPluginTests
     public void Unknown_facet_state_string_is_skipped_with_note()
     {
         var (p, turn, s) = Make();
-        p.Discuss("x", null, States(("pose.gaze", "bogus"), ("pose.main", "waived")));
+        p.Discuss("x", States(("pose.gaze", "bogus"), ("pose.main", "waived")));
         Assert.Equal(FacetState.Missing, s.FacetStates["pose.gaze"]);
         Assert.Equal(FacetState.Waived, s.FacetStates["pose.main"]);
         Assert.Contains(turn.Rejections, r => r.Contains("bogus"));

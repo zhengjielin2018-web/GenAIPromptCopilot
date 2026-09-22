@@ -26,6 +26,12 @@ public class AgenticOrchestratorTests
         public Task WriteAsync(AuditEntry e, CancellationToken ct) { Entries.Add(e); return Task.CompletedTask; }
     }
 
+    /// <summary>稽核資料庫掛掉。</summary>
+    internal sealed class ExplodingSink : IAuditSink
+    {
+        public Task WriteAsync(AuditEntry e, CancellationToken ct) => throw new InvalidOperationException("audit db down");
+    }
+
     internal sealed class Harness
     {
         public FakeChatCompletion Chat { get; } = new();
@@ -80,8 +86,8 @@ public class AgenticOrchestratorTests
         facetStates = new[] { new { facetId = "appearance.hair", state = "covered" } },
     };
 
-    /// <summary>options 一定要給：SK 對沒有預設值的參數一律必填，少給會丟 KernelException。</summary>
-    private static object DiscussArgs(string message) => new { message, options = Array.Empty<object>(), facetStates = Array.Empty<object>() };
+    /// <summary>刻意不給 options：它有預設值，Gemini 照描述省略時必須還是綁得起來。</summary>
+    private static object DiscussArgs(string message) => new { message, facetStates = Array.Empty<object>() };
 
     [Fact]
     public async Task Blocked_input_emits_blocked_and_never_calls_llm()
@@ -188,8 +194,48 @@ public class AgenticOrchestratorTests
         var cts = new CancellationTokenSource(); cts.Cancel();
         h.GuardChat.Then(FakeChatCompletion.Text(OkVerdict));   // 過得了 guard，才走得到交易裡的取消檢查
         h.Chat.Then(FakeChatCompletion.Text("x"));
-        var events = new List<AgentEvent>();
-        try { await foreach (var e in h.Build().RunTurnAsync(h.Session, "x", cts.Token)) events.Add(e); } catch (OperationCanceledException) { }
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
+        {
+            await foreach (var _ in h.Build().RunTurnAsync(h.Session, "x", cts.Token)) { }
+        });
+        Assert.Empty(h.Chat.Calls);                            // 取消檢查在呼叫 LLM 之前
+        Assert.Empty(h.Session.ChatHistory);
+        Assert.Equal(0, h.Session.TurnIndex);
+        Assert.Contains(h.Audit.Entries, a => a.EventType == "Turn_Failed" && a.PayloadJson!.Contains("ClientDisconnected"));
+    }
+
+    /// <summary>逾時是伺服器側取消：回滾、發 timeout 事件，但不能把例外丟給呼叫端。</summary>
+    [Fact]
+    public async Task Turn_timeout_rolls_back_and_emits_timeout_error()
+    {
+        var h = new Harness();
+        h.Options.TurnTimeoutSeconds = 1;
+        h.Chat.ThenAsync(async (hist, k, tct) =>
+        {
+            await Invoke(hist, k!, "Session", "SetProfile", new { profile = "portrait" });
+            await Task.Delay(Timeout.Infinite, tct);           // 這一輪永遠不回來
+            return Array.Empty<ChatMessageContent>();
+        });
+        var events = await h.RunAsync("一個少女");               // 沒有例外浮到這裡
+
+        Assert.Equal("timeout", Assert.Single(events.OfType<ErrorEvent>()).Code);
+        Assert.Null(h.Session.Profile);
+        Assert.Empty(h.Session.ChatHistory);
+        Assert.Equal(0, h.Session.TurnIndex);
+        Assert.Contains(h.Audit.Entries, a => a.EventType == "Turn_Failed" && a.PayloadJson!.Contains("Timeout"));
+    }
+
+    /// <summary>稽核是旁路：資料庫掛掉不能把使用者該看到的事件吃掉。</summary>
+    [Fact]
+    public async Task Audit_failure_on_rollback_path_still_emits_event()
+    {
+        var h = new Harness { SinkOverride = new ExplodingSink() };
+        h.Chat.Throw(new UpstreamBlockedException("SAFETY"));
+        var events = await h.RunAsync("x");
+
+        var b = Assert.Single(events.OfType<BlockedEvent>());
+        Assert.Equal("Blocked_Upstream", b.Reason);
+        Assert.Contains("SAFETY", b.Message);
         Assert.Empty(h.Session.ChatHistory);
         Assert.Equal(0, h.Session.TurnIndex);
     }

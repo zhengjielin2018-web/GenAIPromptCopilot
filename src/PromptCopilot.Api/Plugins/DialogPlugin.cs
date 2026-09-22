@@ -37,10 +37,12 @@ public sealed class DialogPlugin(TurnContext turn, FacetCatalog catalog, Orchest
 
     [KernelFunction(ToolNames.Discuss)]
     [Description("回應：這是我對使用者問題的回答，使用者可以無視它繼續講別的。用於解說、比較、給參考方向。不宣告需求、不卡住流程。")]
+    // options 排在最後而且有預設值：SK 只看「有沒有預設值」決定必填與否，可為 null 不算；
+    // 沒有預設值時 Gemini 照描述省略它會丟 KernelException，白白吃掉一格 tool 預算。
     public string Discuss(
         [Description("繁中回覆")] string message,
-        [Description("0–4 個參考方向，可省略")] OptionItem[]? options,
-        [Description("目前每個 facet 的狀態")] FacetStateEntry[] facetStates)
+        [Description("目前每個 facet 的狀態")] FacetStateEntry[] facetStates,
+        [Description("0–4 個參考方向，可省略")] OptionItem[]? options = null)
     {
         if (S.Profile is not null && S.Status == SessionStatus.Finalized && StatesDiffer(facetStates))
             return "錯誤：facet 狀態有變更；定稿後任何 facet 變動都必須改用 FinalizePrompt 重新定稿";

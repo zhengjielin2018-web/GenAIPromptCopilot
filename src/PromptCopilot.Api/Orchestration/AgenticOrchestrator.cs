@@ -80,53 +80,58 @@ public sealed class AgenticOrchestrator(
             if (turn.Outcome is BlockedOutcome blocked) throw new OutputBlockedException(blocked.Reason);
             if (turn.Outcome is null) throw new ProtocolViolationException("LLM 未以終止型 tool 結束本輪");
             if (turn.Outcome is BudgetExhaustedOutcome) throw new ProtocolViolationException("tool 預算耗盡");
-            writer.TryWrite(ToFinal(turn.Outcome));
-            writer.TryWrite(turn.DimensionsSnapshot());
-
+            // 事件先算好再修剪：宣告出去的那一刻起，這一輪不能再被任何失敗回滾
+            var final = ToFinal(turn.Outcome);
+            var dimensions = turn.DimensionsSnapshot();
             HistoryTrimmer.CompressTurn(session.ChatHistory, startIdx);
             HistoryTrimmer.Truncate(session.ChatHistory, options.HistoryTurns);
+            writer.TryWrite(final);
+            writer.TryWrite(dimensions);
 
-            // 交易已成立：稽核寫不進去不該把成功的一輪回滾掉
-            try
-            {
-                await audit.WriteAsync(new AuditEntry(session.Id, turnIndex, "Turn_Completed", version, text,
-                    JsonSerializer.Serialize(new { outcome = turn.Outcome.GetType().Name, toolCalls = turn.ToolCalls, rejections = turn.Rejections }, Json),
-                    LatencyMs: (int)sw.ElapsedMilliseconds), CancellationToken.None);
-            }
-            catch (Exception) { /* 由 DB 監控發現；不發事件，免得前端誤出重試按鈕 */ }
+            await TryAuditAsync(new AuditEntry(session.Id, turnIndex, "Turn_Completed", version, text,
+                JsonSerializer.Serialize(new { outcome = turn.Outcome.GetType().Name, toolCalls = turn.ToolCalls, rejections = turn.Rejections }, Json),
+                LatencyMs: (int)sw.ElapsedMilliseconds));
         }
         catch (OutputBlockedException e)
         {
             session.Restore(snapshot);
-            await audit.WriteAsync(new AuditEntry(session.Id, turnIndex, "Blocked_Output", version, text, JsonSerializer.Serialize(new { e.Reason }, Json)), CancellationToken.None);
             writer.TryWrite(new BlockedEvent("Blocked_Output", $"這一輪的輸出被攔截：{e.Reason}。你可以改寫需求後再送。"));
+            await TryAuditAsync(new AuditEntry(session.Id, turnIndex, "Blocked_Output", version, text, JsonSerializer.Serialize(new { e.Reason }, Json)));
         }
         catch (UpstreamBlockedException e)
         {
             session.Restore(snapshot);
-            await audit.WriteAsync(new AuditEntry(session.Id, turnIndex, "Blocked_Upstream", version, text, JsonSerializer.Serialize(new { e.Reason, stage }, Json)), CancellationToken.None);
             writer.TryWrite(new BlockedEvent("Blocked_Upstream",
                 $"Gemini 判定這次的內容不該生成，已攔截（{e.Reason}）。這不是程式錯誤，也不是知識庫的問題；下一步在你手上——改寫需求或直接再送一次。"));
+            await TryAuditAsync(new AuditEntry(session.Id, turnIndex, "Blocked_Upstream", version, text, JsonSerializer.Serialize(new { e.Reason, stage }, Json)));
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
             session.Restore(snapshot);
-            await audit.WriteAsync(new AuditEntry(session.Id, turnIndex, "Turn_Failed", version, text, JsonSerializer.Serialize(new { stage, errorClass = "ClientDisconnected" }, Json)), CancellationToken.None);
+            await TryAuditAsync(new AuditEntry(session.Id, turnIndex, "Turn_Failed", version, text, JsonSerializer.Serialize(new { stage, errorClass = "ClientDisconnected" }, Json)));
             throw;
         }
         catch (OperationCanceledException)
         {
             session.Restore(snapshot);
-            await audit.WriteAsync(new AuditEntry(session.Id, turnIndex, "Turn_Failed", version, text, JsonSerializer.Serialize(new { stage, errorClass = "Timeout" }, Json)), CancellationToken.None);
             writer.TryWrite(new ErrorEvent("timeout", $"這一輪超過 {options.TurnTimeoutSeconds} 秒沒完成，已取消。可以直接再送一次。"));
+            await TryAuditAsync(new AuditEntry(session.Id, turnIndex, "Turn_Failed", version, text, JsonSerializer.Serialize(new { stage, errorClass = "Timeout" }, Json)));
         }
         catch (Exception e)
         {
             session.Restore(snapshot);
-            await audit.WriteAsync(new AuditEntry(session.Id, turnIndex, "Turn_Failed", version, text,
-                JsonSerializer.Serialize(new { stage, errorClass = e.GetType().Name, message = e.Message }, Json)), CancellationToken.None);
             writer.TryWrite(new ErrorEvent("turn_failed", $"這一輪失敗，已還原到送出前的狀態：{e.Message}。可以直接再送一次。"));
+            await TryAuditAsync(new AuditEntry(session.Id, turnIndex, "Turn_Failed", version, text,
+                JsonSerializer.Serialize(new { stage, errorClass = e.GetType().Name, message = e.Message }, Json)));
         }
+    }
+
+    /// <summary>稽核是旁路：寫不進去不該回滾已成立的一輪，也不該吃掉使用者該看到的事件。
+    /// 失敗由 DB 監控發現；不另發事件，免得前端誤出重試按鈕。</summary>
+    private async Task TryAuditAsync(AuditEntry entry)
+    {
+        try { await audit.WriteAsync(entry, CancellationToken.None); }
+        catch (Exception e) when (e is not OperationCanceledException) { /* 吞掉 */ }
     }
 
     /// <summary>一次 SK auto-invoke：connector 自己跑 tool、跑 filter，Terminal filter 設 Terminate 就回來。
