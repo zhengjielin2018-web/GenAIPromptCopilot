@@ -4,7 +4,7 @@
 
 **Goal:** 建一個 ASP.NET Core Web API，讓 LLM 透過 Semantic Kernel function calling 自主決定「追問／討論／定稿」，所有硬限制（追問上限、討論 streak、tool 預算、一輪原子性、輸出過濾）由程式碼保證；Swagger 能打完整一輪「追問 → 討論 → 回答 → 定稿 → 討論 → 修改」。
 
-**Architecture:** 每個 HTTP 請求是一輪（turn）。輪次開始先 snapshot session，`ToolSetBuilder` 依 session 狀態決定本輪註冊哪些 tool，自寫的 function-calling loop（`FunctionChoiceBehavior.Auto(autoInvoke: false)`，每次 LLM 呼叫就是一個 HTTP 往返，tool 由我們自己 invoke）跑到終止型 tool 為止；任何失敗一律 restore snapshot。LLM 的自述一律不信：`grounded` 由伺服器從 facet 狀態推導、`asks` 由後端清洗、借用來源由 ledger 驗證。Gemini 的失敗分三層各自重試（傳輸 3／空回應 3／內容攔截 1）。
+**Architecture:** 每個 HTTP 請求是一輪（turn）。輪次開始先 snapshot session，`ToolSetBuilder` 依 session 狀態決定本輪註冊哪些 tool，SK 的 auto-invoke 迴圈（`FunctionChoiceBehavior.Auto()`）跑到終止型 tool 為止，四個 `IAutoFunctionInvocationFilter` 管預算、輸出安全、稽核與 `Terminate`；任何失敗一律 restore snapshot。LLM 的自述一律不信：`grounded` 由伺服器從 facet 狀態推導、`asks` 由後端清洗、借用來源由 ledger 驗證。Gemini 的失敗分三層各自重試（傳輸 3／空回應 3／內容攔截 1）。
 
 **Tech Stack:** .NET 10（SDK 10.0.301 已安裝）、ASP.NET Core minimal API、Semantic Kernel + `Microsoft.SemanticKernel.Connectors.Google`（Gemini chat）、Npgsql + Pgvector（不用 EF Core，見偏離 2）、YamlDotNet、xUnit、Swashbuckle；PostgreSQL 16 + pgvector（既有 docker-compose）；Gemini `gemini-3.5-flash-lite`（對話與分類）、`gemini-embedding-001` 768 維（查詢向量）。
 
@@ -31,8 +31,8 @@
 | :--- | :--- | :--- | :--- |
 | 1 | §4.8：優先驗證 SK OpenAI connector 打 Gemini 的 OpenAI 相容端點 | 直接用 `Microsoft.SemanticKernel.Connectors.Google` | 多輪設計 §5.5／§5.6 要分類「內容攔截 vs 空回應」，靠的是 Gemini 原生的 `promptFeedback.blockReason` / `finishReason`；OpenAI 相容端點把它壓成 `finish_reason: content_filter`，分不出 `PROHIBITED_CONTENT` 與 `SAFETY`。Provider 抽象（`IChatCompletionService`）仍保留，OpenAI 之後可加 |
 | 2 | §3／§7：EF Core 讀寫 | Npgsql + Pgvector 直接下 SQL | 三張表、五條查詢，全部要 `<=>` 與 `&&`，EF 只是包一層 `FromSqlRaw`。Python 端也是原生 SQL，兩邊對得上 |
-| 3 | §4.5：四個 SK filter（`IAutoFunctionInvocationFilter` / `IFunctionInvocationFilter`），靠 `Terminate` 停迴圈 | **不用 SK 的 auto-invoke**：`FunctionChoiceBehavior.Auto(autoInvoke: false)`，tool call 由 `AgenticOrchestrator` 自己 invoke，經過我們的 `IToolFilter` 管線（Audit → Budget → OutputSafety）；沒有 `TerminalToolFilter`，迴圈看 `TurnContext.Outcome != null` 就停 | 多輪 §5.6 的三層重試要在**單次 LLM 呼叫**的粒度上做；SK 的 auto-invoke 把「呼叫 LLM → 跑 tool → 再呼叫 LLM」包在 connector 的一次 `GetChatMessageContentsAsync` 裡，外層重試會把已經跑過的 tool 重跑一遍。自己寫迴圈也讓 §12.1「不 fake auto-invoke 迴圈」的顧慮消失——迴圈是我們的，用 fake `IChatCompletionService` 回 `FunctionCallContent` 就能整段測 |
-| 4 | 多輪 §4.4：`Finalized` 下 facet 變更的檢查「放在 `TerminalToolFilter`」 | 檢查放在 `DialogPlugin.Discuss` 本身，回結構化錯誤字串、不設 outcome；迴圈看沒有 outcome 就繼續 | 效果相同，plugin 能直接回訊息給 LLM，迴圈不必知道每個 tool 的規則 |
+| 3 | §4.5：`OutputSafetyFilter` 是 `IFunctionInvocationFilter` | 四個 filter 都是 `IAutoFunctionInvocationFilter`；OutputSafety 命中用 `Terminate` + `BlockedOutcome`，不丟例外 | 攔截後要停迴圈並記錄結果，只有 auto-invocation filter 有 `Terminate`；filter 裡丟例外會不會穿出 connector 是版本相依的，outcome 沒有這個問題。`ResilientChatCompletion` 包在整個 auto-invoke 迴圈外：SK 邊跑邊把 tool call 與結果寫進 history，重試是從斷點接下去，tool 不會重跑 |
+| 4 | 多輪 §4.4：`Finalized` 下 facet 變更的檢查「放在 `TerminalToolFilter`」 | 檢查放在 `DialogPlugin.Discuss` 本身，回結構化錯誤字串、不設 outcome；`TerminalToolFilter` 只看有沒有 outcome | 效果相同，plugin 能直接回訊息給 LLM，filter 不必知道每個 tool 的規則 |
 | 5 | Embedding 走 SK `ITextEmbeddingGenerationService` | 自寫 `GeminiEmbeddingClient` 打 REST `batchEmbedContents` | 必須指定 `taskType` 與 `outputDimensionality` 並自行 L2 正規化才與 Python 端同一向量空間；SK 抽象不保證這三件事 |
 
 ### 明確不在本計畫
@@ -80,11 +80,12 @@ src/
 │  │  ├─ KnowledgePlugin.cs               # SearchPresets / SearchSimilarPrompts
 │  │  ├─ SessionPlugin.cs                 # SetProfile / SetFacetStates
 │  │  └─ DialogPlugin.cs                  # AskUser / Discuss / FinalizePrompt / RequestSaveConsent
-│  ├─ Filters/
-│  │  ├─ IToolFilter.cs                   # BeforeInvokeAsync 可短路；AfterInvokeAsync 記錄
-│  │  ├─ ToolBudgetFilter.cs              # 超過上限 → Outcome = BudgetExhausted，短路
-│  │  ├─ OutputSafetyFilter.cs            # 檢 Discuss/AskUser/FinalizePrompt 的輸出面；命中丟 OutputBlockedException
-│  │  └─ AuditFilter.cs                   # 每次 tool 呼叫一筆 Tool_Invoked
+│  ├─ Filters/                            # 四個 IAutoFunctionInvocationFilter，掛在每輪的 kernel 上
+│  │  ├─ TurnContextExtensions.cs         # kernel.Data["turn"] → TurnContext；ArgsText / Summary
+│  │  ├─ TerminalToolFilter.cs            # plugin 設了 Outcome → Terminate
+│  │  ├─ ToolBudgetFilter.cs              # 超過上限 → Outcome = BudgetExhausted，Terminate
+│  │  ├─ OutputSafetyFilter.cs            # 檢 Discuss/AskUser/FinalizePrompt 的輸出面；命中 Outcome = Blocked，Terminate
+│  │  └─ AuditFilter.cs                   # 每次 tool 呼叫一筆 Tool_Invoked；寫不進去不影響呼叫
 │  ├─ Orchestration/
 │  │  ├─ IPromptOrchestrator.cs           # + ProtocolViolationException
 │  │  ├─ TurnContext.cs                   # 一輪的可變狀態：outcome、tool 計數、事件 writer；FacetStateParser
@@ -135,15 +136,13 @@ POST /api/sessions/{id}/messages { text }
   → SafetyGuard.CheckAsync(text)            blocked → 發 blocked 事件，結束（不進 kernel）
   → snapshot = session.Snapshot()
   → tools = ToolSetBuilder.Build(session, guard.WantsAutoComplete)
-  → kernel = base.Clone(); 加 plugins（依 tools 過濾），plugin 建構子拿 session + TurnContext
+  → kernel = AgentKernelFactory.Create(turn, tools)：plugins 依 tools 過濾、Data["turn"] = TurnContext、
+       filters 由外到內 Audit → Budget → OutputSafety → Terminal
   → history += user(text); systemPrompt = SystemPromptBuilder.Build(session)
-  → loop:
-       msg = chat.GetChatMessageContentsAsync(history, Auto(autoInvoke:false))   ← ResilientChatCompletion 在這一層重試
-       calls = msg.Items.OfType<FunctionCallContent>()
-       沒有 calls → 跳出（純文字）
-       每個 call：Audit.Before → Budget.Before（超限：Outcome=BudgetExhausted、短路）→ OutputSafety.Before（命中：丟 OutputBlockedException）
-                 → call.InvokeAsync(kernel) → Audit.After → history += tool result
-       turn.Outcome != null → 跳出
+  → chat.GetChatMessageContentsAsync(history, FunctionChoiceBehavior.Auto(), kernel)   ← ResilientChatCompletion 包在外面重試
+       SK 自己迴圈：LLM 叫 tool → filter 鏈 → invoke → 結果進 history → 再叫 LLM …
+       Budget 超限：Outcome=BudgetExhausted、Terminate；OutputSafety 命中：Outcome=Blocked、Terminate
+       Terminal：plugin 設了 Outcome 就 Terminate
   → outcome == null → 純文字補救（多輪 §5.3）
   → outcome is BudgetExhausted → 強制定稿：只掛 FinalizePrompt 再跑一次
   → 成功：session 套用 outcome、HistoryTrimmer、發 final 事件
@@ -3041,10 +3040,11 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 ---
 
-## Task 12: Tool filter 管線（Budget、OutputSafety、Audit）
+## Task 12: 四個 SK filter（Terminal、Budget、OutputSafety、Audit）
 
 **Files:**
-- Create: `src/PromptCopilot.Api/Filters/IToolFilter.cs`
+- Create: `src/PromptCopilot.Api/Filters/TurnContextExtensions.cs`
+- Create: `src/PromptCopilot.Api/Filters/TerminalToolFilter.cs`
 - Create: `src/PromptCopilot.Api/Filters/ToolBudgetFilter.cs`
 - Create: `src/PromptCopilot.Api/Filters/OutputSafetyFilter.cs`
 - Create: `src/PromptCopilot.Api/Filters/AuditFilter.cs`
@@ -3054,12 +3054,26 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 **Interfaces:**
 - Produces:
   - `interface IAuditSink { Task WriteAsync(AuditEntry, CancellationToken) }`（`AuditRepository : IAuditSink`）
-  - `interface IToolFilter { Task<string?> BeforeInvokeAsync(FunctionCallContent call, TurnContext turn, CancellationToken ct); Task AfterInvokeAsync(FunctionCallContent call, string result, TimeSpan elapsed, TurnContext turn, CancellationToken ct) }`——`Before` 回非 null 即**短路**：不 invoke，該字串當 function result 回給 LLM
-  - `class ToolBudgetFilter(OrchestratorOptions)`、`class OutputSafetyFilter(SafetyClassifier)`、`class AuditFilter(IAuditSink)`
-  - `class OutputBlockedException(string reason) : Exception`
-  - `static class ToolCallText { string ArgsText(FunctionCallContent call); string Summary(FunctionCallContent call, int max = 80) }`
+  - `static class TurnContextExtensions { const string DataKey = "turn"; TurnContext Turn(this Kernel k); string ArgsText(KernelArguments? args); string Summary(KernelArguments? args, int max = 80) }`——filter 透過 `kernel.Data["turn"]` 拿到本輪的 `TurnContext`
+  - 四個 `IAutoFunctionInvocationFilter`：`TerminalToolFilter()`、`ToolBudgetFilter(OrchestratorOptions)`、`OutputSafetyFilter(SafetyClassifier)`、`AuditFilter(IAuditSink)`
+  - `record BlockedOutcome(string Reason) : TurnOutcome`（加進 Task 9 的 `Contracts.cs`）
 
-- [ ] **Step 1: 寫失敗的測試**
+這是主規格 §4.5 的四個 filter，全部是 `IAutoFunctionInvocationFilter`（計畫偏離 3）。掛在每輪的 kernel 上（Task 15 的 `AgentKernelFactory`），註冊順序 = 由外到內：Audit → Budget → OutputSafety → Terminal。
+
+- **Terminal**：`await next()` 之後看 `turn.Outcome != null` 就 `Terminate`。它不知道哪個 tool 是終止型——plugin 成功才設 outcome，這裡只看結果。
+- **Budget**：計數；超限就不 `next()`，設 `BudgetExhaustedOutcome`、`Result` 給錯誤字串、`Terminate`。
+- **OutputSafety**：只對 `Discuss`／`AskUser`／`FinalizePrompt` 跑分類器；命中不 `next()`，設 `BlockedOutcome`、`Terminate`。**不丟例外**——filter 裡的例外會不會穿出 connector 是版本相依的，用 `Terminate` + outcome 沒有這個問題。
+- **Audit**：前發 `tool_call` 事件、後寫一筆 `Tool_Invoked`；稽核寫不進去不能讓 tool 呼叫失敗。
+
+- [ ] **Step 1: 加 BlockedOutcome**
+
+`src/PromptCopilot.Api/Plugins/Contracts.cs` 的 `BudgetExhaustedOutcome` 下一行加：
+
+```csharp
+public sealed record BlockedOutcome(string Reason) : TurnOutcome;
+```
+
+- [ ] **Step 2: 寫失敗的測試**
 
 `src/PromptCopilot.Api.Tests/Filters/FiltersTests.cs`：
 
@@ -3067,6 +3081,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 using System.Threading.Channels;
 using Microsoft.Extensions.Options;
 using Microsoft.SemanticKernel;
+using Microsoft.SemanticKernel.ChatCompletion;
 using PromptCopilot.Api.Configuration;
 using PromptCopilot.Api.Data;
 using PromptCopilot.Api.Filters;
@@ -3084,74 +3099,120 @@ public class FiltersTests
     private sealed class MemorySink : IAuditSink
     {
         public List<AuditEntry> Entries { get; } = new();
-        public Task WriteAsync(AuditEntry e, CancellationToken ct) { Entries.Add(e); return Task.CompletedTask; }
+        public Exception? Throw { get; set; }
+        public Task WriteAsync(AuditEntry e, CancellationToken ct) { if (Throw is not null) throw Throw; Entries.Add(e); return Task.CompletedTask; }
     }
 
-    private static TurnContext Turn() =>
-        new(new Session("s"), 1, GuardResult.Ok(false), ToolNames.Always, Channel.CreateUnbounded<AgentEvent>().Writer);
+    private static (Kernel kernel, TurnContext turn, Channel<AgentEvent> events) Kernel()
+    {
+        var ch = Channel.CreateUnbounded<AgentEvent>();
+        var turn = new TurnContext(new Session("s"), 2, GuardResult.Ok(false), ToolNames.Always, ch.Writer);
+        var k = Microsoft.SemanticKernel.Kernel.CreateBuilder().Build();
+        k.Data[TurnContextExtensions.DataKey] = turn;
+        return (k, turn, ch);
+    }
 
-    private static FunctionCallContent Call(string name, params (string k, object v)[] args) =>
-        new(name, "Dialog", Guid.NewGuid().ToString("N"), new KernelArguments(args.ToDictionary(a => a.k, a => (object?)a.v)));
+    /// <summary>手工組一個 AutoFunctionInvocationContext。建構子簽名隨 SK 版本略有不同（U7）。</summary>
+    private static AutoFunctionInvocationContext Ctx(Kernel k, string functionName, params (string key, object value)[] args)
+    {
+        var fn = KernelFunctionFactory.CreateFromMethod(() => "ok", functionName);
+        return new AutoFunctionInvocationContext(k, fn, new FunctionResult(fn), new ChatHistory(), new ChatMessageContent(AuthorRole.Assistant, ""))
+        {
+            Arguments = new KernelArguments(args.ToDictionary(a => a.key, a => (object?)a.value)),
+        };
+    }
+
+    private static Func<AutoFunctionInvocationContext, Task> Next(Action? onCalled = null) => _ => { onCalled?.Invoke(); return Task.CompletedTask; };
+
+    [Fact]
+    public async Task Terminal_terminates_only_when_outcome_was_set()
+    {
+        var (k, turn, _) = Kernel();
+        var f = new TerminalToolFilter();
+        var c1 = Ctx(k, "SearchPresets");
+        await f.OnAutoFunctionInvocationAsync(c1, Next());
+        Assert.False(c1.Terminate);
+        var c2 = Ctx(k, "Discuss");
+        await f.OnAutoFunctionInvocationAsync(c2, Next(() => turn.Outcome = new MessageOutcome("m", Array.Empty<OptionItem>())));
+        Assert.True(c2.Terminate);
+    }
 
     [Fact]
     public async Task Budget_short_circuits_and_sets_outcome_once_exceeded()
     {
+        var (k, turn, _) = Kernel();
         var f = new ToolBudgetFilter(new OrchestratorOptions { MaxToolCallsPerTurn = 2 });
-        var turn = Turn();
-        Assert.Null(await f.BeforeInvokeAsync(Call("SearchPresets"), turn, default));
-        Assert.Null(await f.BeforeInvokeAsync(Call("SearchPresets"), turn, default));
-        var r = await f.BeforeInvokeAsync(Call("SearchPresets"), turn, default);
-        Assert.NotNull(r);
+        var called = 0;
+        for (var i = 0; i < 2; i++) { var c = Ctx(k, "SearchPresets"); await f.OnAutoFunctionInvocationAsync(c, Next(() => called++)); Assert.False(c.Terminate); }
+        var c3 = Ctx(k, "SearchPresets");
+        await f.OnAutoFunctionInvocationAsync(c3, Next(() => called++));
+        Assert.True(c3.Terminate); Assert.Equal(2, called);
         Assert.IsType<BudgetExhaustedOutcome>(turn.Outcome);
+        Assert.Contains("預算", c3.Result.ToString());
         Assert.Equal(3, turn.ToolCalls);
     }
 
     [Fact]
     public async Task OutputSafety_only_classifies_dialog_tools()
     {
+        var (k, _, _) = Kernel();
         var chat = new FakeChatCompletion();
         var f = new OutputSafetyFilter(new SafetyClassifier(chat, Options.Create(new LlmOptions())));
-        Assert.Null(await f.BeforeInvokeAsync(Call("SearchPresets", ("query", "x")), Turn(), default));
-        Assert.Empty(chat.Calls);
+        var called = false;
+        await f.OnAutoFunctionInvocationAsync(Ctx(k, "SearchPresets", ("query", "x")), Next(() => called = true));
+        Assert.True(called); Assert.Empty(chat.Calls);
     }
 
     [Fact]
-    public async Task OutputSafety_throws_when_classifier_flags()
+    public async Task OutputSafety_terminates_with_blocked_outcome_when_flagged()
     {
+        var (k, turn, _) = Kernel();
         var chat = new FakeChatCompletion().Then(FakeChatCompletion.Text("""{"nsfw":true,"realPerson":false,"personName":null,"wantsAutoComplete":false,"reason":"r"}"""));
         var f = new OutputSafetyFilter(new SafetyClassifier(chat, Options.Create(new LlmOptions())));
-        var ex = await Assert.ThrowsAsync<OutputBlockedException>(() => f.BeforeInvokeAsync(Call("Discuss", ("message", "…")), Turn(), default));
-        Assert.Contains("r", ex.Reason);
-        Assert.Single(chat.Calls);
+        var called = false;
+        var c = Ctx(k, "Discuss", ("message", "…"));
+        await f.OnAutoFunctionInvocationAsync(c, Next(() => called = true));
+        Assert.False(called); Assert.True(c.Terminate);
+        Assert.Equal("r", Assert.IsType<BlockedOutcome>(turn.Outcome).Reason);
     }
 
     [Fact]
     public async Task OutputSafety_passes_clean_content()
     {
+        var (k, turn, _) = Kernel();
         var chat = new FakeChatCompletion().Then(FakeChatCompletion.Text("""{"nsfw":false,"realPerson":false,"personName":null,"wantsAutoComplete":false,"reason":"ok"}"""));
         var f = new OutputSafetyFilter(new SafetyClassifier(chat, Options.Create(new LlmOptions())));
-        Assert.Null(await f.BeforeInvokeAsync(Call("FinalizePrompt", ("positivePrompt", "1girl")), Turn(), default));
+        var called = false;
+        await f.OnAutoFunctionInvocationAsync(Ctx(k, "FinalizePrompt", ("positivePrompt", "1girl")), Next(() => called = true));
+        Assert.True(called); Assert.Null(turn.Outcome);
     }
 
     [Fact]
-    public async Task Audit_emits_tool_call_event_and_writes_one_row_after()
+    public async Task Audit_emits_tool_call_event_and_writes_one_row()
     {
+        var (k, _, ch) = Kernel();
         var sink = new MemorySink();
-        var ch = Channel.CreateUnbounded<AgentEvent>();
-        var turn = new TurnContext(new Session("s"), 2, GuardResult.Ok(false), ToolNames.Always, ch.Writer);
-        var f = new AuditFilter(sink);
-        var call = Call("SetProfile", ("profile", "portrait"));
-        Assert.Null(await f.BeforeInvokeAsync(call, turn, default));
-        await f.AfterInvokeAsync(call, "ok", TimeSpan.FromMilliseconds(12), turn, default);
+        await new AuditFilter(sink).OnAutoFunctionInvocationAsync(Ctx(k, "SetProfile", ("profile", "portrait")), Next());
         Assert.True(ch.Reader.TryRead(out var e)); Assert.IsType<ToolCallEvent>(e);
         var row = Assert.Single(sink.Entries);
         Assert.Equal("Tool_Invoked", row.EventType); Assert.Equal("s", row.SessionId); Assert.Equal(2, row.TurnIndex);
         Assert.Contains("SetProfile", row.PayloadJson);
     }
+
+    [Fact]
+    public async Task Audit_failure_does_not_fail_the_tool_call()
+    {
+        var (k, turn, _) = Kernel();
+        var sink = new MemorySink { Throw = new IOException("db down") };
+        var called = false;
+        await new AuditFilter(sink).OnAutoFunctionInvocationAsync(Ctx(k, "SetProfile"), Next(() => called = true));
+        Assert.True(called);
+        Assert.Contains(turn.Rejections, r => r.Contains("audit"));
+    }
 }
 ```
 
-- [ ] **Step 2: 跑測試確認失敗**
+- [ ] **Step 3: 跑測試確認失敗**
 
 ```bash
 cd src && dotnet test --filter FiltersTests 2>&1 | tail -3
@@ -3159,7 +3220,7 @@ cd src && dotnet test --filter FiltersTests 2>&1 | tail -3
 
 Expected: 編譯錯誤。
 
-- [ ] **Step 3: IAuditSink**
+- [ ] **Step 4: IAuditSink**
 
 在 `src/PromptCopilot.Api/Data/AuditRepository.cs` 的 `AuditEntry` record 之後加，並讓 `AuditRepository` 實作它：
 
@@ -3172,9 +3233,9 @@ public interface IAuditSink
 
 `public sealed class AuditRepository(NpgsqlDataSource ds) : IAuditSink`。`Program.cs` 加 `builder.Services.AddSingleton<IAuditSink>(sp => sp.GetRequiredService<AuditRepository>());`。
 
-- [ ] **Step 4: 實作 filter 介面與三個 filter**
+- [ ] **Step 5: 實作**
 
-`src/PromptCopilot.Api/Filters/IToolFilter.cs`：
+`src/PromptCopilot.Api/Filters/TurnContextExtensions.cs`：
 
 ```csharp
 using System.Text.Json;
@@ -3183,28 +3244,41 @@ using PromptCopilot.Api.Orchestration;
 
 namespace PromptCopilot.Api.Filters;
 
-/// <summary>我們自己的 tool 管線（不是 SK filter；見計畫偏離 3）。Before 回非 null 即短路。</summary>
-public interface IToolFilter
+public static class TurnContextExtensions
 {
-    Task<string?> BeforeInvokeAsync(FunctionCallContent call, TurnContext turn, CancellationToken ct);
-    Task AfterInvokeAsync(FunctionCallContent call, string result, TimeSpan elapsed, TurnContext turn, CancellationToken ct);
-}
+    public const string DataKey = "turn";
 
-public sealed class OutputBlockedException(string reason) : Exception($"輸出被攔截：{reason}")
-{
-    public string Reason { get; } = reason;
-}
+    /// <summary>每輪的 kernel 在 Data 裡帶 TurnContext；filter 由此拿到本輪狀態。</summary>
+    public static TurnContext Turn(this Kernel k) =>
+        k.Data.TryGetValue(DataKey, out var t) && t is TurnContext turn ? turn
+        : throw new InvalidOperationException("kernel.Data 缺少 TurnContext；AgentKernelFactory 應該已放入");
 
-public static class ToolCallText
-{
     /// <summary>所有參數值串成一段文字，給分類器看。JsonElement 直接取原文。</summary>
-    public static string ArgsText(FunctionCallContent call) =>
-        call.Arguments is null ? "" : string.Join("\n", call.Arguments.Values.Select(v => v is JsonElement je ? je.GetRawText() : v?.ToString() ?? ""));
+    public static string ArgsText(KernelArguments? args) =>
+        args is null ? "" : string.Join("\n", args.Values.Select(v => v is JsonElement je ? je.GetRawText() : v?.ToString() ?? ""));
 
-    public static string Summary(FunctionCallContent call, int max = 80)
+    public static string Summary(KernelArguments? args, int max = 80)
     {
-        var t = ArgsText(call).Replace("\n", " ");
+        var t = ArgsText(args).Replace("\n", " ");
         return t.Length <= max ? t : t[..max] + "…";
+    }
+}
+```
+
+`src/PromptCopilot.Api/Filters/TerminalToolFilter.cs`：
+
+```csharp
+using Microsoft.SemanticKernel;
+
+namespace PromptCopilot.Api.Filters;
+
+/// <summary>終止型 tool 成功後（plugin 設了 outcome）停下 auto-invoke 迴圈。</summary>
+public sealed class TerminalToolFilter : IAutoFunctionInvocationFilter
+{
+    public async Task OnAutoFunctionInvocationAsync(AutoFunctionInvocationContext context, Func<AutoFunctionInvocationContext, Task> next)
+    {
+        await next(context);
+        if (context.Kernel.Turn().Outcome is not null) context.Terminate = true;
     }
 }
 ```
@@ -3214,22 +3288,25 @@ public static class ToolCallText
 ```csharp
 using Microsoft.SemanticKernel;
 using PromptCopilot.Api.Configuration;
-using PromptCopilot.Api.Orchestration;
 using PromptCopilot.Api.Plugins;
 
 namespace PromptCopilot.Api.Filters;
 
-public sealed class ToolBudgetFilter(OrchestratorOptions options) : IToolFilter
+public sealed class ToolBudgetFilter(OrchestratorOptions options) : IAutoFunctionInvocationFilter
 {
-    public Task<string?> BeforeInvokeAsync(FunctionCallContent call, TurnContext turn, CancellationToken ct)
+    public async Task OnAutoFunctionInvocationAsync(AutoFunctionInvocationContext context, Func<AutoFunctionInvocationContext, Task> next)
     {
+        var turn = context.Kernel.Turn();
         turn.ToolCalls++;
-        if (turn.ToolCalls <= options.MaxToolCallsPerTurn) return Task.FromResult<string?>(null);
-        turn.Outcome ??= new BudgetExhaustedOutcome();
-        return Task.FromResult<string?>("錯誤：本輪 tool 呼叫預算已用盡，將以現有資訊強制定稿");
+        if (turn.ToolCalls > options.MaxToolCallsPerTurn)
+        {
+            turn.Outcome ??= new BudgetExhaustedOutcome();
+            context.Result = new FunctionResult(context.Function, "錯誤：本輪 tool 呼叫預算已用盡，將以現有資訊強制定稿");
+            context.Terminate = true;
+            return;
+        }
+        await next(context);
     }
-
-    public Task AfterInvokeAsync(FunctionCallContent call, string result, TimeSpan elapsed, TurnContext turn, CancellationToken ct) => Task.CompletedTask;
 }
 ```
 
@@ -3238,53 +3315,59 @@ public sealed class ToolBudgetFilter(OrchestratorOptions options) : IToolFilter
 ```csharp
 using Microsoft.SemanticKernel;
 using PromptCopilot.Api.Orchestration;
+using PromptCopilot.Api.Plugins;
 using PromptCopilot.Api.Safety;
 
 namespace PromptCopilot.Api.Filters;
 
-/// <summary>多輪 §5.2：三個會把文字送到使用者眼前的 tool 都檢。命中丟例外，讓 orchestrator 回滾。</summary>
-public sealed class OutputSafetyFilter(SafetyClassifier classifier) : IToolFilter
+/// <summary>多輪 §5.2：三個會把文字送到使用者眼前的 tool 都檢。命中用 Terminate + BlockedOutcome，不丟例外。</summary>
+public sealed class OutputSafetyFilter(SafetyClassifier classifier) : IAutoFunctionInvocationFilter
 {
     private static readonly HashSet<string> Guarded = new() { ToolNames.Discuss, ToolNames.AskUser, ToolNames.FinalizePrompt };
 
-    public async Task<string?> BeforeInvokeAsync(FunctionCallContent call, TurnContext turn, CancellationToken ct)
+    public async Task OnAutoFunctionInvocationAsync(AutoFunctionInvocationContext context, Func<AutoFunctionInvocationContext, Task> next)
     {
-        if (!Guarded.Contains(call.FunctionName)) return null;
-        var v = await classifier.ClassifyOutputAsync(ToolCallText.ArgsText(call), ct);
-        if (v.Nsfw || v.RealPerson) throw new OutputBlockedException(v.Reason);
-        return null;
+        if (!Guarded.Contains(context.Function.Name)) { await next(context); return; }
+        var v = await classifier.ClassifyOutputAsync(TurnContextExtensions.ArgsText(context.Arguments), context.CancellationToken);
+        if (v.Nsfw || v.RealPerson)
+        {
+            var turn = context.Kernel.Turn();
+            turn.Outcome = new BlockedOutcome(v.Reason);
+            context.Result = new FunctionResult(context.Function, "錯誤：輸出被攔截");
+            context.Terminate = true;
+            return;
+        }
+        await next(context);
     }
-
-    public Task AfterInvokeAsync(FunctionCallContent call, string result, TimeSpan elapsed, TurnContext turn, CancellationToken ct) => Task.CompletedTask;
 }
 ```
 
 `src/PromptCopilot.Api/Filters/AuditFilter.cs`：
 
 ```csharp
+using System.Diagnostics;
 using System.Text.Json;
 using Microsoft.SemanticKernel;
 using PromptCopilot.Api.Data;
-using PromptCopilot.Api.Orchestration;
 using PromptCopilot.Api.Streaming;
 
 namespace PromptCopilot.Api.Filters;
 
-public sealed class AuditFilter(IAuditSink sink) : IToolFilter
+public sealed class AuditFilter(IAuditSink sink) : IAutoFunctionInvocationFilter
 {
-    public Task<string?> BeforeInvokeAsync(FunctionCallContent call, TurnContext turn, CancellationToken ct)
+    public async Task OnAutoFunctionInvocationAsync(AutoFunctionInvocationContext context, Func<AutoFunctionInvocationContext, Task> next)
     {
-        turn.Emit(new ToolCallEvent(call.Id ?? "", call.FunctionName, ToolCallText.Summary(call)));
-        return Task.FromResult<string?>(null);
-    }
-
-    public async Task AfterInvokeAsync(FunctionCallContent call, string result, TimeSpan elapsed, TurnContext turn, CancellationToken ct)
-    {
+        var turn = context.Kernel.Turn();
+        var callId = $"{context.RequestSequenceIndex}-{context.FunctionSequenceIndex}";
+        turn.Emit(new ToolCallEvent(callId, context.Function.Name, TurnContextExtensions.Summary(context.Arguments)));
+        var sw = Stopwatch.StartNew();
+        await next(context);
+        var result = context.Result.ToString();
         try
         {
             await sink.WriteAsync(new AuditEntry(turn.Session.Id, turn.TurnIndex, "Tool_Invoked",
-                PayloadJson: JsonSerializer.Serialize(new { name = call.FunctionName, args = ToolCallText.Summary(call, 200), result = result.Length > 200 ? result[..200] : result }),
-                LatencyMs: (int)elapsed.TotalMilliseconds), ct);
+                PayloadJson: JsonSerializer.Serialize(new { name = context.Function.Name, args = TurnContextExtensions.Summary(context.Arguments, 200), result = result.Length > 200 ? result[..200] : result }),
+                LatencyMs: (int)sw.ElapsedMilliseconds), context.CancellationToken);
         }
         catch (Exception e) when (e is not OperationCanceledException)
         {
@@ -3294,18 +3377,18 @@ public sealed class AuditFilter(IAuditSink sink) : IToolFilter
 }
 ```
 
-- [ ] **Step 5: 跑測試確認通過**
+- [ ] **Step 6: 跑測試確認通過**
 
 ```bash
 cd src && dotnet test --filter FiltersTests 2>&1 | tail -3
 ```
 
-Expected: `Passed: 5`。
+Expected: `Passed: 7`。若 `AutoFunctionInvocationContext` 沒有那個五參數建構子（U7），改用你版本的公開建構子；`Arguments`／`Result`／`Terminate` 是可設定屬性，測試其餘不動。
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-cd src && git add . && git commit -m "feat(api): tool filter pipeline (budget, output safety, audit)
+cd src && git add . && git commit -m "feat(api): SK auto-invocation filters (terminal, budget, output safety, audit)
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ```
@@ -3798,28 +3881,79 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 - Create: `src/PromptCopilot.Api/Orchestration/IPromptOrchestrator.cs`
 - Create: `src/PromptCopilot.Api/Orchestration/AgentKernelFactory.cs`
 - Create: `src/PromptCopilot.Api/Orchestration/AgenticOrchestrator.cs`
+- Modify: `src/PromptCopilot.Api.Tests/Fakes/FakeChatCompletion.cs`（加 `ThenAsync`，步驟拿得到 kernel）
 - Test: `src/PromptCopilot.Api.Tests/Orchestration/AgenticOrchestratorTests.cs`
 - Modify: `src/PromptCopilot.Api/Program.cs`
 
 **Interfaces:**
 - Produces:
   - `interface IPromptOrchestrator { IAsyncEnumerable<AgentEvent> RunTurnAsync(Session s, string userMessage, CancellationToken ct) }`（主規格 §4.10）
-  - `class AgentKernelFactory(IChatCompletionService, FacetCatalog, IEmbeddingClient, PresetRepository, HistoryRepository, OrchestratorOptions) { Kernel Create(TurnContext turn, IReadOnlySet<string> tools); static void AddFiltered(Kernel k, string pluginName, object plugin, IReadOnlySet<string> tools) }`
-  - `class AgenticOrchestrator(IChatCompletionService chat, FacetCatalog, SafetyGuard, SystemPromptBuilder, IAuditSink, OrchestratorOptions, Func<TurnContext, IReadOnlySet<string>, Kernel> kernelFactory, Func<TurnContext, IReadOnlyList<IToolFilter>> filterFactory) : IPromptOrchestrator`
-  - `class ProtocolViolationException(string message) : Exception`
-- Consumes: Task 4 `Session.Snapshot/Restore`、Task 7 `UpstreamBlockedException`、Task 8 `SafetyGuard`、Task 10 `ToolSetBuilder`、Task 11 plugins 與事件、Task 12 `IToolFilter` / `OutputBlockedException`、Task 13 `SystemPromptBuilder`、Task 14 `HistoryTrimmer`
+  - `class ProtocolViolationException(string message) : Exception`；`class OutputBlockedException(string reason) : Exception { string Reason }`
+  - `class AgentKernelFactory(IChatCompletionService, FacetCatalog, IEmbeddingClient, PresetRepository, HistoryRepository, SafetyClassifier, IAuditSink, OrchestratorOptions) { Kernel Create(TurnContext turn, IReadOnlySet<string> tools, bool includeBudget); static void AddFiltered(Kernel k, string pluginName, object plugin, IReadOnlySet<string> tools) }`——kernel 的 `Data["turn"]` 放 `TurnContext`，filter 依序掛 Audit → Budget → OutputSafety → Terminal
+  - `class AgenticOrchestrator(IChatCompletionService chat, FacetCatalog, SafetyGuard, SystemPromptBuilder, IAuditSink, OrchestratorOptions, Func<TurnContext, IReadOnlySet<string>, bool, Kernel> kernelFactory) : IPromptOrchestrator`
+  - `FakeChatCompletion.ThenAsync(Func<ChatHistory, Kernel?, Task<IReadOnlyList<ChatMessageContent>>>)`
+- Consumes: Task 4 `Session.Snapshot/Restore`、Task 7 `UpstreamBlockedException`、Task 8 `SafetyGuard`、Task 10 `ToolSetBuilder`、Task 11 plugins 與事件、Task 12 四個 filter 與 `BlockedOutcome`、Task 13 `SystemPromptBuilder`、Task 14 `HistoryTrimmer`
 
-本任務做：guard → snapshot → 工具清單 → system prompt → 自寫的 function-calling 迴圈（tool 經 filter 管線）→ 套用 outcome、修剪 history、寫 audit → 任何失敗回滾並發事件。**純文字補救與強制定稿留到 Task 16**：本任務裡「沒有 outcome」與「預算耗盡」都當失敗處理，Task 16 再把它們接成正確行為。
+本任務做：guard → snapshot → 工具清單 → system prompt → **一次 `GetChatMessageContentsAsync(history, FunctionChoiceBehavior.Auto(), kernel)`**（SK 自己跑 tool、跑 filter、`Terminate` 時停）→ 看 `turn.Outcome` 套用、修剪 history、寫 audit → 任何失敗回滾並發事件。**純文字補救與強制定稿留到 Task 16**：本任務裡「沒有 outcome」與「預算耗盡」都當失敗處理。
 
-`audit_logs` 的 `Turn_Failed` payload 記 `{ stage, errorClass, message }`；多輪 §5.6 提到的 `attempts` 在 decorator 內部，不外露，不記。
+`ResilientChatCompletion`（Task 7）包在整個 auto-invoke 迴圈外面。SK 邊跑邊把 tool call 與結果寫進我們傳進去的 `ChatHistory`，所以迴圈中途的 LLM 呼叫失敗被重試時，是**帶著已經跑過的 tool 結果從斷點接下去**，tool 不會重跑。
 
-- [ ] **Step 1: 寫失敗的測試**
+**測試策略**（主規格 §12.1：不 fake auto-invoke 迴圈）：fake 的步驟拿得到 `kernel`，可以直接 `kernel.Plugins[...]...InvokeAsync` 來模擬「connector 已經把這個 tool 跑完了」，並照 SK 的方式把 call 與 result 塞進 history；filter 不在這條路上（Task 12 另測）。要模擬 filter 的結果，步驟直接設 `kernel.Turn().Outcome`。
+
+- [ ] **Step 1: 擴充 fake**
+
+`src/PromptCopilot.Api.Tests/Fakes/FakeChatCompletion.cs` 改成步驟拿得到 kernel、可以是 async：
+
+```csharp
+using Microsoft.SemanticKernel;
+using Microsoft.SemanticKernel.ChatCompletion;
+
+namespace PromptCopilot.Api.Tests.Fakes;
+
+/// <summary>腳本化的 chat completion：每次呼叫吐 Script 的下一項。項目可以丟例外、可以拿到 kernel 去 invoke plugin 模擬 auto-invoke 的結果。</summary>
+public sealed class FakeChatCompletion : IChatCompletionService
+{
+    public Queue<Func<ChatHistory, Kernel?, Task<IReadOnlyList<ChatMessageContent>>>> Script { get; } = new();
+    public List<ChatHistory> Calls { get; } = new();
+    public IReadOnlyDictionary<string, object?> Attributes { get; } = new Dictionary<string, object?>();
+
+    public FakeChatCompletion ThenAsync(Func<ChatHistory, Kernel?, Task<IReadOnlyList<ChatMessageContent>>> step) { Script.Enqueue(step); return this; }
+    public FakeChatCompletion Then(Func<ChatHistory, IReadOnlyList<ChatMessageContent>> step) => ThenAsync((h, _) => Task.FromResult(step(h)));
+    public FakeChatCompletion Then(ChatMessageContent msg) => Then(_ => new[] { msg });
+    public FakeChatCompletion Throw(Exception e) => Then(_ => throw e);
+
+    public async Task<IReadOnlyList<ChatMessageContent>> GetChatMessageContentsAsync(ChatHistory chatHistory, PromptExecutionSettings? executionSettings = null, Kernel? kernel = null, CancellationToken cancellationToken = default)
+    {
+        Calls.Add(new ChatHistory(chatHistory));
+        if (Script.Count == 0) throw new InvalidOperationException("FakeChatCompletion script exhausted");
+        return await Script.Dequeue()(chatHistory, kernel);
+    }
+
+    public IAsyncEnumerable<StreamingChatMessageContent> GetStreamingChatMessageContentsAsync(ChatHistory chatHistory, PromptExecutionSettings? executionSettings = null, Kernel? kernel = null, CancellationToken cancellationToken = default)
+        => throw new NotSupportedException();
+
+    public static ChatMessageContent Text(string content) => new(AuthorRole.Assistant, content);
+
+    public static ChatMessageContent Calls(params FunctionCallContent[] calls)
+    {
+        var m = new ChatMessageContent(AuthorRole.Assistant, content: null);
+        foreach (var c in calls) m.Items.Add(c);
+        return m;
+    }
+
+    public static ChatMessageContent WithMeta(string? content, string key, string value) =>
+        new(AuthorRole.Assistant, content, metadata: new Dictionary<string, object?> { [key] = value });
+}
+```
+
+Task 7、8、12 的測試只用 `Then`／`Throw`，簽名沒變，不用動。
+
+- [ ] **Step 2: 寫失敗的測試**
 
 `src/PromptCopilot.Api.Tests/Orchestration/AgenticOrchestratorTests.cs`：
 
 ```csharp
 using System.Text.Json;
-using Microsoft.Extensions.Options;
 using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.ChatCompletion;
 using PromptCopilot.Api.Configuration;
@@ -3854,7 +3988,6 @@ public class AgenticOrchestratorTests
         public MemorySink Audit { get; } = new();
         public IAuditSink? SinkOverride { get; set; }
         public OrchestratorOptions Options { get; } = new() { MaxToolCallsPerTurn = 8, HistoryTurns = 10 };
-        public List<IToolFilter> ExtraFilters { get; } = new();
         public Session Session { get; } = new("s1");
 
         public AgenticOrchestrator Build()
@@ -3862,14 +3995,14 @@ public class AgenticOrchestratorTests
             var guard = new SafetyGuard(new Denylist(Array.Empty<string>()), new SafetyClassifier(GuardChat, Microsoft.Extensions.Options.Options.Create(new LlmOptions())));
             var prompts = new SystemPromptBuilder(Catalog, Options, Path.Combine(AppContext.BaseDirectory, "Prompts", "system.md"));
             return new AgenticOrchestrator(Chat, Catalog, guard, prompts, SinkOverride ?? Audit, Options,
-                kernelFactory: (turn, tools) =>
+                kernelFactory: (turn, tools, _) =>
                 {
                     var k = Kernel.CreateBuilder().Build();
+                    k.Data[TurnContextExtensions.DataKey] = turn;          // 不掛 filter：filter 在 FiltersTests 另測
                     AgentKernelFactory.AddFiltered(k, "Session", new SessionPlugin(turn, Catalog), tools);
                     AgentKernelFactory.AddFiltered(k, "Dialog", new DialogPlugin(turn, Catalog, Options), tools);
                     return k;
-                },
-                filterFactory: _ => new List<IToolFilter> { new ToolBudgetFilter(Options) }.Concat(ExtraFilters).ToList());
+                });
         }
 
         public async Task<List<AgentEvent>> RunAsync(string text, CancellationToken ct = default)
@@ -3881,11 +4014,18 @@ public class AgenticOrchestratorTests
         }
     }
 
-    internal static ChatMessageContent Call(string plugin, string name, object args)
+    /// <summary>模擬 connector 已把這個 tool 跑完：照 SK 的方式把 call 與 result 塞進 history。</summary>
+    internal static async Task<ChatMessageContent> Invoke(ChatHistory hist, Kernel kernel, string plugin, string name, object args)
     {
         var ka = new KernelArguments();
         foreach (var p in JsonSerializer.SerializeToElement(args).EnumerateObject()) ka[p.Name] = p.Value;
-        return FakeChatCompletion.Calls(new FunctionCallContent(name, plugin, Guid.NewGuid().ToString("N"), ka));
+        var call = new FunctionCallContent(name, plugin, Guid.NewGuid().ToString("N"), ka);
+        var callMsg = new ChatMessageContent(AuthorRole.Assistant, content: null); callMsg.Items.Add(call);
+        hist.Add(callMsg);
+        var result = (await kernel.Plugins[plugin][name].InvokeAsync(kernel, ka)).ToString();
+        var toolMsg = new ChatMessageContent(AuthorRole.Tool, content: null); toolMsg.Items.Add(new FunctionResultContent(call, result));
+        hist.Add(toolMsg);
+        return toolMsg;
     }
 
     internal static object AskArgs() => new
@@ -3895,11 +4035,12 @@ public class AgenticOrchestratorTests
         facetStates = new[] { new { facetId = "appearance.hair", state = "covered" } },
     };
 
+    private static object DiscussArgs(string message) => new { message, facetStates = Array.Empty<object>() };
+
     [Fact]
     public async Task Blocked_input_emits_blocked_and_never_calls_llm()
     {
         var h = new Harness();
-        h.GuardChat.Script.Clear();
         h.GuardChat.Then(FakeChatCompletion.Text("""{"nsfw":true,"realPerson":false,"personName":null,"wantsAutoComplete":false,"reason":"r"}"""));
         var events = new List<AgentEvent>();
         await foreach (var e in h.Build().RunTurnAsync(h.Session, "x", default)) events.Add(e);
@@ -3913,7 +4054,11 @@ public class AgenticOrchestratorTests
     public async Task Happy_path_ask_emits_final_ask_and_commits_session()
     {
         var h = new Harness();
-        h.Chat.Then(Call("Session", "SetProfile", new { profile = "portrait" })).Then(Call("Dialog", "AskUser", AskArgs()));
+        h.Chat.ThenAsync(async (hist, k) =>
+        {
+            await Invoke(hist, k!, "Session", "SetProfile", new { profile = "portrait" });
+            return new[] { await Invoke(hist, k!, "Dialog", "AskUser", AskArgs()) };
+        });
         var events = await h.RunAsync("一個銀髮少女");
 
         var final = Assert.Single(events.OfType<FinalEvent>());
@@ -3924,32 +4069,15 @@ public class AgenticOrchestratorTests
         Assert.Equal(1, h.Session.TurnIndex);
         Assert.Equal(AuthorRole.System, h.Session.ChatHistory[0].Role);
         Assert.Contains(h.Audit.Entries, a => a.EventType == "Turn_Completed" && a.PromptVersion!.Length == 12);
-        // history 已壓縮：AskUser 的 options 不再帶 tags
         var askCall = h.Session.ChatHistory.SelectMany(m => m.Items.OfType<FunctionCallContent>()).Single(c => c.FunctionName == "AskUser");
-        Assert.DoesNotContain("photo realism", askCall.Arguments!["asks"]!.ToString());
-    }
-
-    [Fact]
-    public async Task Tool_error_string_goes_back_to_llm_and_loop_continues()
-    {
-        var h = new Harness();
-        h.Chat.Then(Call("Session", "SetProfile", new { profile = "bogus" }))
-              .Then(hist =>
-              {
-                  var last = hist.Last().Items.OfType<FunctionResultContent>().Single();
-                  Assert.Contains("錯誤", last.Result!.ToString());
-                  return new[] { Call("Dialog", "Discuss", new { message = "你想畫人還是風景？", facetStates = Array.Empty<object>() }) };
-              });
-        var events = await h.RunAsync("hi");
-        Assert.Equal("message", Assert.Single(events.OfType<FinalEvent>()).Kind);
-        Assert.Equal(2, h.Chat.Calls.Count);
+        Assert.DoesNotContain("photo realism", askCall.Arguments!["asks"]!.ToString());   // history 已壓縮
     }
 
     [Fact]
     public async Task Llm_exception_rolls_back_everything_and_emits_error()
     {
         var h = new Harness();
-        h.Chat.Then(Call("Session", "SetProfile", new { profile = "portrait" })).Throw(new InvalidOperationException("boom"));
+        h.Chat.ThenAsync(async (hist, k) => { await Invoke(hist, k!, "Session", "SetProfile", new { profile = "portrait" }); throw new InvalidOperationException("boom"); });
         var events = await h.RunAsync("一個少女");
 
         var err = Assert.Single(events.OfType<ErrorEvent>());
@@ -3972,23 +4100,19 @@ public class AgenticOrchestratorTests
         Assert.Contains(h.Audit.Entries, a => a.EventType == "Blocked_Upstream");
     }
 
-    private sealed class AlwaysBlockDiscuss : IToolFilter
-    {
-        public Task<string?> BeforeInvokeAsync(FunctionCallContent call, TurnContext turn, CancellationToken ct) =>
-            call.FunctionName == "Discuss" ? throw new OutputBlockedException("nsfw") : Task.FromResult<string?>(null);
-        public Task AfterInvokeAsync(FunctionCallContent call, string result, TimeSpan elapsed, TurnContext turn, CancellationToken ct) => Task.CompletedTask;
-    }
-
     [Fact]
-    public async Task Output_block_rolls_back_and_emits_blocked()
+    public async Task Output_block_outcome_rolls_back_and_emits_blocked()
     {
         var h = new Harness();
-        h.ExtraFilters.Add(new AlwaysBlockDiscuss());
-        h.Chat.Then(Call("Dialog", "Discuss", new { message = "…", facetStates = Array.Empty<object>() }));
+        h.Chat.ThenAsync((hist, k) =>
+        {
+            k!.Turn().Outcome = new BlockedOutcome("nsfw");          // 模擬 OutputSafetyFilter 命中
+            return Task.FromResult<IReadOnlyList<ChatMessageContent>>(new[] { FakeChatCompletion.Text("") });
+        });
         var events = await h.RunAsync("x");
         Assert.Equal("Blocked_Output", Assert.Single(events.OfType<BlockedEvent>()).Reason);
-        Assert.Equal(0, h.Session.DiscussStreak);
         Assert.Empty(h.Session.ChatHistory);
+        Assert.Contains(h.Audit.Entries, a => a.EventType == "Blocked_Output");
     }
 
     [Fact]
@@ -3996,7 +4120,7 @@ public class AgenticOrchestratorTests
     {
         var h = new Harness();
         var cts = new CancellationTokenSource(); cts.Cancel();
-        h.Chat.Then(Call("Dialog", "Discuss", new { message = "…", facetStates = Array.Empty<object>() }));
+        h.Chat.Then(FakeChatCompletion.Text("x"));
         var events = new List<AgentEvent>();
         try { await foreach (var e in h.Build().RunTurnAsync(h.Session, "x", cts.Token)) events.Add(e); } catch (OperationCanceledException) { }
         Assert.Empty(h.Session.ChatHistory);
@@ -4007,9 +4131,13 @@ public class AgenticOrchestratorTests
     public async Task Second_turn_replaces_system_message_instead_of_stacking()
     {
         var h = new Harness();
-        h.Chat.Then(Call("Session", "SetProfile", new { profile = "portrait" })).Then(Call("Dialog", "AskUser", AskArgs()));
+        h.Chat.ThenAsync(async (hist, k) =>
+        {
+            await Invoke(hist, k!, "Session", "SetProfile", new { profile = "portrait" });
+            return new[] { await Invoke(hist, k!, "Dialog", "AskUser", AskArgs()) };
+        });
         await h.RunAsync("一個銀髮少女");
-        h.Chat.Then(Call("Dialog", "Discuss", new { message = "好", facetStates = Array.Empty<object>() }));
+        h.Chat.ThenAsync(async (hist, k) => new[] { await Invoke(hist, k!, "Dialog", "Discuss", DiscussArgs("好")) });
         await h.RunAsync("寫實跟動漫差在哪");
         Assert.Single(h.Session.ChatHistory, m => m.Role == AuthorRole.System);
         Assert.Equal(2, h.Session.TurnIndex);
@@ -4017,7 +4145,7 @@ public class AgenticOrchestratorTests
 }
 ```
 
-- [ ] **Step 2: 跑測試確認失敗**
+- [ ] **Step 3: 跑測試確認失敗**
 
 ```bash
 cd src && dotnet test --filter AgenticOrchestratorTests 2>&1 | tail -3
@@ -4025,7 +4153,7 @@ cd src && dotnet test --filter AgenticOrchestratorTests 2>&1 | tail -3
 
 Expected: 編譯錯誤。
 
-- [ ] **Step 3: 介面與 kernel factory**
+- [ ] **Step 4: 介面、例外、kernel factory**
 
 `src/PromptCopilot.Api/Orchestration/IPromptOrchestrator.cs`：
 
@@ -4041,6 +4169,12 @@ public interface IPromptOrchestrator
 }
 
 public sealed class ProtocolViolationException(string message) : Exception(message);
+
+/// <summary>OutputSafetyFilter 設了 BlockedOutcome 之後，orchestrator 用這個例外走回滾路徑。</summary>
+public sealed class OutputBlockedException(string reason) : Exception($"輸出被攔截：{reason}")
+{
+    public string Reason { get; } = reason;
+}
 ```
 
 `src/PromptCopilot.Api/Orchestration/AgentKernelFactory.cs`：
@@ -4051,23 +4185,32 @@ using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.ChatCompletion;
 using PromptCopilot.Api.Configuration;
 using PromptCopilot.Api.Data;
+using PromptCopilot.Api.Filters;
 using PromptCopilot.Api.Llm;
 using PromptCopilot.Api.Plugins;
+using PromptCopilot.Api.Safety;
 
 namespace PromptCopilot.Api.Orchestration;
 
-/// <summary>每輪建一個 kernel：plugin 拿這一輪的 TurnContext，函式清單依 ToolSetBuilder 過濾。</summary>
+/// <summary>每輪建一個 kernel：plugin 拿這一輪的 TurnContext，函式清單依 ToolSetBuilder 過濾，filter 由外到內掛上。</summary>
 public sealed class AgentKernelFactory(IChatCompletionService chat, FacetCatalog catalog, IEmbeddingClient embed,
-    PresetRepository presets, HistoryRepository histories, OrchestratorOptions options)
+    PresetRepository presets, HistoryRepository histories, SafetyClassifier classifier, IAuditSink audit, OrchestratorOptions options)
 {
-    public Kernel Create(TurnContext turn, IReadOnlySet<string> tools)
+    public Kernel Create(TurnContext turn, IReadOnlySet<string> tools, bool includeBudget)
     {
         var b = Kernel.CreateBuilder();
         b.Services.AddSingleton(chat);
         var k = b.Build();
+        k.Data[TurnContextExtensions.DataKey] = turn;
+
         AddFiltered(k, "Knowledge", new KnowledgePlugin(turn, catalog, embed, presets, histories), tools);
         AddFiltered(k, "Session", new SessionPlugin(turn, catalog), tools);
         AddFiltered(k, "Dialog", new DialogPlugin(turn, catalog, options), tools);
+
+        k.AutoFunctionInvocationFilters.Add(new AuditFilter(audit));
+        if (includeBudget) k.AutoFunctionInvocationFilters.Add(new ToolBudgetFilter(options));
+        k.AutoFunctionInvocationFilters.Add(new OutputSafetyFilter(classifier));
+        k.AutoFunctionInvocationFilters.Add(new TerminalToolFilter());
         return k;
     }
 
@@ -4081,7 +4224,7 @@ public sealed class AgentKernelFactory(IChatCompletionService chat, FacetCatalog
 }
 ```
 
-- [ ] **Step 4: Orchestrator**
+- [ ] **Step 5: Orchestrator**
 
 `src/PromptCopilot.Api/Orchestration/AgenticOrchestrator.cs`：
 
@@ -4095,7 +4238,6 @@ using Microsoft.SemanticKernel.ChatCompletion;
 using Microsoft.SemanticKernel.Connectors.Google;
 using PromptCopilot.Api.Configuration;
 using PromptCopilot.Api.Data;
-using PromptCopilot.Api.Filters;
 using PromptCopilot.Api.Llm;
 using PromptCopilot.Api.Plugins;
 using PromptCopilot.Api.Safety;
@@ -4111,8 +4253,7 @@ public sealed class AgenticOrchestrator(
     SystemPromptBuilder prompts,
     IAuditSink audit,
     OrchestratorOptions options,
-    Func<TurnContext, IReadOnlySet<string>, Kernel> kernelFactory,
-    Func<TurnContext, IReadOnlyList<IToolFilter>> filterFactory) : IPromptOrchestrator
+    Func<TurnContext, IReadOnlySet<string>, bool, Kernel> kernelFactory) : IPromptOrchestrator
 {
     private static readonly JsonSerializerOptions Json = new() { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
 
@@ -4149,7 +4290,6 @@ public sealed class AgenticOrchestrator(
         var tct = timeout.Token;
         var sw = Stopwatch.StartNew();
         var stage = "setup";
-        TurnContext? turn = null;
         string version = "";
         try
         {
@@ -4157,18 +4297,18 @@ public sealed class AgenticOrchestrator(
             session.TurnIndex = turnIndex;
             var tools = ToolSetBuilder.Build(session, g.WantsAutoComplete, options);
             if (g.WantsAutoComplete) session.AutoFill = true;
-            turn = new TurnContext(session, turnIndex, g, tools, writer);
+            var turn = new TurnContext(session, turnIndex, g, tools, writer);
             (var systemPrompt, version) = prompts.Build(session, tools);
             EnsureSystemMessage(session.ChatHistory, systemPrompt);
             session.ChatHistory.AddUserMessage(text);
             var startIdx = session.ChatHistory.Count;
-            var kernel = kernelFactory(turn, tools);
-            var filters = filterFactory(turn);
+            var kernel = kernelFactory(turn, tools, true);
 
             stage = "loop";
-            await LoopAsync(turn, kernel, filters, tct);
+            await CallAsync(turn, kernel, tct);
 
             stage = "apply";
+            if (turn.Outcome is BlockedOutcome blocked) throw new OutputBlockedException(blocked.Reason);
             if (turn.Outcome is null) throw new ProtocolViolationException("LLM 未以終止型 tool 結束本輪");
             if (turn.Outcome is BudgetExhaustedOutcome) throw new ProtocolViolationException("tool 預算耗盡");
             writer.TryWrite(ToFinal(turn.Outcome));
@@ -4220,57 +4360,16 @@ public sealed class AgenticOrchestrator(
         }
     }
 
-    /// <summary>自寫的 function-calling 迴圈。auto-invoke 關掉，所以每次 GetChatMessageContentsAsync 就是一個 HTTP 往返。</summary>
-    private async Task LoopAsync(TurnContext turn, Kernel kernel, IReadOnlyList<IToolFilter> filters, CancellationToken ct)
+    /// <summary>一次 SK auto-invoke：connector 自己跑 tool、跑 filter，Terminal filter 設 Terminate 就回來。
+    /// SK 邊跑邊把 call 與結果寫進 history；最後若是純文字（沒 tool）它不會自己加，這裡補上。</summary>
+    private async Task CallAsync(TurnContext turn, Kernel kernel, CancellationToken ct)
     {
-        var settings = new GeminiPromptExecutionSettings { FunctionChoiceBehavior = FunctionChoiceBehavior.Auto(autoInvoke: false) };
+        ct.ThrowIfCancellationRequested();
+        var settings = new GeminiPromptExecutionSettings { FunctionChoiceBehavior = FunctionChoiceBehavior.Auto() };
         var history = turn.Session.ChatHistory;
-        while (true)
-        {
-            ct.ThrowIfCancellationRequested();
-            var msg = (await chat.GetChatMessageContentsAsync(history, settings, kernel, ct))[0];
+        var msg = (await chat.GetChatMessageContentsAsync(history, settings, kernel, ct))[0];
+        if (msg.Role == AuthorRole.Assistant && !msg.Items.OfType<FunctionCallContent>().Any() && !string.IsNullOrWhiteSpace(msg.Content))
             history.Add(msg);
-            var calls = msg.Items.OfType<FunctionCallContent>().ToList();
-            if (calls.Count == 0) return;                       // 純文字：交給呼叫端判斷（Task 16 補救）
-
-            foreach (var call in calls)
-            {
-                var result = await InvokeAsync(call, kernel, filters, turn, ct);
-                var toolMsg = new ChatMessageContent(AuthorRole.Tool, content: null);
-                toolMsg.Items.Add(new FunctionResultContent(call, result));
-                history.Add(toolMsg);
-                if (turn.Outcome is not null) break;
-            }
-            if (turn.Outcome is not null) return;
-        }
-    }
-
-    private static async Task<string> InvokeAsync(FunctionCallContent call, Kernel kernel, IReadOnlyList<IToolFilter> filters, TurnContext turn, CancellationToken ct)
-    {
-        string? result = null;
-        foreach (var f in filters)
-        {
-            result = await f.BeforeInvokeAsync(call, turn, ct);
-            if (result is not null) break;                      // 短路
-        }
-        var sw = Stopwatch.StartNew();
-        if (result is null)
-        {
-            try
-            {
-                var fr = await call.InvokeAsync(kernel, ct);
-                result = fr.Result?.ToString() ?? "";
-            }
-            catch (OperationCanceledException) { throw; }
-            catch (Exception e)                                 // 主規格 §4.6：tool 例外回結構化錯誤給 LLM
-            {
-                turn.Rejections.Add($"tool {call.FunctionName} 例外：{e.GetType().Name}: {e.Message}");
-                result = $"錯誤：{call.FunctionName} 執行失敗（{e.GetType().Name}）。請改用其他方式或以現有資訊定稿。";
-            }
-        }
-        foreach (var f in filters.Reverse())
-            await f.AfterInvokeAsync(call, result, sw.Elapsed, turn, ct);
-        return result;
     }
 
     private static void EnsureSystemMessage(ChatHistory h, string prompt)
@@ -4290,39 +4389,31 @@ public sealed class AgenticOrchestrator(
 }
 ```
 
-- [ ] **Step 5: 註冊 DI**
+- [ ] **Step 6: 註冊 DI**
 
 `Program.cs`：
 
 ```csharp
 builder.Services.AddSingleton(sp => sp.GetRequiredService<IOptions<OrchestratorOptions>>().Value);
 builder.Services.AddSingleton<AgentKernelFactory>();
-builder.Services.AddSingleton<IPromptOrchestrator>(sp =>
-{
-    var o = sp.GetRequiredService<OrchestratorOptions>();
-    var kf = sp.GetRequiredService<AgentKernelFactory>();
-    var classifier = sp.GetRequiredService<SafetyClassifier>();
-    var sink = sp.GetRequiredService<IAuditSink>();
-    return new AgenticOrchestrator(
-        sp.GetRequiredService<IChatCompletionService>(), sp.GetRequiredService<FacetCatalog>(), sp.GetRequiredService<SafetyGuard>(),
-        sp.GetRequiredService<SystemPromptBuilder>(), sink, o,
-        kernelFactory: kf.Create,
-        filterFactory: _ => new IToolFilter[] { new AuditFilter(sink), new ToolBudgetFilter(o), new OutputSafetyFilter(classifier) });
-});
+builder.Services.AddSingleton<IPromptOrchestrator>(sp => new AgenticOrchestrator(
+    sp.GetRequiredService<IChatCompletionService>(), sp.GetRequiredService<FacetCatalog>(), sp.GetRequiredService<SafetyGuard>(),
+    sp.GetRequiredService<SystemPromptBuilder>(), sp.GetRequiredService<IAuditSink>(), sp.GetRequiredService<OrchestratorOptions>(),
+    kernelFactory: sp.GetRequiredService<AgentKernelFactory>().Create));
 ```
 
-- [ ] **Step 6: 跑測試確認通過**
+- [ ] **Step 7: 跑測試確認通過**
 
 ```bash
 cd src && dotnet test --filter AgenticOrchestratorTests 2>&1 | tail -3
 ```
 
-Expected: `Passed: 8`。若 `FunctionCallContent.InvokeAsync` 對 `JsonElement` 參數綁定失敗（例外訊息含 `Cannot convert`），代表你的 SK 版本要求字串：在測試的 `Call()` helper 把 `ka[p.Name] = p.Value` 改成 `ka[p.Name] = p.Value.GetRawText()`；Gemini connector 送進來的本來就是 JSON 字串或 JsonElement，兩者 SK 都會反序列化。
+Expected: `Passed: 7`。若 `KernelFunction.InvokeAsync` 對 `JsonElement` 參數綁定失敗（例外訊息含 `Cannot convert`），在測試的 `Invoke()` helper 把 `ka[p.Name] = p.Value` 改成 `ka[p.Name] = p.Value.GetRawText()`。
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
-cd src && git add . && git commit -m "feat(api): AgenticOrchestrator with per-turn snapshot/rollback and hand-rolled tool loop
+cd src && git add . && git commit -m "feat(api): AgenticOrchestrator with per-turn snapshot/rollback over SK auto-invoke
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ```
@@ -4336,12 +4427,12 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 - Test: `src/PromptCopilot.Api.Tests/Orchestration/AgenticOrchestratorTests.cs`（追加）
 
 **Interfaces:**
-- Consumes: Task 15 的 `LoopAsync` / `ExecuteAsync`；Task 11 `DialogPlugin.Discuss`；Task 12 `ToolBudgetFilter`
+- Consumes: Task 15 的 `CallAsync` / `ExecuteAsync`；Task 11 `DialogPlugin.Discuss`；Task 15 `kernelFactory` 的 `includeBudget` 參數
 
 兩件事，都是主規格 §4.6 與多輪 §5.3：
 
 1. **純文字**：LLM 沒呼叫任何 tool → 補一則系統提示重試一次；仍為純文字 → `Discuss` 可用就把文字包成 `Discuss`（`options` 空、`facetStates` 用 session 現值、`DiscussStreak++`），否則 `error`。
-2. **預算耗盡**：`BudgetExhaustedOutcome` → 再跑一次只掛 `FinalizePrompt` 的 kernel，附「請立即以現有資訊定稿」；budget filter 不再套用（否則第一個 call 又被擋）。
+2. **預算耗盡**：`BudgetExhaustedOutcome` → 再跑一次只掛 `FinalizePrompt` 的 kernel（`includeBudget: false`，否則第一個 call 又被擋），附「請立即以現有資訊定稿」。
 
 - [ ] **Step 1: 追加失敗的測試**
 
@@ -4382,14 +4473,19 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
     public async Task Budget_exhausted_forces_finalize_with_only_that_tool()
     {
         var h = new Harness();
-        h.Options.MaxToolCallsPerTurn = 1;
-        h.Chat.Then(Call("Session", "SetProfile", new { profile = "portrait" }))
-              .Then(Call("Session", "SetFacetStates", new { updates = Array.Empty<object>() }))   // 第 2 次 → 超限
-              .Then(hist =>
-              {
-                  Assert.Contains("定稿", hist.Last().Content);
-                  return new[] { Call("Dialog", "FinalizePrompt", new { positivePrompt = "1girl", negativePrompt = "lowres", tips = "t", facetStates = Array.Empty<object>() }) };
-              });
+        h.Chat.ThenAsync(async (hist, k) =>
+        {
+            await Invoke(hist, k!, "Session", "SetProfile", new { profile = "portrait" });
+            k!.Turn().Outcome = new BudgetExhaustedOutcome();       // 模擬 ToolBudgetFilter 超限
+            return new[] { FakeChatCompletion.Text("") };
+        })
+        .ThenAsync(async (hist, k) =>
+        {
+            Assert.Contains("定稿", hist.Last().Content);
+            Assert.Single(k!.Plugins);                                 // 只剩 Dialog
+            Assert.Single(k.Plugins["Dialog"]);                        // 只剩 FinalizePrompt
+            return new[] { await Invoke(hist, k, "Dialog", "FinalizePrompt", new { positivePrompt = "1girl", negativePrompt = "lowres", tips = "t", facetStates = Array.Empty<object>() }) };
+        });
         var events = await h.RunAsync("一個少女");
         Assert.Equal("finalized", Assert.Single(events.OfType<FinalEvent>()).Kind);
         Assert.Equal(SessionStatus.Finalized, h.Session.Status);
@@ -4406,7 +4502,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
     public async Task Audit_failure_after_commit_does_not_roll_back()
     {
         var h = new Harness { SinkOverride = new ThrowingSink() };
-        h.Chat.Then(Call("Dialog", "Discuss", new { message = "好", facetStates = Array.Empty<object>() }));
+        h.Chat.ThenAsync(async (hist, k) => new[] { await Invoke(hist, k!, "Dialog", "Discuss", DiscussArgs("好")) });
         var events = await h.RunAsync("x");
         Assert.Single(events.OfType<FinalEvent>()); Assert.Empty(events.OfType<ErrorEvent>());
         Assert.Equal(1, h.Session.DiscussStreak);
@@ -4419,7 +4515,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 cd src && dotnet test --filter AgenticOrchestratorTests 2>&1 | tail -3
 ```
 
-Expected: 4 個新測試 FAIL（現在純文字與預算耗盡都走 `turn_failed`；稽核失敗會回滾）。
+Expected: 前 3 個新測試 FAIL（現在純文字與預算耗盡都走 `turn_failed`）；第 4 個因為 Task 15 已經處理稽核失敗，應該直接過。
 
 - [ ] **Step 3: 改 ExecuteAsync 的 loop 與 apply 段**
 
@@ -4427,14 +4523,14 @@ Expected: 4 個新測試 FAIL（現在純文字與預算耗盡都走 `turn_faile
 
 ```csharp
             stage = "loop";
-            await LoopAsync(turn, kernel, filters, tct);
+            await CallAsync(turn, kernel, tct);
 
             if (turn.Outcome is null)
             {
                 // 多輪 §5.3：補一則系統提示重試一次
                 await audit.WriteAsync(new AuditEntry(session.Id, turnIndex, "Protocol_Violation", version, text, """{"attempt":1}"""), CancellationToken.None);
                 session.ChatHistory.AddSystemMessage("你必須呼叫 AskUser、Discuss、FinalizePrompt 或 RequestSaveConsent 之一來結束這一輪，不要只回純文字。");
-                await LoopAsync(turn, kernel, filters, tct);
+                await CallAsync(turn, kernel, tct);
             }
             if (turn.Outcome is null)
             {
@@ -4450,10 +4546,11 @@ Expected: 4 個新測試 FAIL（現在純文字與預算耗盡都走 `turn_faile
             if (turn.Outcome is BudgetExhaustedOutcome)
             {
                 await audit.WriteAsync(new AuditEntry(session.Id, turnIndex, "Tool_Budget_Exhausted", version, text, JsonSerializer.Serialize(new { turn.ToolCalls }, Json)), CancellationToken.None);
-                await ForcedFinalizeAsync(turn, filters, tct);
+                await ForcedFinalizeAsync(turn, tct);
             }
 
             stage = "apply";
+            if (turn.Outcome is BlockedOutcome blocked) throw new OutputBlockedException(blocked.Reason);
             if (turn.Outcome is null or BudgetExhaustedOutcome) throw new ProtocolViolationException("強制定稿後仍無定稿");
 ```
 
@@ -4471,15 +4568,13 @@ Expected: 4 個新測試 FAIL（現在純文字與預算耗盡都走 `turn_faile
 加 `ForcedFinalizeAsync`：
 
 ```csharp
-    /// <summary>主規格 §4.6：預算耗盡後只掛 FinalizePrompt 再跑一次。budget filter 不套用，否則第一個 call 又被擋。</summary>
-    private async Task ForcedFinalizeAsync(TurnContext turn, IReadOnlyList<IToolFilter> filters, CancellationToken ct)
+    /// <summary>主規格 §4.6：預算耗盡後只掛 FinalizePrompt 再跑一次；kernel 不掛 budget filter，否則第一個 call 又被擋。</summary>
+    private async Task ForcedFinalizeAsync(TurnContext turn, CancellationToken ct)
     {
         turn.Outcome = null;
-        var only = new HashSet<string> { ToolNames.FinalizePrompt };
-        var kernel = kernelFactory(turn, only);
-        var noBudget = filters.Where(f => f is not ToolBudgetFilter).ToList();
+        var kernel = kernelFactory(turn, new HashSet<string> { ToolNames.FinalizePrompt }, false);
         turn.Session.ChatHistory.AddSystemMessage("tool 呼叫預算已用盡。請立即以現有資訊呼叫 FinalizePrompt 定稿；missing 的 facet 留白，不要再檢索。");
-        await LoopAsync(turn, kernel, noBudget, ct);
+        await CallAsync(turn, kernel, ct);
     }
 ```
 
@@ -4489,7 +4584,7 @@ Expected: 4 個新測試 FAIL（現在純文字與預算耗盡都走 `turn_faile
 cd src && dotnet test --filter AgenticOrchestratorTests 2>&1 | tail -3
 ```
 
-Expected: `Passed: 12`。
+Expected: `Passed: 11`。
 
 - [ ] **Step 5: 全部測試**
 
@@ -4864,13 +4959,10 @@ services.AddSingleton<IPromptOrchestrator>(sp =>
 {
     var o = sp.GetRequiredService<OrchestratorOptions>();
     if (!string.Equals(o.Mode, "Agentic", StringComparison.OrdinalIgnoreCase)) return new StateMachineOrchestrator();
-    var sink = sp.GetRequiredService<IAuditSink>();
-    var classifier = sp.GetRequiredService<SafetyClassifier>();
     return new AgenticOrchestrator(
         sp.GetRequiredService<IChatCompletionService>(), sp.GetRequiredService<FacetCatalog>(), sp.GetRequiredService<SafetyGuard>(),
-        sp.GetRequiredService<SystemPromptBuilder>(), sink, o,
-        kernelFactory: sp.GetRequiredService<AgentKernelFactory>().Create,
-        filterFactory: _ => new IToolFilter[] { new AuditFilter(sink), new ToolBudgetFilter(o), new OutputSafetyFilter(classifier) });
+        sp.GetRequiredService<SystemPromptBuilder>(), sp.GetRequiredService<IAuditSink>(), o,
+        kernelFactory: sp.GetRequiredService<AgentKernelFactory>().Create);
 });
 
 var app = builder.Build();
@@ -5145,3 +5237,6 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 | U4 | Task 15 | `GeminiPromptExecutionSettings` 是否需要 `ToolCallBehavior` 而非 `FunctionChoiceBehavior`（舊版 API） | 舊版用 `GeminiToolCallBehavior.EnableKernelFunctions`（不 auto-invoke）；語意相同 |
 | U5 | Task 8 | `GeminiPromptExecutionSettings.ResponseSchema` 接受 `Type` 還是要 JSON schema 物件 | 改傳 `KernelJsonSchema` 或手寫 schema；測試用 fake，不受影響 |
 | U6 | Task 16 | Gemini 是否接受 history 中途的 system message（純文字補救與強制定稿的提示） | 改用 `AddUserMessage` 加前綴「[系統]」；測試改斷言 `AuthorRole.User` |
+| U7 | Task 12 | `AutoFunctionInvocationContext` 的公開建構子簽名（測試手工組 context 用） | 用你版本的建構子；`Arguments`／`Result`／`Terminate` 是可設定屬性，測試其餘不動 |
+| U8 | Task 15 | Google connector 的 auto-invoke 對 tool 內部例外是「轉成錯誤結果回給 LLM」還是「往外丟」 | 往外丟的話，在 `AuditFilter`（最外層）包 try/catch，把例外轉成 `context.Result` 的錯誤字串，符合主規格 §4.6 |
+| U9 | Task 15 | `Terminate` 之後 `GetChatMessageContentsAsync` 回的是哪一則訊息、SK 有沒有把它加進 history | orchestrator 不依賴回傳值（看 `turn.Outcome`）；`CallAsync` 只在回傳是純文字 assistant 訊息時才手動加進 history，若發現重複就拿掉那一行 |
