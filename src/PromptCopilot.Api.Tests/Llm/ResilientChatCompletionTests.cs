@@ -111,6 +111,28 @@ public class ResilientChatCompletionTests
         Assert.Single(inner.Calls);
     }
 
+    /// <summary>auto-invoke 被終止型 tool 停掉時，SK 回的就是這種空的 tool 訊息。
+    /// 把它當成「沒有可用內容」會把已經成功的一輪整個重跑，最後還丟例外。</summary>
+    [Fact]
+    public async Task Empty_tool_message_from_a_terminated_auto_invoke_is_usable()
+    {
+        var (sut, inner, _) = Make();
+        inner.Then(new ChatMessageContent(AuthorRole.Tool, ""));
+        var r = await sut.GetChatMessageContentsAsync(new ChatHistory());
+        Assert.Equal(AuthorRole.Tool, r[0].Role);
+        Assert.Single(inner.Calls);
+    }
+
+    /// <summary>但 tool 訊息也還是要看 metadata 的攔截理由。</summary>
+    [Fact]
+    public async Task Blocked_tool_message_is_still_a_content_block()
+    {
+        var (sut, inner, _) = Make(block: 0);
+        inner.Then(new ChatMessageContent(AuthorRole.Tool, "", metadata: new Dictionary<string, object?> { ["FinishReason"] = "SAFETY" }));
+        var ex = await Assert.ThrowsAsync<UpstreamBlockedException>(() => sut.GetChatMessageContentsAsync(new ChatHistory()));
+        Assert.Equal("SAFETY", ex.Reason);
+    }
+
     [Fact]
     public async Task Cancellation_during_backoff_stops_retrying()
     {

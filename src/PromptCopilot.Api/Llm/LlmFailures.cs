@@ -1,5 +1,6 @@
 using System.Net;
 using Microsoft.SemanticKernel;
+using Microsoft.SemanticKernel.ChatCompletion;
 
 namespace PromptCopilot.Api.Llm;
 
@@ -55,6 +56,10 @@ public static class LlmFailureClassifier
         if (block is not null && ContentBlockReasons.Contains(block)) return (LlmFailureKind.ContentBlock, block);
         var finish = Meta(m, "FinishReason");
         if (finish is not null && ContentBlockReasons.Contains(finish)) return (LlmFailureKind.ContentBlock, finish);
+        // auto-invoke 被 filter 終止（終止型 tool 成功／預算用盡）時，SK 回的是最後那一則 tool 訊息，
+        // role=tool、內容通常是空字串。這一輪的產出在 TurnContext 裡，不在這則訊息裡：
+        // 當成「沒有可用內容」會把已經成功的一輪重跑 UnusableRetries 次，再以例外收場。
+        if (m.Role == AuthorRole.Tool) return null;
         var hasCall = m.Items.OfType<FunctionCallContent>().Any();
         if (string.IsNullOrWhiteSpace(m.Content) && !hasCall) return (LlmFailureKind.Unusable, finish);
         return null;

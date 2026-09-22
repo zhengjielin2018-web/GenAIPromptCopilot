@@ -51,7 +51,10 @@ services.AddSingleton(sp => new SystemPromptBuilder(sp.GetRequiredService<FacetC
 services.AddSingleton<IChatCompletionService>(sp =>
 {
     var llm = sp.GetRequiredService<IOptions<LlmOptions>>();
-    return new ResilientChatCompletion(new GoogleAIGeminiChatCompletionService(llm.Value.Model, llm.Value.ApiKey), llm);
+    // 自備 HttpClient 只為了插 GeminiRoleFixHandler（見該類別的註解）；單例服務持有單一 client。
+    var http = new HttpClient(new GeminiRoleFixHandler(new HttpClientHandler()));
+    return new ResilientChatCompletion(
+        new GoogleAIGeminiChatCompletionService(llm.Value.Model, llm.Value.ApiKey, GoogleAIVersion.V1_Beta, http), llm);
 });
 
 // ---- safety ----
