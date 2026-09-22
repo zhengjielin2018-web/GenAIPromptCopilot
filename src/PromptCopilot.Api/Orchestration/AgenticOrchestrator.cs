@@ -47,8 +47,8 @@ public sealed class AgenticOrchestrator(
         var g = await guard.CheckAsync(text, ct);
         if (g.Blocked)
         {
-            await audit.WriteAsync(new AuditEntry(session.Id, turnIndex, g.BlockCode!, RawInput: text), ct);
             writer.TryWrite(new BlockedEvent(g.BlockCode!, g.Message!));
+            await TryAuditAsync(new AuditEntry(session.Id, turnIndex, g.BlockCode!, RawInput: text));
             return;
         }
 

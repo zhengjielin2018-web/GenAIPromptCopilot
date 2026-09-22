@@ -102,6 +102,19 @@ public class AgenticOrchestratorTests
         Assert.Contains(h.Audit.Entries, a => a.EventType == "Blocked_NSFW");
     }
 
+    /// <summary>輸入側同理：稽核掛掉不能把 BlockedEvent 吃掉。</summary>
+    [Fact]
+    public async Task Blocked_input_still_emits_blocked_when_audit_fails()
+    {
+        var h = new Harness { SinkOverride = new ExplodingSink() };
+        h.GuardChat.Then(FakeChatCompletion.Text("""{"nsfw":true,"realPerson":false,"personName":null,"wantsAutoComplete":false,"reason":"r"}"""));
+        var events = new List<AgentEvent>();
+        await foreach (var e in h.Build().RunTurnAsync(h.Session, "x", default)) events.Add(e);
+        Assert.Equal("Blocked_NSFW", Assert.Single(events.OfType<BlockedEvent>()).Reason);
+        Assert.Empty(h.Chat.Calls);
+        Assert.Empty(h.Session.ChatHistory);
+    }
+
     [Fact]
     public async Task Happy_path_ask_emits_final_ask_and_commits_session()
     {
