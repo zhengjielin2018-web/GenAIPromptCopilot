@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Threading.Channels;
 using Microsoft.Extensions.Options;
 using Microsoft.SemanticKernel;
@@ -106,6 +107,50 @@ public class FiltersTests
         await f.OnAutoFunctionInvocationAsync(Ctx(k, "FinalizePrompt", ("positivePrompt", "1girl")), Next(() => called = true));
         Assert.True(called); Assert.Null(turn.Outcome);
     }
+
+    /// <summary>Gemini 回來的參數是 JsonElement，原文把非 ASCII 全 escape 成 \uXXXX。
+    /// 分類器看的就是這段文字，拿到跳脫序列等於要它自己先解碼一次才能判斷。</summary>
+    [Fact]
+    public void ArgsText_hands_over_unescaped_text()
+    {
+        var text = TurnContextExtensions.ArgsText(new KernelArguments { ["preamble"] = GeminiPreamble, ["asks"] = GeminiAsks });
+
+        Assert.Contains("少女在海邊", text);
+        Assert.Contains("寫實", text);
+        Assert.Contains("雨夜的霓虹街頭", text);
+        Assert.DoesNotContain("\\u", text);
+        Assert.Contains("photo", text);                          // 英文 tag 照舊看得到
+        Assert.Contains("dimension", text);                      // 巢狀結構還在，只是不 escape
+        Assert.DoesNotContain("\"雨夜的霓虹街頭\"", text);        // 字串元素連引號都不留
+    }
+
+    [Fact]
+    public async Task OutputSafety_classifies_the_unescaped_text()
+    {
+        var (k, _, _) = Kernel();
+        var chat = new FakeChatCompletion().Then(FakeChatCompletion.Text("""{"nsfw":false,"realPerson":false,"personName":null,"wantsAutoComplete":false,"reason":"ok"}"""));
+        var f = new OutputSafetyFilter(new SafetyClassifier(chat, Options.Create(new LlmOptions())));
+        await f.OnAutoFunctionInvocationAsync(Ctx(k, "Discuss", ("payload", GeminiAsks)), Next());
+
+        var sent = Assert.Single(chat.Calls)[0].Content;
+        Assert.Contains("少女", sent);
+        Assert.Contains("寫實", sent);
+        Assert.DoesNotContain("\\u", sent);
+    }
+
+    // 這兩個 fixture 必須是「原文帶 \uXXXX」的 JsonElement，否則測不到東西：
+    // GetRawText() 只是把來源原文原樣吐回去，來源要是已經解碼過的中文，舊實作也會過。
+    // JsonSerializer 的預設 encoder 正好會把非 ASCII escape 掉，跟 Gemini 回來的樣子一致，
+    // 所以用它在執行期產生來源，而不是在原始碼裡寫字面的反斜線 u。
+    private static readonly JsonElement GeminiAsks = Escaped(new[]
+    {
+        new { dimension = "風格", question = "少女在海邊，想要什麼風格？", options = new[] { new { label = "寫實", tags = "photo" } } },
+    });
+    private static readonly JsonElement GeminiPreamble = Escaped(new { p = "雨夜的霓虹街頭" }).GetProperty("p");
+
+    /// <summary>Clone：JsonDocument 一被回收，沒 detach 的 JsonElement 就失效了。</summary>
+    private static JsonElement Escaped(object value) =>
+        JsonDocument.Parse(JsonSerializer.Serialize(value)).RootElement.Clone();
 
     [Fact]
     public async Task Audit_emits_tool_call_event_and_writes_one_row()
