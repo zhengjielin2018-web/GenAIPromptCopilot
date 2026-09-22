@@ -30,9 +30,9 @@ def _record_stage_mains(monkeypatch):
 
 def test_main_threads_the_right_argv_to_each_stage(monkeypatch):
     calls = _record_stage_mains(monkeypatch)
-    main(["--max-items", "7", "--max-records", "3", "--reindex"])
+    main(["--quota-scale", "0.5", "--max-records", "3", "--reindex"])
     assert calls == {
-        "fetch": ["--max-items", "7"],
+        "fetch": ["--quota-scale", "0.5"],
         "clean": [],
         "structure": ["--max-records", "3"],
         "embed": ["--reindex"],
