@@ -385,9 +385,9 @@ interface IPromptOrchestrator {
 }
 ```
 
-兩個實作：`AgenticOrchestrator`（本設計）與 `StateMachineOrchestrator`（後端決定 ASK/FINALIZE，LLM 只做分析與檢索）。組態 `Orchestrator:Mode` 切換。API 契約與前端不變。
+兩個實作：`AgenticOrchestrator`（本設計）與 `StateMachineOrchestrator`（後端決定 ASK/DISCUSS/FINALIZE，LLM 只做分析、檢索與產文）。組態 `Orchestrator:Mode` 切換。API 契約與前端不變。
 
-`StateMachineOrchestrator` 在子專案 2 只留介面與 `NotImplementedException` 空殼；**只有當子專案 2 驗收時 agentic loop 無法穩定跑完「追問 → 定稿」才實作**。
+`StateMachineOrchestrator` 在子專案 2 只留介面與 `NotImplementedException` 空殼；**只有當子專案 2 驗收時 agentic loop 無法穩定跑完 §14 第 2 列的「追問 → 討論 → 回答 → 定稿 → 討論 → 修改；上游攔截後 session 可繼續」才實作**。
 
 ## 5. 六維度與 Facet 體系
 
