@@ -30,7 +30,7 @@
 - `coverage_report.py` 的候選池查詢必須直接重用 `pipeline.retrieval.POOL_SQL` 與
   `dimension_facets()`，不得另寫一份查詢邏輯（spec §10）
 - 不合成 preset、不做人工 curated 補冷門 facet 清單（spec §3）
-- 测试遵循既有慣例：純函式測試預設執行（`pytest`），需要 DB／網路的標 `@pytest.mark.integration`
+- 測試遵循既有慣例：純函式測試預設執行（`pytest`），需要 DB／網路的標 `@pytest.mark.integration`
   （`pyproject.toml` 的 `addopts = "-m 'not integration'"` 已把它們排除在預設跑法之外）
 
 ---
@@ -51,6 +51,10 @@
 建立 `scripts/tests/test_strata.py`：
 
 ```python
+import dataclasses
+
+import pytest
+
 from pipeline.strata import STRATA, Stratum
 
 
@@ -78,12 +82,8 @@ def test_baseline_stratum_matches_the_original_hardcoded_fetch_params():
 
 def test_stratum_is_frozen():
     s = Stratum(key="x", base_models=None, period="AllTime", quota=1)
-    try:
+    with pytest.raises(dataclasses.FrozenInstanceError):
         s.quota = 2
-        raised = False
-    except AttributeError:
-        raised = True
-    assert raised
 ```
 
 - [ ] **Step 2: 執行測試，確認因模組不存在而失敗**
@@ -141,7 +141,7 @@ Expected: 無錯誤
 git add scripts/pipeline/strata.py scripts/tests/test_strata.py
 git commit -m "feat(pipeline): add 9-stratum quota table for corpus expansion
 
-Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ```
 
 ---
@@ -243,7 +243,7 @@ Expected: 無錯誤
 git add scripts/pipeline/civitai_client.py scripts/tests/test_civitai_client.py
 git commit -m "feat(pipeline): make iter_images sort/period configurable
 
-Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ```
 
 ---
@@ -277,14 +277,15 @@ Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
 
 - [ ] **Step 1: 寫失敗測試**
 
-用下面完整內容**取代** `scripts/tests/test_fetch.py`（既有測試會在 3b 一併重寫，這裡先加
-遷移測試在檔案最上方，其餘保留舊有內容不動，下一子任務再整體替換）：
+用下面內容**完整取代** `scripts/tests/test_fetch.py`。舊的五個 `run_fetch` 測試在這一步
+一起刪掉（它們直接讀 state.json 頂層的 `done`/`cursor`，在 v2 schema 下必然失敗），
+3b 會用新 schema 把它們重寫回來：
 
 ```python
 import json
 
-from pipeline.fetch_civitai import _default_stratum_state, _migrate_to_v2, run_fetch
-from pipeline.jsonl import read_jsonl
+from pipeline.fetch_civitai import _default_stratum_state, _migrate_to_v2, _remaining_quota, run_fetch
+from pipeline.jsonl import append_jsonl, read_jsonl
 
 
 def test_migrate_v1_state_wraps_it_as_baseline_stratum():
@@ -303,6 +304,16 @@ def test_migrate_empty_dict_yields_empty_strata():
 
 def test_default_stratum_state_is_fresh():
     assert _default_stratum_state() == {"cursor": None, "fetched": 0, "done": False}
+
+
+def test_remaining_quota_scales_and_floors_at_zero():
+    """main() 每次執行都用「目標 − 已累積」算這次還要抓多少；若直接每次都傳整個 quota，
+    重跑腳本會讓已達配額但 cursor 未耗盡的層再多抓一整份。"""
+    assert _remaining_quota(1000, 1.0, 400) == 600
+    assert _remaining_quota(1000, 0.5, 400) == 100
+    assert _remaining_quota(1000, 1.0, 1000) == 0
+    assert _remaining_quota(1000, 1.0, 1500) == 0  # 已超額也不會變負的
+    assert _remaining_quota(9, 0.5, 0) == round(9 * 0.5)
 
 
 class FakeClient:
@@ -465,19 +476,17 @@ if __name__ == "__main__":
     main()
 ```
 
-- [ ] **Step 4: 執行測試，確認這四個測試通過**
+- [ ] **Step 4: 執行測試，確認通過**
 
 Run: `cd scripts && .\.venv\Scripts\python.exe -m pytest tests/test_fetch.py -v`
-Expected: 目前檔案裡的 5 個測試（遷移 3 個 + default state 1 個 + `run_fetch` 1 個）PASS；
-舊測試（`test_fetch_stops_at_max_items_and_records_cursor` 等）此時還在檔案下半部、尚未
-改寫，預期會因為斷言仍讀取舊 schema 而 FAIL——這是預期中的，下一步驟會處理
+Expected: PASS（6 個：遷移 3 個 + default state 1 個 + `_remaining_quota` 1 個 + `run_fetch` 1 個）
 
 ### Task 3b：重寫其餘 `run_fetch()` 測試以符合新 schema
 
-- [ ] **Step 1: 用下面內容取代 `test_fetch.py` 檔案下半部（`FakeClient` 定義之後的所有既有測試）**
+- [ ] **Step 1: 在 `test_fetch.py` 檔案末尾追加下面的測試**
 
-刪除舊的 `test_fetch_writes_raw_and_state`（已被 3a 的
-`test_fetch_writes_raw_and_marks_stratum_done` 取代）以及後面四個測試，改成：
+（3a 已把整個檔案換成新內容，這裡是純追加，不動上面的任何東西；import 在 3a 已經包含
+`append_jsonl`，這裡不用再改 import。）
 
 ```python
 def test_fetch_stops_at_max_items_and_records_cursor(tmp_path):
@@ -549,26 +558,12 @@ def test_v1_state_file_migrates_and_baseline_stratum_resumes_from_it(tmp_path):
     doc = json.loads(state.read_text())
     assert doc["version"] == 2
     assert doc["strata"]["baseline"] == {"cursor": None, "fetched": 3, "done": True}
-
-
-def test_remaining_quota_scales_and_floors_at_zero():
-    assert _remaining_quota(1000, 1.0, 400) == 600
-    assert _remaining_quota(1000, 0.5, 400) == 100
-    assert _remaining_quota(1000, 1.0, 1000) == 0
-    assert _remaining_quota(1000, 1.0, 1500) == 0  # 已超額也不會變負的
-    assert _remaining_quota(9, 0.5, 0) == round(9 * 0.5)
-```
-
-同時把檔案最上方的 import 補上 `append_jsonl`（`test_v1_state_file_migrates...` 用得到）：
-
-```python
-from pipeline.jsonl import append_jsonl, read_jsonl
 ```
 
 - [ ] **Step 2: 執行完整測試檔，確認全部通過**
 
 Run: `cd scripts && .\.venv\Scripts\python.exe -m pytest tests/test_fetch.py -v`
-Expected: PASS（全部，共 13 個測試）
+Expected: PASS（全部，共 12 個測試：3a 的 6 個 + 這裡追加的 6 個）
 
 - [ ] **Step 3: Ruff 檢查**
 
@@ -588,7 +583,7 @@ git commit -m "feat(pipeline): stratified fetch with v1->v2 state migration
 - 舊版 state.json（無 version 欄位）自動遷移並包成 baseline 層，
   既有 420 筆語料與其 cursor 無縫接續
 
-Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ```
 
 ---
@@ -599,7 +594,7 @@ Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
 `fetch_civitai.py` 的 `--max-items`，這裡若不同步會在跑 `python seed_data.py` 時直接炸掉。
 
 **Files:**
-- Modify: `scripts/seed_data.py:22-23,32`
+- Modify: `scripts/seed_data.py:23,31`
 - Modify: `scripts/tests/test_seed_data.py`
 
 **Interfaces:**
@@ -631,7 +626,7 @@ Expected: FAIL（`argparse` 對 `--quota-scale` 報 unrecognized arguments，因
 
 - [ ] **Step 3: 修改 `scripts/seed_data.py`**
 
-第 22–23 行：
+第 23 行（原 `--max-items` 那一行）換成：
 
 ```python
     ap.add_argument(
@@ -640,7 +635,7 @@ Expected: FAIL（`argparse` 對 `--quota-scale` 報 unrecognized arguments，因
     )
 ```
 
-第 32 行（`if stage == "fetch":` 區塊內）：
+第 31 行（`if stage == "fetch":` 區塊內）：
 
 ```python
         if stage == "fetch":
@@ -666,7 +661,7 @@ git commit -m "fix(pipeline): thread --quota-scale to fetch stage in seed_data
 fetch_civitai.py 的 CLI 已改為 --quota-scale（見上一個 commit），
 seed_data.py 原本轉發 --max-items 會導致 unrecognized arguments。
 
-Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ```
 
 ---
@@ -690,11 +685,20 @@ Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
 建立 `scripts/tests/test_coverage_report.py`：
 
 ```python
+import pytest
+
+from coverage_report import (
+    POOL_THRESHOLD,
+    build_report,
+    query_category_counts,
+    query_facet_counts,
+    query_pool_sizes,
+    query_profile_counts,
+)
+from pipeline import db
 from pipeline.config import FACETS_PATH
 from pipeline.facets import load_facets
 from pipeline.retrieval import DIMENSIONS
-
-from coverage_report import POOL_THRESHOLD, build_report
 
 CAT = load_facets(FACETS_PATH)
 ALL_APPLICABLE_DIMS = {
@@ -916,20 +920,15 @@ Expected: PASS（6 個測試，全部不需要 DB）
 
 - [ ] **Step 5: 補一個 integration 測試（需要 DB 已啟動，驗證 SQL 本體）**
 
-在 `scripts/tests/test_coverage_report.py` 檔案最後新增：
+在 `scripts/tests/test_coverage_report.py` 檔案最後新增（所需的 `pytest`、`db`、
+`query_*` 都已在 Step 1 的檔頭 import 裡，這裡不要再在檔案中段加 import，否則 ruff E402
+會報錯）：
 
 ```python
-import pytest
-
-from pipeline import db
-
-
 @pytest.mark.integration
 def test_query_functions_return_data_shaped_dicts_against_real_db():
     if not db.db_available():
         pytest.skip("PostgreSQL 未啟動")
-    from coverage_report import query_category_counts, query_facet_counts, query_pool_sizes, query_profile_counts
-
     with db.connect() as conn:
         profiles = query_profile_counts(conn)
         pools = query_pool_sizes(conn, CAT)
@@ -940,8 +939,6 @@ def test_query_functions_return_data_shaped_dicts_against_real_db():
     assert all(isinstance(v, int) for v in facets.values())
     assert all(isinstance(v, int) for v in categories.values())
 ```
-
-（把檔案最上方的 `import pytest` 移到檔頭，與既有 import 合併，不要留兩份 `import pytest`。）
 
 - [ ] **Step 6: 若本機 DB 已啟動，執行 integration 測試確認可跑**
 
@@ -962,7 +959,7 @@ git commit -m "feat(pipeline): add coverage_report.py acceptance tool
 重用 retrieval.py 的 POOL_SQL/dimension_facets 計算候選池，
 門檻未達標時 exit code 1，可接進驗收流程或 CI。
 
-Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ```
 
 ---
@@ -1023,8 +1020,7 @@ fetch 階段抓取邏輯見 `pipeline/strata.py` 的 9 層配額表（`baseModel
 重新執行 `python seed_data.py` 會從每個階段上次停下的地方繼續，不會重跑已完成的部分，
 也不會產生重複資料。
 
-擴增前的正式語料是用 `python seed_data.py --max-items 400`（舊版單層 CLI）建立的
-420 raw / 258 clean。分層抓取的配額表與規模換算見
+擴增前的正式語料是用舊版單層 CLI 抓 400 筆建立的（420 raw / 258 clean）。分層抓取的配額表與規模換算見
 [docs/superpowers/specs/2026-09-22-corpus-expansion-design.md](../docs/superpowers/specs/2026-09-22-corpus-expansion-design.md) §2、§6：
 9 層合計 9,000 raw，預估落在 5,200–5,500 clean。要調整規模就改
 `pipeline/strata.py::STRATA` 裡各層的 `quota`（程式碼常數，改了要走 code review，
@@ -1033,7 +1029,7 @@ fetch 階段抓取邏輯見 `pipeline/strata.py` 的 9 層配額表（`baseModel
 
 - [ ] **Step 3: 確認 README 沒有殘留 `--max-items`／`--base-models` 的舊用法**
 
-Run: `cd .. && grep -n "max-items\|base-models" scripts/README.md`
+Run（在 repo 根目錄）: `grep -n "max-items\|base-models" scripts/README.md`
 Expected: 無輸出（全部已改寫成 `--quota-scale` 或已移除）
 
 - [ ] **Step 4: 補主 spec §15 決定紀錄**
@@ -1075,7 +1071,7 @@ git commit -m "docs: sync README/spec/walkthrough with stratified fetch
 - 單輪流程說明.md 的候選池數字旁加註：反映擴增前規模，當下數字看
   coverage_report.py，不沿用寫死的數字
 
-Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ```
 
 （若上面 `git add` 路徑因殼層編碼問題貼不出正確中文檔名，改用
