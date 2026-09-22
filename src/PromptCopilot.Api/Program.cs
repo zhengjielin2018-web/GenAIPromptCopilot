@@ -1,4 +1,6 @@
 using Microsoft.Extensions.Options;
+using Microsoft.SemanticKernel.ChatCompletion;
+using Microsoft.SemanticKernel.Connectors.Google;
 using Npgsql;
 using Pgvector.Npgsql;
 using PromptCopilot.Api.Configuration;
@@ -23,6 +25,12 @@ builder.Services.AddSingleton<PresetRepository>();
 builder.Services.AddSingleton<HistoryRepository>();
 builder.Services.AddSingleton<AuditRepository>();
 builder.Services.AddHttpClient<IEmbeddingClient, GeminiEmbeddingClient>();
+builder.Services.AddSingleton<IChatCompletionService>(sp =>
+{
+    var llm = sp.GetRequiredService<IOptions<LlmOptions>>();
+    var raw = new GoogleAIGeminiChatCompletionService(llm.Value.Model, llm.Value.ApiKey);
+    return new ResilientChatCompletion(raw, llm);
+});
 
 var app = builder.Build();
 app.UseSwagger();
