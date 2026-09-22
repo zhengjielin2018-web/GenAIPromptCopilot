@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Literal
 
@@ -124,16 +125,26 @@ def run_structure(
     histories_path: Path,
     presets_path: Path,
     max_records: int | None = None,
+    concurrency: int = 1,
 ) -> tuple[int, int]:
+    """concurrency > 1 時只有「呼叫 LLM」並行；寫檔與 seen_snippets 去重一律留在
+    主執行緒依序執行，所以 _emit 的寫入順序不變、跨筆去重也不會有 race。
+    代價：一個 batch 中途拋例外時，該 batch 內已付費但尚未寫出的結果會作廢，
+    續跑時重新產生（最多損失 concurrency 筆）。"""
     done = existing_keys(histories_path, "source_ref")
     seen_snippets = {_snippet_key(p["prompt_snippet"]) for p in read_jsonl(presets_path)}
-    n_hist = n_presets = 0
+
+    pending: list[dict] = []
     for record in read_jsonl(in_path):
-        if max_records is not None and n_hist >= max_records:
-            break
         if f"civitai:{record['source_id']}" in done:
             continue
-        result = client.generate_structured(build_prompt(record, catalog), StructuredRecord)
+        pending.append(record)
+        if max_records is not None and len(pending) >= max_records:
+            break
+
+    n_hist = n_presets = 0
+
+    def _emit(record: dict, result: StructuredRecord) -> int:
         history, presets = to_outputs(record, result, catalog, seen_snippets)
         # 先寫 presets 再寫 history：history 的存在是續跑的「已完成」標記
         # (existing_keys 用它判斷是否跳過)。若順序反過來，寫入 history 後、
@@ -145,14 +156,33 @@ def run_structure(
         for p in presets:
             append_jsonl(presets_path, p)
         append_jsonl(histories_path, history)
-        n_hist += 1
-        n_presets += len(presets)
+        return len(presets)
+
+    def _call(record: dict) -> StructuredRecord:
+        return client.generate_structured(build_prompt(record, catalog), StructuredRecord)
+
+    if concurrency <= 1:
+        for record in pending:
+            n_presets += _emit(record, _call(record))
+            n_hist += 1
+        return n_hist, n_presets
+
+    with ThreadPoolExecutor(max_workers=concurrency) as pool:
+        for i in range(0, len(pending), concurrency):
+            batch = pending[i : i + concurrency]
+            for record, result in zip(batch, list(pool.map(_call, batch)), strict=True):
+                n_presets += _emit(record, result)
+                n_hist += 1
     return n_hist, n_presets
 
 
 def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(description="階段 3：LLM 結構化")
     ap.add_argument("--max-records", type=int, default=None)
+    ap.add_argument(
+        "--concurrency", type=int, default=1,
+        help="同時發出的 Gemini 請求數；瓶頸是回應延遲不是節流，調大可大幅縮短全量時間",
+    )
     args = ap.parse_args(argv)
     from pipeline.gemini_client import default_client  # 延遲 import：測試不需要 SDK 金鑰
 
@@ -161,6 +191,7 @@ def main(argv: list[str] | None = None) -> None:
         in_path=CLEAN_DIR / "records.jsonl",
         histories_path=HISTORIES_PATH, presets_path=PRESETS_PATH,
         max_records=args.max_records,
+        concurrency=args.concurrency,
     )
     print(f"structure: +{h} histories, +{p} presets → {STRUCTURED_DIR}")
 

@@ -52,3 +52,22 @@ def test_retry_does_not_retry_non_matching_errors():
         retry(bad, attempts=5, base_delay_s=0.0,
               should_retry=lambda e: isinstance(e, TimeoutError), sleep=lambda s: None)
     assert calls["n"] == 1
+
+
+def test_rate_limiter_serializes_concurrent_waits():
+    """併發呼叫下 wait() 必須互斥，否則多個執行緒會讀到同一個 _last、睡同樣長度後
+    一起衝出去，最小間隔形同虛設。用真實時鐘量總耗時：5 次 wait 若真的被序列化，
+    至少要花 4 個間隔；沒有鎖的話幾乎瞬間就全部返回。"""
+    import threading
+    import time
+
+    interval = 0.05
+    limiter = RateLimiter(interval)
+    t0 = time.monotonic()
+    threads = [threading.Thread(target=limiter.wait) for _ in range(5)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    elapsed = time.monotonic() - t0
+    assert elapsed >= interval * 4 * 0.8, f"wait() 沒有互斥，5 次只花了 {elapsed:.3f}s"

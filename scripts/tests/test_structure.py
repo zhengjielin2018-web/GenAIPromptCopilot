@@ -160,3 +160,66 @@ def test_strip_boilerplate_keeps_bad_as_an_ordinary_word():
 
 def test_strip_boilerplate_survives_an_embedded_newline():
     assert _strip_boilerplate("forest\nlit by dappled sun, masterpiece") == "forest\nlit by dappled sun"
+
+
+def test_run_structure_concurrent_produces_same_records_as_sequential(tmp_path):
+    """併發只改變「何時呼叫 LLM」，不得改變寫出的內容或順序。"""
+    records = [{**REC, "source_id": i} for i in range(1, 13)]
+    seq_dir, con_dir = tmp_path / "seq", tmp_path / "con"
+    seq_dir.mkdir()
+    con_dir.mkdir()
+    inp = tmp_path / "records.jsonl"
+    write_jsonl(inp, records)
+
+    sh, sp = seq_dir / "h.jsonl", seq_dir / "p.jsonl"
+    ch, cp = con_dir / "h.jsonl", con_dir / "p.jsonl"
+    seq = run_structure(FakeGemini(), CAT, in_path=inp, histories_path=sh, presets_path=sp)
+    con = run_structure(FakeGemini(), CAT, in_path=inp, histories_path=ch, presets_path=cp, concurrency=4)
+
+    assert seq == con
+    assert [r["source_ref"] for r in read_jsonl(sh)] == [r["source_ref"] for r in read_jsonl(ch)]
+    assert list(read_jsonl(sp)) == list(read_jsonl(cp))
+
+
+def test_run_structure_concurrent_still_skips_already_done_records(tmp_path):
+    """續跑語意在併發下必須不變：已有 source_ref 的不得重新呼叫 LLM。"""
+    inp = tmp_path / "records.jsonl"
+    write_jsonl(inp, [{**REC, "source_id": i} for i in range(1, 9)])
+    h, p = tmp_path / "h.jsonl", tmp_path / "p.jsonl"
+
+    g1 = FakeGemini()
+    run_structure(g1, CAT, in_path=inp, histories_path=h, presets_path=p, max_records=5, concurrency=4)
+    assert g1.calls == 5
+
+    g2 = FakeGemini()
+    run_structure(g2, CAT, in_path=inp, histories_path=h, presets_path=p, concurrency=4)
+    assert g2.calls == 3  # 只補剩下的 3 筆，不重跑已完成的 5 筆
+    assert [r["source_ref"] for r in read_jsonl(h)] == [f"civitai:{i}" for i in range(1, 9)]
+
+
+def test_run_structure_concurrent_actually_overlaps_calls(tmp_path):
+    """證明併發真的並行：若仍是序列，最大同時進行數會是 1。"""
+    import threading
+    import time
+
+    class SlowGemini:
+        def __init__(self):
+            self.lock = threading.Lock()
+            self.inflight = 0
+            self.peak = 0
+
+        def generate_structured(self, prompt, schema, *, temperature=0.2):
+            with self.lock:
+                self.inflight += 1
+                self.peak = max(self.peak, self.inflight)
+            time.sleep(0.05)
+            with self.lock:
+                self.inflight -= 1
+            return _result()
+
+    inp = tmp_path / "records.jsonl"
+    write_jsonl(inp, [{**REC, "source_id": i} for i in range(1, 9)])
+    g = SlowGemini()
+    run_structure(g, CAT, in_path=inp, histories_path=tmp_path / "h.jsonl",
+                  presets_path=tmp_path / "p.jsonl", concurrency=4)
+    assert g.peak > 1
