@@ -41,6 +41,17 @@ public class ToolSetBuilderTests
         Assert.Contains(ToolNames.RequestSaveConsent, t);
     }
 
+    /// <summary>釘住 Build 的 `Status == Finalized ||` 左分支：RecordFinalize 會把 streak 歸零，
+    /// 所以只有用 Restore 造出「已定稿且 streak 未歸零」的狀態才咬得到這個分支。</summary>
+    [Fact]
+    public void Discuss_stays_when_finalized_with_nonzero_streak_via_restore()
+    {
+        var s = new Session("s");
+        s.Restore(new SessionSnapshot(SessionStatus.Finalized, null, 0, 8, false,
+            new(), new(), 0, new PresetLedger(), new FinalPrompt("p", "n", "t"), 0));
+        Assert.Contains(ToolNames.Discuss, ToolSetBuilder.Build(s, false, O));
+    }
+
     [Fact]
     public void WantsAutoComplete_removes_both_ask_and_discuss()
     {
