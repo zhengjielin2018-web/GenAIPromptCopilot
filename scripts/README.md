@@ -52,6 +52,29 @@ clean／structure／embed／load 全部五個階段，`--max-records` 預設不�
     python -m pipeline.embed [--reindex]
     python -m pipeline.load
 
+## 一次性補充語料：Kisegaeningyou 服裝集
+
+補 clothing 維度的候選池缺口用的一次性匯入，**不是** `seed_data.py` 的階段之一
+（fetch／clean 對它不適用）。它只產 presets、不寫 histories：來源是同一角色的換裝集，
+每個檔就是一套服裝組合，不是完整的 SD prompt（沒有 style／scene／camera），
+塞進 RAG 1 會汙染「找相似完整提示詞」的檢索。
+
+來源、授權與署名要求見 [docs/資料來源.md](../docs/資料來源.md)。**圖片不轉存進本 repo。**
+
+    # 先小量試跑，看產出的繁中 description 品質（檢索命中率取決於它）
+    python -m pipeline.kisegae --source-dir "<Kisegaeningyou 本機路徑>" --max-records 20
+
+    # 確認沒問題再跑全量（378 筆，約 378 次 Gemini 結構化呼叫）
+    python -m pipeline.kisegae --source-dir "<Kisegaeningyou 本機路徑>"
+
+    # 它 append 到 structured/presets.jsonl，後續接既有階段即可
+    python seed_data.py --from embed
+    python coverage_report.py
+
+`--max-records` 算的是**成功寫出**的筆數，不是嘗試筆數（與 `pipeline.structure`
+的同名參數語意不同）。重跑安全：以 `source_ref` 續跑，且片段去重是跨來源的
+（civitai 已收錄同一組 tag 就不重複收）。
+
 ## Demo：中文描述 → 英文提示詞
 
 `demo.py` 是子專案 1 成果的展示程式，也是子專案 2 互動流程的縮小版——它只跑一輪、

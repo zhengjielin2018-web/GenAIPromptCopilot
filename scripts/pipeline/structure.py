@@ -76,7 +76,7 @@ def build_prompt(record: dict, catalog: FacetCatalog) -> str:
     )
 
 
-def _snippet_key(snippet: str) -> str:
+def snippet_key(snippet: str) -> str:
     norm = ", ".join(t.strip().lower() for t in snippet.split(",") if t.strip())
     return hashlib.sha1(norm.encode("utf-8")).hexdigest()
 
@@ -100,7 +100,7 @@ def to_outputs(
         facet_ids = [f for f in p.facet_ids if f in catalog.all_ids]
         if not snippet or not facet_ids:
             continue
-        key = _snippet_key(snippet)
+        key = snippet_key(snippet)
         if key in seen_snippets:
             continue
         seen_snippets.add(key)
@@ -133,7 +133,7 @@ def run_structure(
     代價：一個 batch 中途拋例外時，該 batch 內已付費但尚未寫出的結果會作廢，
     續跑時重新產生（最多損失 concurrency 筆）。"""
     done = existing_keys(histories_path, "source_ref")
-    seen_snippets = {_snippet_key(p["prompt_snippet"]) for p in read_jsonl(presets_path)}
+    seen_snippets = {snippet_key(p["prompt_snippet"]) for p in read_jsonl(presets_path)}
 
     pending: list[dict] = []
     for record in read_jsonl(in_path):

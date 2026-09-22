@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 
 NSFW_KEYWORDS: frozenset[str] = frozenset({
     "nsfw", "nude", "naked", "topless", "bottomless", "nipples", "areola", "nipple",
@@ -24,15 +25,20 @@ def _normalized(text: str) -> str:
     return " " + _NON_ALNUM_RE.sub(" ", text.lower()).strip() + " "
 
 
-# 單字關鍵詞比對 token；含空白或連字號的詞組改用正規化後的子字串比對。
-_SINGLE_WORDS: frozenset[str] = frozenset(k for k in NSFW_KEYWORDS if k.isalpha())
-_PHRASES: tuple[str, ...] = tuple(
-    _normalized(k) for k in NSFW_KEYWORDS if not k.isalpha()
-)
+def make_matcher(keywords: frozenset[str]) -> Callable[[str], bool]:
+    """由一份關鍵詞清單造出比對器。單字比對 token；含空白或連字號的詞組改用
+    正規化後的子字串比對。獨立成工廠是為了讓特定來源能在不動 NSFW_KEYWORDS
+    的前提下用收窄的清單——civitai 路徑的判準必須維持原樣。"""
+    single_words = frozenset(k for k in keywords if k.isalpha())
+    phrases = tuple(_normalized(k) for k in keywords if not k.isalpha())
+
+    def matches(text: str) -> bool:
+        normalized = _normalized(text)
+        if set(normalized.split()) & single_words:
+            return True
+        return any(phrase in normalized for phrase in phrases)
+
+    return matches
 
 
-def is_nsfw_text(text: str) -> bool:
-    normalized = _normalized(text)
-    if set(normalized.split()) & _SINGLE_WORDS:
-        return True
-    return any(phrase in normalized for phrase in _PHRASES)
+is_nsfw_text = make_matcher(NSFW_KEYWORDS)
