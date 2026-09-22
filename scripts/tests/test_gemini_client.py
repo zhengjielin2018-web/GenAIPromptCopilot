@@ -153,14 +153,22 @@ def test_unusable_response_carries_the_block_reason_instead_of_unknown():
     assert ei.value.is_content_block
 
 
-def test_generate_structured_does_not_retry_a_content_block():
-    """攔截是機率性的，重送到過為止等於規避安全判定。只送一次。"""
+def test_generate_structured_retries_a_content_block_exactly_once():
+    """攔截是機率性的，實測同一份 SFW 內容也會被誤擋，所以重送一次。
+    但只一次：重送到過為止等於規避安全判定。"""
     from pipeline.gemini_client import UnusableResponse
 
     sdk, calls = _blocked_sdk(block_reason="PROHIBITED_CONTENT")
-    with pytest.raises(UnusableResponse):
+    with pytest.raises(UnusableResponse) as ei:
         _client(sdk.models).generate_structured("p", Out)
-    assert len(calls) == 1
+    assert ei.value.is_content_block
+    assert len(calls) == 2
+
+
+def test_generate_structured_recovers_when_a_content_block_clears_on_retry():
+    sdk, calls = _blocked_sdk(block_reason="PROHIBITED_CONTENT", succeed_after=1)
+    assert _client(sdk.models).generate_structured("p", Out).n == 3
+    assert len(calls) == 2
 
 
 def test_generate_structured_retries_a_truncated_response():
@@ -193,4 +201,4 @@ def test_unusable_response_treats_safety_as_a_content_block_too():
     with pytest.raises(UnusableResponse) as ei:
         _client(sdk.models).generate_structured("p", Out)
     assert ei.value.is_content_block
-    assert len(calls) == 1
+    assert len(calls) == 2

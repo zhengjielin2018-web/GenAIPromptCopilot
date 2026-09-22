@@ -26,14 +26,16 @@ CONTENT_BLOCK_REASONS: frozenset[str] = frozenset({
     "PROHIBITED_CONTENT", "SAFETY", "IMAGE_SAFETY", "BLOCKLIST", "JAILBREAK", "MODEL_ARMOR",
 })
 UNUSABLE_ATTEMPTS = 3  # 非內容攔截的空回應重試次數（傳輸錯誤另有 _call 的 6 次）
+CONTENT_BLOCK_ATTEMPTS = 1  # 內容攔截的重試次數。只一次：會誤擋 SFW，但重送到過為止等於規避安全判定
 
 
 class UnusableResponse(Exception):
     """模型回了 200 但沒有可用的文字。
 
-    `is_content_block` 為真代表 Gemini 判定這個內容不該生成。**這種不重試**：
-    攔截是機率性的（實測同一份輸入 2/3 被擋、1/3 通過），重送到過為止等於利用
-    分類器的不確定性規避安全判定。呼叫端該做的是告訴使用者換個說法。
+    `is_content_block` 為真代表 Gemini 判定這個內容不該生成。**這種只重試一次**：
+    攔截是機率性的（實測同一份 SFW 輸入也會被誤擋），送進去的內容是我們自己判定
+    可接受的，容忍上游一次誤判合理；但重送到過為止等於利用分類器的不確定性規避
+    安全判定，所以第二次仍被擋就交給呼叫端告訴使用者換個說法。
 
     其餘情形（MAX_TOKENS 截斷、空 candidate）與內容無關，重試是正當的，
     由 generate_structured 自己重試，呼叫端不必處理。
@@ -132,10 +134,20 @@ class GeminiClient:
                                        block_reason=block, finish_reason=finish)
             return schema.model_validate_json(resp.text)
 
+        content_blocks = 0
+
+        def should_retry(e: Exception) -> bool:
+            nonlocal content_blocks
+            if not isinstance(e, UnusableResponse):
+                return False
+            if not e.is_content_block:
+                return True
+            content_blocks += 1
+            return content_blocks <= CONTENT_BLOCK_ATTEMPTS
+
         return retry(
             attempt, attempts=UNUSABLE_ATTEMPTS, base_delay_s=2.0,
-            should_retry=lambda e: isinstance(e, UnusableResponse) and not e.is_content_block,
-            sleep=self._sleep,
+            should_retry=should_retry, sleep=self._sleep,
         )
 
     def _embed_chunk(self, chunk: list[str], task_type: TaskType) -> list[list[float]]:

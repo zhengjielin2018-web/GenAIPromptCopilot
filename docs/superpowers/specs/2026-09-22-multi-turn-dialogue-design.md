@@ -316,11 +316,7 @@ history——否則下一輪 LLM 會看到它，可能再觸發一次。使用�
 #### 參考實作
 
 `scripts/pipeline/gemini_client.py` 的 `UnusableResponse.is_content_block` 與
-`generate_structured` 的重試條件；使用者訊息見 `scripts/demo.py::unusable_message`。
-
-**Python 端目前是 0 次**（`should_retry` 排除 `is_content_block`），跟本節的 1 次不一致。
-要同步：`generate_structured` 的 `should_retry` 對內容攔截放行一次、`test_gemini_client.py` 對應案例、
-`docs/單輪流程說明.md` 同一個 commit 更新。
+`generate_structured` 的重試條件（`CONTENT_BLOCK_ATTEMPTS = 1`）；使用者訊息見 `scripts/demo.py::unusable_message`。
 
 ### 5.6 錯誤復原：回滾、內部重試、手動重試（新增）
 
@@ -354,7 +350,7 @@ RunTurnAsync(session, text, ct):
 | :--- | :--- | :--- | :--- |
 | 傳輸 | 429／5xx／逾時 | **3 次**，退避 1s／2s／4s | `_call` 的 6 次。互動場景每輪有 3–4 次上游呼叫，6 次退避會吃掉整輪預算 |
 | 空回應 | 200 但無可用內容、`MAX_TOKENS`、無 `blockReason` | **3 次** | `UNUSABLE_ATTEMPTS = 3` |
-| 內容攔截 | §5.5 的那組 reason | **1 次**，不退避 | Python 端目前 0 次，待同步（§5.5 參考實作） |
+| 內容攔截 | §5.5 的那組 reason | **1 次** | `CONTENT_BLOCK_ATTEMPTS = 1` |
 
 分類邏輯放在一個 `IChatCompletionService` 的 decorator 裡，跟 connector 無關——§4.8 說 connector 還沒選，
 而 Google connector 與 OpenAI 相容端點回「被擋」的形狀不同（前者 `promptFeedback.blockReason`，
@@ -501,7 +497,7 @@ history：
 錯誤復原（§5.6）：
 - 任一階段拋例外 → session 所有欄位等於 snapshot，`ChatHistory.Count` 回到輪次開始，`PresetLedger` 無本輪新增
 - 終止型 tool 成功後再拋例外（例如 SSE 寫入失敗）→ 不回滾，狀態已提交
-- decorator 分類：內容攔截 reason → 重試 1 次（不退避），仍被擋才拋 `UpstreamBlocked`，第二次通過則正常回傳；空回應 → 重試至 `UnusableRetries` 次；429／5xx → 重試至 `TransportRetries` 次；每一類用 fake `IChatCompletionService` 各一案例，內容攔截要有「第二次過」與「第二次仍擋」兩案
+- decorator 分類：內容攔截 reason → 重試 1 次，仍被擋才拋 `UpstreamBlocked`，第二次通過則正常回傳；空回應 → 重試至 `UnusableRetries` 次；429／5xx → 重試至 `TransportRetries` 次；每一類用 fake `IChatCompletionService` 各一案例，內容攔截要有「第二次過」與「第二次仍擋」兩案
 - 退避等待中 `CancellationToken` 取消 → 立即停止、回滾，不再打下一次
 - 失敗後重送同一段文字 → 計數器、history 長度、ledger 與首次送出時完全相同
 - 失敗一輪只寫一筆 `Turn_Failed`，`attempts` 等於實際嘗試次數
