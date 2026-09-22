@@ -63,6 +63,7 @@ public class SessionTests
     {
         var s = New(); s.ApplyProfile("portrait", Catalog);
         s.ChatHistory.AddUserMessage("hi");
+        s.RecordDiscuss();
         var snap = s.Snapshot();
 
         s.RecordAsk(); s.RecordDiscuss(); s.AutoFill = true; s.TurnIndex = 5;
@@ -74,7 +75,7 @@ public class SessionTests
         s.RecordFinalize(new FinalPrompt("p", "n", "t"));
 
         s.Restore(snap);
-        Assert.Equal(0, s.AskCount); Assert.Equal(0, s.DiscussStreak); Assert.False(s.AutoFill);
+        Assert.Equal(0, s.AskCount); Assert.Equal(1, s.DiscussStreak); Assert.False(s.AutoFill);
         Assert.Equal(SessionStatus.Collecting, s.Status); Assert.Null(s.LastFinal);
         Assert.Equal("portrait", s.Profile); Assert.Equal(0, s.TurnIndex);
         Assert.Equal(FacetState.Missing, s.FacetStates["pose.gaze"]);
