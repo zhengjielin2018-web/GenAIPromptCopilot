@@ -1,7 +1,9 @@
 import json
 
+import pipeline.fetch_civitai as fetch_civitai
 from pipeline.fetch_civitai import _default_stratum_state, _migrate_to_v2, _remaining_quota, run_fetch
 from pipeline.jsonl import append_jsonl, read_jsonl
+from pipeline.strata import STRATA
 
 
 def test_migrate_v1_state_wraps_it_as_baseline_stratum():
@@ -29,7 +31,7 @@ def test_remaining_quota_scales_and_floors_at_zero():
     assert _remaining_quota(1000, 0.5, 400) == 100
     assert _remaining_quota(1000, 1.0, 1000) == 0
     assert _remaining_quota(1000, 1.0, 1500) == 0  # 已超額也不會變負的
-    assert _remaining_quota(9, 0.5, 0) == round(9 * 0.5)
+    assert _remaining_quota(9, 0.5, 0) == 4  # 9*0.5=4.5; Python round() 用銀行家捨入法捨到偶數 4
 
 
 class FakeClient:
@@ -131,3 +133,56 @@ def test_v1_state_file_migrates_and_baseline_stratum_resumes_from_it(tmp_path):
     doc = json.loads(state.read_text())
     assert doc["version"] == 2
     assert doc["strata"]["baseline"] == {"cursor": None, "fetched": 3, "done": True}
+
+
+class FakeMainClient:
+    """模擬 CivitaiClient.iter_images 的無限資料來源：每層永遠有更多資料可抓（不會自然耗盡），
+    逼 main() 對每層都只能靠「這次還要抓多少」的計算來停手，而不是靠 cursor 用完停手。
+    記錄每次呼叫收到的 (base_models, sort, period)，用來驗證 main() 有沒有把 9 層的專屬
+    參數傳對、或誤把 sort/period 對調、或漏傳 base_models。"""
+
+    def __init__(self):
+        self.calls: list[tuple] = []
+        self._next_id = 0
+
+    def iter_images(self, *, limit=200, cursor=None, base_models=None,
+                     sort="Most Reactions", period="AllTime"):
+        self.calls.append((tuple(base_models) if base_models else None, sort, period))
+        c = 0 if cursor is None else int(cursor)
+        while True:
+            self._next_id += 1
+            yield {"id": self._next_id}, str(c)
+            c += 1
+
+
+def test_main_wires_each_stratum_with_own_params_and_is_idempotent_on_rerun(tmp_path, monkeypatch):
+    """finding: main() 的每層參數配線完全沒有測試覆蓋到——把 max_items 誤傳成
+    stratum.quota（整份配額而非這次還要抓多少）、把 sort/period 對調、或漏傳 base_models，
+    都會讓現有 12 個測試全部照樣通過。這裡直接跑 main()，監看假 client 實際收到的參數，
+    並驗證重跑一次不會再新增任何項目，藉此把這兩類迴歸釘死。"""
+    fake = FakeMainClient()
+    raw, state = tmp_path / "images.jsonl", tmp_path / "state.json"
+    monkeypatch.setattr(fetch_civitai, "default_client", lambda *_a, **_kw: fake)
+    monkeypatch.setattr(fetch_civitai, "RAW_PATH", raw)
+    monkeypatch.setattr(fetch_civitai, "STATE_PATH", state)
+
+    fetch_civitai.main(["--quota-scale", "0.01"])
+
+    # (a) 每層都用自己的 (base_models, sort, period) 呼叫 client，而不是 9 份重複的同一組
+    expected_triples = {
+        (tuple(s.base_models) if s.base_models else None, s.sort, s.period) for s in STRATA
+    }
+    assert len(fake.calls) == len(STRATA)
+    assert set(fake.calls) == expected_triples
+
+    # 第一次執行只抓「這次還要抓多少」（remaining），不是整份 quota
+    expected_total = sum(_remaining_quota(s.quota, 0.01, 0) for s in STRATA)
+    assert len(list(read_jsonl(raw))) == expected_total
+
+    # (b) 每層都已達配額（未達 done）：重跑一次不該再呼叫 client 或新增任何項目——
+    # 如果 main() 誤傳 stratum.quota 而非 remaining，或讀錯累積用的 state 欄位，
+    # 這裡就會再抓到東西
+    fake.calls.clear()
+    fetch_civitai.main(["--quota-scale", "0.01"])
+    assert fake.calls == []
+    assert len(list(read_jsonl(raw))) == expected_total
