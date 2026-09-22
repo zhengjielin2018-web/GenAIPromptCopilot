@@ -20,7 +20,10 @@ def stages_from(start: str) -> list[str]:
 def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(description="Civitai → pgvector 全管線")
     ap.add_argument("--from", dest="start", choices=STAGES, default="fetch")
-    ap.add_argument("--max-items", type=int, default=3000, help="fetch 階段本次最多新增筆數")
+    ap.add_argument(
+        "--quota-scale", type=float, default=1.0,
+        help="fetch 階段：乘上 pipeline.strata.STRATA 每層的 quota，四捨五入",
+    )
     ap.add_argument("--max-records", type=int, default=None, help="structure 階段本次最多處理筆數")
     ap.add_argument("--reindex", action="store_true", help="embed 階段全部重算")
     args = ap.parse_args(argv)
@@ -28,7 +31,7 @@ def main(argv: list[str] | None = None) -> None:
     for stage in stages_from(args.start):
         print(f"=== {stage} ===")
         if stage == "fetch":
-            fetch_civitai.main(["--max-items", str(args.max_items)])
+            fetch_civitai.main(["--quota-scale", str(args.quota_scale)])
         elif stage == "clean":
             clean.main([])
         elif stage == "structure":

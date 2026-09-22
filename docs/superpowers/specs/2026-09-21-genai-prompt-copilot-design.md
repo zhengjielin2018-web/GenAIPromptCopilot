@@ -636,3 +636,4 @@ Azure 部署排除。
 | LLM provider | Gemini 主、OpenAI 備 | DeepSeek 無 embedding 且 function calling 較弱，排除 |
 | Embedding 換模型 | 需全庫 re-index | 向量空間不相容 |
 | 跨維度去重歸屬 | grounded 優先、距離次之；定稿時才算 | 歸屬決定借用資格，不能讓推想查詢抹掉「使用者講過」這個事實（§9） |
+| `modelId`／`tags` 針對性抓取 | 已實測不可行，不採用 | `modelId` 反查圖片回傳內容 100% 無 `meta.prompt`；`tags` 查詢參數回 400 Bad Request。見 `docs/superpowers/specs/2026-09-22-corpus-expansion-design.md` §4.3 |
