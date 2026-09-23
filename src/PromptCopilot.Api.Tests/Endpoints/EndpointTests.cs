@@ -217,6 +217,15 @@ public class EndpointTests : IClassFixture<EndpointTests.Factory>
         Assert.Empty(undocumented);
     }
 
+    /// <summary>子專案 3 設計 §2.6：finalized 多了 intentSummary，Swagger 的事件表要跟著寫，照文件寫的客戶端才知道有這個欄位。</summary>
+    [Fact]
+    public async Task Messages_description_documents_intent_summary_on_finalized()
+    {
+        var doc = await _client.GetFromJsonAsync<System.Text.Json.JsonElement>("/swagger/v1/swagger.json");
+        var description = doc.GetProperty("paths").GetProperty("/api/sessions/{id}/messages").GetProperty("post").GetProperty("description").GetString();
+        Assert.Contains("intentSummary", description);
+    }
+
     [Fact]
     public async Task Facets_config_lists_six_dimensions()
     {

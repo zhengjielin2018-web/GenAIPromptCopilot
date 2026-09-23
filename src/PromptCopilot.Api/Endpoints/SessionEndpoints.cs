@@ -91,7 +91,7 @@ public static class SessionEndpoints
             | `session` | 一定是第一筆：第幾輪（`turnIndex`）、這輪開始時的狀態（`Collecting` 還在收集／`Finalized` 已定稿） |
             | `tool_call`／`tool_result` | 模型呼叫的工具與結果，一輪可能好幾次。`tool_result.presets` 是檢索到的 preset，可拿 id 去 `GET /api/presets/{id}` |
             | `dimensions` | 題材（`profile`）與每個 facet 的狀態：`covered`／`missing`／`waived`（使用者說不指定）／`notApplicable`。輪中有變動就送，成功的一輪最後會再送一次完整的 |
-            | `final` | 這一輪的結果，看 `kind`：`ask` 追問（`preamble`、`asks`）、`message` 討論或回答問題（`message`、`options`）、`finalized` 定稿（`positive`、`negative`、`tips`）、`save_consent_requested` 使用者要求儲存（見 `save-to-shared`） |
+            | `final` | 這一輪的結果，看 `kind`：`ask` 追問（`preamble`、`asks`）、`message` 討論或回答問題（`message`、`options`）、`finalized` 定稿（`positive`、`negative`、`tips`、`intentSummary`：一句繁中需求描述，可拿來預填 `save-to-shared` 的 `intent`）、`save_consent_requested` 使用者要求儲存（見 `save-to-shared`） |
             | `blocked` | 被攔下，`reason`：`Blocked_NSFW`、`Blocked_Celebrity`（輸入端，不會呼叫模型）、`Blocked_Output`（模型輸出被攔）、`Blocked_Upstream`（Gemini 拒絕生成）。session 狀態不變 |
             | `error` | 這一輪失敗，`code`：`timeout`、`protocol_violation`、`turn_failed`。session 已還原到送出前，可以直接重送同一句 |
 
