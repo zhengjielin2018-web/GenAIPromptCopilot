@@ -1,36 +1,36 @@
 <template>
-  <div class="rounded-2xl border border-emerald-300 bg-white p-4 shadow-sm dark:border-emerald-800 dark:bg-neutral-900">
-    <header class="flex items-center justify-between">
-      <h3 class="text-sm font-semibold">定稿</h3>
-      <span class="text-[11px] text-neutral-500">第 {{ turnIndex }} 輪</span>
+  <div data-card="final" class="rounded-md border-2 border-ink bg-surface px-5 py-4">
+    <header class="flex items-baseline justify-between">
+      <h3 class="text-base font-bold">定稿</h3>
+      <span class="text-[11px] tabular-nums text-muted">第 {{ turnIndex }} 輪</span>
     </header>
 
-    <PromptBlock label="Positive" :text="data.positive" />
-    <PromptBlock label="Negative" :text="data.negative" />
+    <PromptBlock label="正向提示詞" :text="data.positive" />
+    <PromptBlock label="負向提示詞" :text="data.negative" />
 
-    <section v-if="data.tips" class="mt-3">
-      <h4 class="text-xs font-medium text-neutral-500">生成建議</h4>
-      <p class="mt-1 whitespace-pre-wrap text-sm">{{ data.tips }}</p>
+    <section v-if="data.tips" class="mt-4">
+      <h4 class="text-xs font-bold">生成建議</h4>
+      <p class="mt-1.5 whitespace-pre-wrap text-sm leading-6 text-ink/90">{{ data.tips }}</p>
     </section>
 
-    <footer :id="`save-${turnIndex}`" class="mt-4">
+    <footer :id="`save-${turnIndex}`" class="mt-5 border-t border-rule pt-4">
       <button v-if="!expanded" type="button" :disabled="save.status === 'saved'"
-              class="rounded-md bg-emerald-600 px-3 py-1.5 text-sm text-white hover:bg-emerald-700 disabled:opacity-50"
+              class="rounded-md bg-ink px-3.5 py-1.5 text-sm font-medium text-paper hover:bg-ink/85 disabled:bg-rule disabled:text-muted"
               @click="s.expandSave(turnIndex)">
-        {{ save.status === 'saved' ? '已儲存' : '儲存至共享知識庫' }}
+        {{ save.status === 'saved' ? '已存進共享知識庫' : '存進共享知識庫' }}
       </button>
-      <div v-else class="rounded-md border border-neutral-200 p-3 dark:border-neutral-800">
-        <label class="block text-xs text-neutral-500" :for="`intent-${turnIndex}`">一句話描述這張圖（會成為別人檢索到它的依據，可修改）</label>
+      <div v-else>
+        <label class="block text-xs text-muted" :for="`intent-${turnIndex}`">用一句話描述這張圖。別人之後搜尋時會用這句話找到它，可以修改。</label>
         <input :id="`intent-${turnIndex}`" v-model="intent" type="text" :disabled="save.status === 'saved' || save.status === 'saving'"
-               class="mt-1 w-full rounded border border-neutral-300 bg-white px-2 py-1 text-sm dark:border-neutral-700 dark:bg-neutral-950">
-        <div class="mt-2 flex flex-wrap items-center gap-2">
+               class="mt-1.5 w-full rounded-md border border-rule bg-paper px-3 py-1.5 text-sm focus:border-cyan focus:outline-none disabled:text-muted">
+        <div class="mt-2.5 flex flex-wrap items-center gap-3">
           <button type="button" :disabled="save.status === 'saved' || save.status === 'saving'"
-                  class="rounded-md bg-emerald-600 px-3 py-1.5 text-sm text-white hover:bg-emerald-700 disabled:opacity-50"
+                  class="rounded-md bg-ink px-3.5 py-1.5 text-sm font-medium text-paper hover:bg-ink/85 disabled:bg-rule disabled:text-muted"
                   @click="s.save(turnIndex, intent)">
-            {{ save.status === 'saving' ? '儲存中…' : save.status === 'saved' ? '已儲存' : '確認儲存' }}
+            {{ save.status === 'saving' ? '儲存中…' : save.status === 'saved' ? '已存進共享知識庫' : '確認儲存' }}
           </button>
-          <span v-if="save.status === 'error'" class="text-xs text-red-600">{{ save.error }}</span>
-          <span v-if="save.status === 'saved'" class="text-xs text-emerald-700 dark:text-emerald-400">這份定稿已進共享庫，之後的對話可能撈到它當參考。</span>
+          <span v-if="save.status === 'error'" class="text-xs text-magenta">{{ save.error }}</span>
+          <span v-if="save.status === 'saved'" class="text-xs text-cyan">之後的對話可能會拿它當參考。</span>
         </div>
       </div>
     </footer>

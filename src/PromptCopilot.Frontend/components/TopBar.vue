@@ -1,11 +1,19 @@
 <template>
-  <header class="flex items-center justify-between border-b border-neutral-200 bg-white px-4 py-2 dark:border-neutral-800 dark:bg-neutral-900">
-    <div>
-      <h1 class="text-base font-semibold">Prompt Copilot</h1>
-      <p class="text-[11px] text-neutral-500">多輪追問 → SD/SDXL 英文提示詞</p>
+  <header class="flex items-center justify-between border-b border-rule bg-surface px-5 py-2.5">
+    <div class="flex items-center gap-3">
+      <!-- 套準標記：印刷對版用的十字圓，這個工具的輸出是「要拿去印（生圖）的稿」 -->
+      <svg viewBox="0 0 24 24" class="h-6 w-6 text-ink" aria-hidden="true">
+        <circle cx="12" cy="12" r="6.5" fill="none" stroke="currentColor" stroke-width="1.5" />
+        <path d="M12 1.5v21M1.5 12h21" stroke="currentColor" stroke-width="1.5" />
+        <circle cx="12" cy="12" r="2.2" class="fill-cyan" />
+      </svg>
+      <div class="leading-tight">
+        <h1 class="text-[15px] font-bold tracking-wide">Prompt Copilot</h1>
+        <p class="text-[11px] text-muted">把中文描述整理成 SD/SDXL 提示詞</p>
+      </div>
     </div>
     <button type="button" :disabled="s.busy || !!s.bootError"
-            class="rounded-md border border-neutral-300 px-3 py-1 text-sm hover:bg-neutral-50 disabled:opacity-40 dark:border-neutral-700 dark:hover:bg-neutral-800"
+            class="rounded-md border border-ink/80 px-3 py-1 text-sm font-medium hover:bg-ink hover:text-paper disabled:border-rule disabled:text-muted disabled:hover:bg-transparent"
             @click="onNew">新對話</button>
   </header>
 </template>

@@ -1,14 +1,16 @@
 <template>
-  <form class="flex items-end gap-2 border-t border-neutral-200 bg-white p-3 dark:border-neutral-800 dark:bg-neutral-900" @submit.prevent="s.send()">
-    <textarea ref="ta" :value="s.draft" rows="2" :disabled="s.busy || !!s.bootError" aria-label="描述你想要的畫面"
-              placeholder="描述你想要的畫面…（Enter 送出，Shift+Enter 換行）"
-              class="min-h-[2.5rem] flex-1 resize-y rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-neutral-400 disabled:opacity-60 dark:border-neutral-700 dark:bg-neutral-950"
-              @input="s.setDraft(($event.target as HTMLTextAreaElement).value)"
-              @keydown.enter.exact="onEnter" />
-    <button type="submit" :disabled="s.busy || !s.draft.trim() || !!s.bootError"
-            class="rounded-md bg-neutral-900 px-4 py-2 text-sm text-white disabled:opacity-40 dark:bg-neutral-100 dark:text-neutral-900">
-      {{ s.busy ? '進行中…' : '送出' }}
-    </button>
+  <form class="border-t border-rule bg-surface px-5 py-3" @submit.prevent="s.send()">
+    <div class="mx-auto flex w-full max-w-[46rem] items-end gap-2">
+      <textarea ref="ta" :value="s.draft" rows="2" :disabled="s.busy || !!s.bootError" aria-label="描述你想要的畫面"
+                placeholder="描述你想要的畫面（Enter 送出，Shift+Enter 換行）"
+                class="min-h-[2.75rem] flex-1 resize-y rounded-md border border-rule bg-paper px-3 py-2 text-sm leading-6 placeholder:text-muted/70 focus:border-cyan focus:outline-none disabled:opacity-60"
+                @input="s.setDraft(($event.target as HTMLTextAreaElement).value)"
+                @keydown.enter.exact="onEnter" />
+      <button type="submit" :disabled="s.busy || !s.draft.trim() || !!s.bootError"
+              class="h-[2.75rem] rounded-md bg-ink px-5 text-sm font-medium text-paper hover:bg-ink/85 disabled:bg-rule disabled:text-muted">
+        {{ s.busy ? '整理中' : '送出' }}
+      </button>
+    </div>
   </form>
 </template>
 

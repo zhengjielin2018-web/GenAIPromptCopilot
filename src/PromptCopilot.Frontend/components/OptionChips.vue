@@ -1,18 +1,18 @@
 <template>
   <div class="flex flex-wrap gap-1.5">
-    <span v-for="o in options" :key="o.label" class="inline-flex items-stretch overflow-hidden rounded-full border text-xs transition-colors"
-          :class="selected(o) ? 'border-neutral-900 dark:border-neutral-100'
-                              : light ? 'border-neutral-200 dark:border-neutral-800' : 'border-neutral-300 dark:border-neutral-700'">
-      <button type="button" class="px-2.5 py-1"
-              :class="selected(o) ? 'bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900'
-                                  : light ? 'text-neutral-600 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800'
-                                          : 'bg-white text-neutral-800 hover:bg-neutral-100 dark:bg-neutral-900 dark:text-neutral-200 dark:hover:bg-neutral-800'"
+    <span v-for="o in options" :key="o.label" class="inline-flex items-stretch overflow-hidden rounded-md border text-xs transition-colors"
+          :class="selected(o) ? 'border-ink' : light ? 'border-rule/70' : 'border-rule'">
+      <button type="button" class="px-2.5 py-1.5"
+              :class="selected(o) ? 'bg-ink text-paper' : light ? 'text-muted hover:text-ink' : 'bg-surface hover:bg-paper'"
               :title="o.tags" :aria-pressed="selected(o)" @click="s.toggleChip({ dimension, label: o.label })">
         {{ o.label }}
       </button>
-      <button v-if="o.presetId !== null" type="button" title="看這個方向的 preset"
-              class="border-l border-inherit px-1.5 text-[10px] text-neutral-500 hover:bg-neutral-100 hover:text-neutral-900 dark:hover:bg-neutral-800 dark:hover:text-neutral-100"
-              @click="s.openDrawer(o.presetId!)">↗</button>
+      <button v-if="o.presetId !== null" type="button" title="看這個方向的範例" aria-label="看這個方向的範例"
+              class="flex items-center border-l px-1.5 text-muted hover:bg-paper hover:text-ink"
+              :class="selected(o) ? 'border-ink bg-surface' : 'border-rule'"
+              @click="s.openDrawer(o.presetId!)">
+        <svg viewBox="0 0 16 16" class="h-3 w-3" aria-hidden="true"><rect x="2" y="3" width="12" height="10" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.4" /><path d="M2.5 11l3.5-3.5 2.5 2.5 2-2 3 3" fill="none" stroke="currentColor" stroke-width="1.4" /></svg>
+      </button>
     </span>
   </div>
 </template>

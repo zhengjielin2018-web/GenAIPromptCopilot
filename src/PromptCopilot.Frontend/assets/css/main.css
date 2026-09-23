@@ -2,8 +2,55 @@
 @tailwind components;
 @tailwind utilities;
 
-html, body, #__nuxt { height: 100%; }
-body { @apply bg-neutral-50 text-neutral-900 antialiased; }
+/* 打樣紙、墨、三個印刷原色。青＝進行中與焦點，洋紅＝失敗與攔截，黃＝追問中的維度。
+   值是 RGB 三元組，讓 Tailwind 的 /<alpha> 能用。深色模式整組換掉，元件不用寫 dark: 變體。 */
+:root {
+  --paper: 239 241 244;
+  --surface: 255 255 255;
+  --ink: 27 33 64;
+  --muted: 90 97 120;
+  --rule: 213 217 226;
+  --cyan: 0 120 170;
+  --magenta: 176 20 100;
+  --yellow: 196 146 0;
+  --cyan-wash: 225 241 249;
+  --magenta-wash: 251 232 242;
+  --yellow-wash: 255 244 200;
+  color-scheme: light;
+}
+
 @media (prefers-color-scheme: dark) {
-  body { @apply bg-neutral-950 text-neutral-100; }
+  :root {
+    --paper: 18 22 40;
+    --surface: 26 31 54;
+    --ink: 231 233 240;
+    --muted: 154 161 184;
+    --rule: 48 55 86;
+    --cyan: 72 196 240;
+    --magenta: 240 96 164;
+    --yellow: 242 201 76;
+    --cyan-wash: 20 46 64;
+    --magenta-wash: 62 24 46;
+    --yellow-wash: 58 50 22;
+    color-scheme: dark;
+  }
+}
+
+html, body, #__nuxt { height: 100%; }
+body {
+  @apply bg-paper font-sans text-ink antialiased;
+}
+::selection { background: rgb(var(--cyan) / 0.25); }
+
+:focus-visible { outline: 2px solid rgb(var(--cyan)); outline-offset: 2px; }
+
+@layer utilities {
+  /* 「略過」的 facet：印刷上不上墨的斜線網紋。不靠顏色也看得出跟實心、虛線、點線不同。 */
+  .hatch {
+    background-image: repeating-linear-gradient(135deg, rgb(var(--muted) / 0.45) 0 1.5px, transparent 1.5px 5px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
 }

@@ -1,10 +1,10 @@
 <template>
-  <section class="mt-3">
-    <div class="flex items-center justify-between">
-      <h4 class="text-xs font-medium text-neutral-500">{{ label }}</h4>
-      <button type="button" class="text-xs text-neutral-500 hover:text-neutral-900 dark:hover:text-neutral-100" @click="copy">{{ copied ? '已複製' : '複製' }}</button>
+  <section class="mt-4">
+    <div class="flex items-baseline justify-between">
+      <h4 class="text-xs font-bold">{{ label }}</h4>
+      <button type="button" class="rounded px-1.5 text-xs text-muted hover:text-ink" @click="copy">{{ copied ? '已複製' : '複製' }}</button>
     </div>
-    <pre class="mt-1 whitespace-pre-wrap break-words rounded bg-neutral-100 p-2 font-mono text-xs dark:bg-neutral-950">{{ text }}</pre>
+    <pre class="mt-1.5 whitespace-pre-wrap break-words rounded-[4px] bg-paper px-3 py-2.5 font-mono text-[12.5px] leading-[1.7]">{{ text }}</pre>
   </section>
 </template>
 
