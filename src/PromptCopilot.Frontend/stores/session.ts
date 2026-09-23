@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { readSse } from '../lib/sse'
-import { initialState, beginTurn, applyEvent, endTurn, failHttp, hydrate, type ChatState } from '../lib/reducer'
+import { initialState, beginTurn, applyEvent, endTurn, failHttp, hydrate, latestFinalizedTurn as latestFinalizedTurnOf, type ChatState } from '../lib/reducer'
 import { loadPersisted, savePersisted, clearPersisted } from '../lib/persist'
 import { composeDraft, appendChip, chipKey, type Chip } from '../lib/composer'
 import { AGENT_EVENT_TYPES, type AgentEvent, type FacetCatalog } from '../types/api'
@@ -36,15 +36,8 @@ export const useSessionStore = defineStore('session', () => {
     return { ...base, ...(p?.labels ?? {}) }
   })
 
-  /** save_consent_requested 到來時要展開的那張定稿卡。 */
-  const latestFinalizedTurn = computed<number | null>(() => {
-    const t = state.value.transcript
-    for (let i = t.length - 1; i >= 0; i--) {
-      const e = t[i]
-      if (e.kind === 'final' && e.data.kind === 'finalized') return e.turnIndex
-    }
-    return null
-  })
+  /** 最新一張定稿卡：save_consent_requested 要展開它，也只有它可以存（後端永遠存 LastFinal）。 */
+  const latestFinalizedTurn = computed<number | null>(() => latestFinalizedTurnOf(state.value.transcript))
 
   function persist() {
     if (state.value.sessionId) savePersisted({ sessionId: state.value.sessionId, transcript: state.value.transcript })
@@ -147,6 +140,8 @@ export const useSessionStore = defineStore('session', () => {
     const id = state.value.sessionId
     const text = intent.trim()
     if (!id || !text) { saveState.value[turnIndex] = { status: 'error', error: '描述不可為空' }; return }
+    // 後端存的是最新一次定稿；從舊卡存會把舊描述配上新提示詞
+    if (turnIndex !== latestFinalizedTurn.value) { saveState.value[turnIndex] = { status: 'error', error: '這份定稿已被後面的定稿取代，只能存最新的那一份。' }; return }
     saveState.value[turnIndex] = { status: 'saving' }
     try {
       const r = await api.saveToShared(id, text)

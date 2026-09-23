@@ -120,6 +120,15 @@ export function endTurn(state: ChatState): ChatState {
   }
 }
 
+/** 對話流裡最新一張定稿卡的輪次。save-to-shared 永遠存後端的 LastFinal，所以只有這一張可以存。 */
+export function latestFinalizedTurn(transcript: Entry[]): number | null {
+  for (let i = transcript.length - 1; i >= 0; i--) {
+    const e = transcript[i]
+    if (e.kind === 'final' && e.data.kind === 'finalized') return e.turnIndex
+  }
+  return null
+}
+
 /** 非 200 回應（404／409／5xx）：還原快照並記一筆失敗，這一輪就此結束。 */
 export function failHttp(state: ChatState, code: string, message: string): ChatState {
   return { ...fail(state, 'http', code, message), pending: null }

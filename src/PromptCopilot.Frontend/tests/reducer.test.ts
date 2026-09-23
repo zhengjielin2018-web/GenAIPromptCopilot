@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { initialState, beginTurn, applyEvent, endTurn, failHttp, hydrate, type ChatState } from '../lib/reducer'
+import { initialState, beginTurn, applyEvent, endTurn, failHttp, hydrate, latestFinalizedTurn, type ChatState, type Entry } from '../lib/reducer'
 import type { AgentEvent } from '../types/api'
 
 const session = (turnIndex = 1): AgentEvent => ({ type: 'session', sessionId: 's1', turnIndex, status: 'Collecting' })
@@ -146,5 +146,20 @@ describe('hydrate', () => {
     expect(s.lastFinal).toEqual({ kind: 'finalized', positive: 'P', negative: 'N', tips: 'T', intentSummary: 'I' })
     expect(s.transcript).toEqual([{ kind: 'user', text: 'x' }])
     expect(s.pending).toBeNull()
+  })
+})
+
+describe('latestFinalizedTurn', () => {
+  const fin = (turnIndex: number): Entry => ({ kind: 'final', turnIndex, data: { kind: 'finalized', positive: 'P', negative: 'N', tips: 'T', intentSummary: 'I' } })
+  const msg = (turnIndex: number): Entry => ({ kind: 'final', turnIndex, data: { kind: 'message', message: 'm' } })
+
+  // save-to-shared 永遠存後端的 LastFinal（最新一次定稿）。只有最新那張卡可以存，
+  // 否則舊卡的描述會配上新的提示詞寫進共享庫。
+  it('is the turn of the last finalized entry, ignoring later non-finalized entries', () => {
+    expect(latestFinalizedTurn([fin(3), { kind: 'user', text: 'x' }, fin(5), msg(6)])).toBe(5)
+  })
+
+  it('is null when nothing was finalized', () => {
+    expect(latestFinalizedTurn([{ kind: 'user', text: 'x' }, msg(1)])).toBeNull()
   })
 })

@@ -14,7 +14,8 @@
     </section>
 
     <footer :id="`save-${turnIndex}`" class="mt-5 border-t border-rule pt-4">
-      <button v-if="!expanded" type="button" :disabled="save.status === 'saved'"
+      <p v-if="superseded" class="text-xs text-muted">這份已被後面的定稿取代。要存進共享知識庫，請用最新那張。</p>
+      <button v-else-if="!expanded" type="button" :disabled="save.status === 'saved'"
               class="rounded-md bg-ink px-3.5 py-1.5 text-sm font-medium text-paper hover:bg-ink/85 disabled:bg-rule disabled:text-muted"
               @click="s.expandSave(turnIndex)">
         {{ save.status === 'saved' ? '已存進共享知識庫' : '存進共享知識庫' }}
@@ -44,4 +45,6 @@ const s = useSessionStore()
 const intent = ref(props.data.intentSummary)
 const expanded = computed(() => s.expandedSaveTurn === props.turnIndex)
 const save = computed(() => s.saveState[props.turnIndex] ?? { status: 'idle' as const, error: undefined })
+/** 後端 save-to-shared 永遠存最新一次定稿；舊卡已存過的保留「已存」狀態，沒存過的就不給存。 */
+const superseded = computed(() => s.latestFinalizedTurn !== props.turnIndex && save.value.status !== 'saved')
 </script>
