@@ -156,6 +156,33 @@ public class EndpointTests : IClassFixture<EndpointTests.Factory>
         Assert.Equal(1, s.Lock.CurrentCount);        // 鎖有放掉
     }
 
+    /// <summary>Swagger 上寫的回應碼要等於端點真的會回的。沒標就只剩框架預設的 200：
+    /// 開 session 其實回 201，400／404／409 也全部看不到，照文件寫的客戶端會漏接。</summary>
+    [Theory]
+    [InlineData("/api/sessions", "post", "201")]
+    [InlineData("/api/sessions/{id}/messages", "post", "200,400,404,409")]
+    [InlineData("/api/sessions/{id}/save-to-shared", "post", "200,400,404,409")]
+    [InlineData("/api/presets/{id}", "get", "200,404")]
+    public async Task OpenApi_lists_the_status_codes_each_route_returns(string path, string method, string codes)
+    {
+        var doc = await _client.GetFromJsonAsync<System.Text.Json.JsonElement>("/swagger/v1/swagger.json");
+        var responses = doc.GetProperty("paths").GetProperty(path).GetProperty(method).GetProperty("responses");
+        Assert.Equal(codes.Split(','), responses.EnumerateObject().Select(p => p.Name).Order());
+    }
+
+    /// <summary>新加的端點忘了寫說明，Swagger 上就只剩一行路徑。</summary>
+    [Fact]
+    public async Task Every_operation_has_a_summary_and_a_description()
+    {
+        var doc = await _client.GetFromJsonAsync<System.Text.Json.JsonElement>("/swagger/v1/swagger.json");
+        var undocumented = doc.GetProperty("paths").EnumerateObject()
+            .SelectMany(p => p.Value.EnumerateObject().Select(op => (Name: $"{op.Name.ToUpperInvariant()} {p.Name}", Op: op.Value)))
+            .Where(x => !x.Op.TryGetProperty("summary", out var s) || string.IsNullOrWhiteSpace(s.GetString())
+                     || !x.Op.TryGetProperty("description", out var d) || string.IsNullOrWhiteSpace(d.GetString()))
+            .Select(x => x.Name).ToList();
+        Assert.Empty(undocumented);
+    }
+
     [Fact]
     public async Task Facets_config_lists_six_dimensions()
     {

@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Options;
+using Microsoft.OpenApi;
 using Microsoft.SemanticKernel.ChatCompletion;
 using Microsoft.SemanticKernel.Connectors.Google;
 using Npgsql;
@@ -25,7 +26,22 @@ services.AddSingleton(sp => sp.GetRequiredService<IOptions<OrchestratorOptions>>
 
 // ---- infra ----
 services.AddEndpointsApiExplorer();
-services.AddSwaggerGen();
+services.AddSwaggerGen(c => c.SwaggerDoc("v1", new OpenApiInfo
+{
+    Title = "PromptCopilot API",
+    Version = "v1",
+    Description = """
+        把中文描述，經由多輪追問與討論，整理成英文的生圖 prompt。
+
+        典型呼叫順序：
+        1. `POST /api/sessions` 拿 `sessionId`
+        2. 反覆 `POST /api/sessions/{id}/messages`，每次送一句話，讀回一輪的 SSE 事件
+        3. 需要時 `GET /api/presets/{id}` 查事件裡提到的 preset
+        4. 定稿後（可選）`POST /api/sessions/{id}/save-to-shared` 存進共享庫
+
+        在終端機逐輪試用：見 repo 的 `manual-tests/README.md`。
+        """,
+}));
 services.AddMemoryCache();
 services.AddSingleton(sp =>
 {
