@@ -1,7 +1,8 @@
 export type FacetState = 'covered' | 'missing' | 'waived' | 'notApplicable'
 export type SessionStatus = 'Collecting' | 'Finalized'
 
-export interface OptionItem { label: string; tags: string; presetId: number | null }
+/** 後端 SseWriter 用 WhenWritingNull：值為 null 的欄位會整個省略，所以可為 null 的欄位在線上也可能不存在。 */
+export interface OptionItem { label: string; tags: string; presetId?: number | null }
 export interface AskItem { dimension: string; question: string; missingFacetIds: string[]; options: OptionItem[] }
 export interface PresetRef { id: number; title: string; imageUrl: string | null }
 
