@@ -1,7 +1,7 @@
 # GenAI Prompt Copilot — 設計規格
 
 日期：2026-09-21
-狀態：已定案。子專案 1（資料地基）已實作並通過 §14 驗收（2026-09-22）；子專案 2–4 未開始
+狀態：已定案。子專案 1（資料地基）已實作並通過 §14 驗收（2026-09-22）；子專案 2（SK Agent 核心）已實作，以 `manual-tests/chat.py` 手動跑完對話迴圈（2026-09-24），降級檢查點結論見 §4.10；子專案 3–4 未開始
 前身文件：[docs/初步想法.md](../../初步想法.md)（本文件取代其中的架構與流程章節；技術棧與階段藍圖以本文件為準）
 
 ---
@@ -402,6 +402,8 @@ interface IPromptOrchestrator {
 兩個實作：`AgenticOrchestrator`（本設計）與 `StateMachineOrchestrator`（後端決定 ASK/DISCUSS/FINALIZE，LLM 只做分析、檢索與產文）。組態 `Orchestrator:Mode` 切換。API 契約與前端不變。
 
 `StateMachineOrchestrator` 在子專案 2 只留介面與 `NotImplementedException` 空殼；**只有當子專案 2 驗收時 agentic loop 無法穩定跑完 §14 第 2 列的「追問 → 討論 → 回答 → 定稿 → 討論 → 修改；上游攔截後 session 可繼續」才實作**。
+
+> **降級檢查點結論（2026-09-24）**：維持全 agentic，`StateMachineOrchestrator` 繼續留空殼不實作。子專案 2 的對話迴圈已能以 `manual-tests/chat.py` 手動跑通；後續若有問題，方向是調整 agentic 流程（工具清單規則、system prompt、filters），不是換編排方式。
 
 ## 5. 六維度與 Facet 體系
 
