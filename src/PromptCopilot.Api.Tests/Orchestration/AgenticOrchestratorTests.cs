@@ -445,7 +445,7 @@ public class AgenticOrchestratorTests
             Assert.Contains("定稿", hist.Last().Content!);
             Assert.Single(k!.Plugins);                                 // 只剩 Dialog
             Assert.Single(k.Plugins["Dialog"]);                        // 只剩 FinalizePrompt
-            return new[] { await Invoke(hist, k, "Dialog", "FinalizePrompt", new { positivePrompt = "1girl", negativePrompt = "lowres", tips = "t", facetStates = Array.Empty<object>() }) };
+            return new[] { await Invoke(hist, k, "Dialog", "FinalizePrompt", new { positivePrompt = "1girl", negativePrompt = "lowres", tips = "t", intentSummary = "一個女生", facetStates = Array.Empty<object>() }) };
         });
         var events = await h.RunAsync("一個少女");
         Assert.Equal("finalized", Assert.Single(events.OfType<FinalEvent>()).Kind);

@@ -45,7 +45,7 @@ public class SessionTests
     {
         var s = New();
         s.RecordDiscuss(); Assert.Equal(1, s.DiscussStreak);
-        s.RecordFinalize(new FinalPrompt("p", "n", "t"));
+        s.RecordFinalize(new FinalPrompt("p", "n", "t", "i"));
         Assert.Equal(SessionStatus.Finalized, s.Status);
         Assert.Equal(0, s.DiscussStreak);
         s.RecordDiscuss(); Assert.Equal(0, s.DiscussStreak);
@@ -72,7 +72,7 @@ public class SessionTests
         s.FacetNotes["clothing.footwear"] = "使用者委託此項";
         s.ChatHistory.AddAssistantMessage("x"); s.ChatHistory.AddUserMessage("y");
         s.Ledger.Record(new LedgerEntry { Id = 7, Title = "t", PromptSnippet = "a", FacetIds = Array.Empty<string>() }, new LedgerHit("style", 0.1, true));
-        s.RecordFinalize(new FinalPrompt("p", "n", "t"));
+        s.RecordFinalize(new FinalPrompt("p", "n", "t", "i"));
 
         s.Restore(snap);
         Assert.Equal(0, s.AskCount); Assert.Equal(1, s.DiscussStreak); Assert.False(s.AutoFill);

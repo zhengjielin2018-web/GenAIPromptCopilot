@@ -12,7 +12,7 @@ public class ToolSetBuilderTests
         var s = new Session("s");
         for (var i = 0; i < asks; i++) s.RecordAsk();
         for (var i = 0; i < streak; i++) s.RecordDiscuss();
-        if (finalized) s.RecordFinalize(new FinalPrompt("p", "n", "t"));
+        if (finalized) s.RecordFinalize(new FinalPrompt("p", "n", "t", "i"));
         return s;
     }
 
@@ -34,7 +34,7 @@ public class ToolSetBuilderTests
     [Fact]
     public void Discuss_stays_when_finalized_regardless_of_streak()
     {
-        var s = S(streak: 8); s.RecordFinalize(new FinalPrompt("p", "n", "t"));
+        var s = S(streak: 8); s.RecordFinalize(new FinalPrompt("p", "n", "t", "i"));
         var t = ToolSetBuilder.Build(s, false, O);
         Assert.Contains(ToolNames.Discuss, t);
         Assert.DoesNotContain(ToolNames.AskUser, t);
@@ -48,7 +48,7 @@ public class ToolSetBuilderTests
     {
         var s = new Session("s");
         s.Restore(new SessionSnapshot(SessionStatus.Finalized, null, 0, 8, false,
-            new(), new(), 0, new PresetLedger(), new FinalPrompt("p", "n", "t"), 0));
+            new(), new(), 0, new PresetLedger(), new FinalPrompt("p", "n", "t", "i"), 0));
         Assert.Contains(ToolNames.Discuss, ToolSetBuilder.Build(s, false, O));
     }
 

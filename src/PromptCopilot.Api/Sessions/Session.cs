@@ -5,7 +5,7 @@ namespace PromptCopilot.Api.Sessions;
 
 public enum FacetState { Covered, Missing, Waived, NotApplicable }
 public enum SessionStatus { Collecting, Finalized }
-public sealed record FinalPrompt(string Positive, string Negative, string Tips);
+public sealed record FinalPrompt(string Positive, string Negative, string Tips, string IntentSummary);
 
 public sealed record SessionSnapshot(
     SessionStatus Status, string? Profile, int AskCount, int DiscussStreak, bool AutoFill,

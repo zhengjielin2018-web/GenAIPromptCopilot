@@ -34,7 +34,7 @@ public class SystemPromptBuilderTests
         s.ApplyFacetStates(new Dictionary<string, FacetState> { ["scene.season"] = FacetState.Waived }, Catalog);
         s.FacetNotes["scene.weather"] = "使用者委託此項";
         s.AutoFill = true;
-        s.RecordFinalize(new FinalPrompt("mountain", "lowres", "tips"));
+        s.RecordFinalize(new FinalPrompt("mountain", "lowres", "tips", "山上的日出"));
         var (prompt, _) = Make().Build(s, ToolNames.Always);
         Assert.Contains("profile：landscape", prompt);
         Assert.Contains("scene.season", prompt); Assert.Contains("waived", prompt);

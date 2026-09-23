@@ -102,12 +102,14 @@ LLM：**`gemini-3.5-flash-lite`**（子專案 1 執行時實測定案。注意�
 | `SessionPlugin.SetFacetStates` | `updates: FacetStateEntry[]` | 可重複；主要用於 `waived` |
 | `DialogPlugin.AskUser` | `preamble: string, asks: { dimension, question, missingFacetIds, options }[], facetStates: FacetStateEntry[]` | **終止型**；`asks` 1–3 則，每則 `options` 2–4 個 |
 | `DialogPlugin.Discuss` | `message: string, facetStates: FacetStateEntry[], options: { label, tags, presetId? }[]? = null` | **終止型**；`options` 0–4 個參考方向，不帶 `missingFacetIds` |
-| `DialogPlugin.FinalizePrompt` | `positivePrompt: string, negativePrompt: string, tips: string, facetStates: FacetStateEntry[]` | **終止型** |
+| `DialogPlugin.FinalizePrompt` | `positivePrompt: string, negativePrompt: string, tips: string, intentSummary: string, facetStates: FacetStateEntry[]` | **終止型** |
 | `DialogPlugin.RequestSaveConsent` | 無 | **終止型**；不碰 DB，只觸發前端確認卡片 |
 
 `FacetState = covered | missing | waived | notApplicable`。
 
 `facetStates` 在 `AskUser` / `Discuss` / `FinalizePrompt` 為必填，後端以此更新 session 並發 `dimensions` 事件。
+
+`intentSummary`：繁中一句話的需求描述，存入 `LastFinal`、隨 `finalized` 事件送出，前端用它預填 `save-to-shared` 的 `intent`（子專案 3 設計 §2.2）。空白時回錯誤字串讓模型重試，跟 `positivePrompt` 同一套。
 
 **`facetStates` 是陣列不是 dictionary。** `FacetStateEntry = { facetId: string, state: FacetState, note?: string }`，與 `SetFacetStates.updates` 同一個型別。SK 由 C# 型別產 function declaration 給 Gemini，`Dictionary<string, X>` 會變成「任意鍵的物件」——Gemini 的 schema 不支援開放鍵的 map，描述不出「鍵必須是 facet id」。陣列則能把 `facetId` 寫成具名欄位，順便讓 `note`（「使用者委託此項」）有地方放。
 
@@ -750,7 +752,7 @@ scripts/
 ```text
 { kind: "ask",       preamble, asks: [{ dimension, question, missingFacetIds, options }] }
 { kind: "message",   message, options? }
-{ kind: "finalized", positive, negative, tips }
+{ kind: "finalized", positive, negative, tips, intentSummary }
 { kind: "save_consent_requested" }
 ```
 

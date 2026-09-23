@@ -18,7 +18,7 @@ public class DialogPluginTests
     {
         var s = new Session("s");
         if (profile) s.ApplyProfile("portrait", Catalog);
-        if (finalized) s.RecordFinalize(new FinalPrompt("p", "n", "t"));
+        if (finalized) s.RecordFinalize(new FinalPrompt("p", "n", "t", "i"));
         s.Ledger.Record(new LedgerEntry { Id = 5, Title = "t", PromptSnippet = "p", FacetIds = new[] { "style.genre" } }, new LedgerHit("style", 0.2, false));
         var turn = new TurnContext(s, 1, GuardResult.Ok(false), ToolNames.Always, Channel.CreateUnbounded<AgentEvent>().Writer);
         return (new DialogPlugin(turn, Catalog, O), turn, s);
@@ -107,11 +107,33 @@ public class DialogPluginTests
     public void FinalizePrompt_sets_final_and_status()
     {
         var (p, turn, s) = Make();
-        var r = p.FinalizePrompt("1girl", "lowres", "tips", States(("pose.gaze", "covered")));
+        var r = p.FinalizePrompt("1girl", "lowres", "tips", "一個女生", States(("pose.gaze", "covered")));
         Assert.Equal("ok", r);
         Assert.IsType<FinalizedOutcome>(turn.Outcome);
         Assert.Equal(SessionStatus.Finalized, s.Status);
         Assert.Equal("1girl", s.LastFinal!.Positive);
+    }
+
+    [Fact]
+    public void FinalizePrompt_requires_intent_summary()
+    {
+        var (p, turn, s) = Make();
+        var r = p.FinalizePrompt("1girl", "lowres", "t", "   ", Array.Empty<FacetStateEntry>());
+        Assert.Contains("intentSummary", r);
+        Assert.Null(turn.Outcome);
+        Assert.Equal(SessionStatus.Collecting, s.Status);
+    }
+
+    [Fact]
+    public void FinalizePrompt_stores_trimmed_intent_summary_and_emits_it()
+    {
+        var (p, turn, s) = Make();
+        var r = p.FinalizePrompt("1girl", "lowres", "t", "  雨夜霓虹街頭的銀髮少女，寫實攝影  ", Array.Empty<FacetStateEntry>());
+        Assert.Equal("ok", r);
+        Assert.Equal("雨夜霓虹街頭的銀髮少女，寫實攝影", s.LastFinal!.IntentSummary);
+        var ev = AgenticOrchestrator.ToFinal(turn.Outcome!);
+        Assert.Equal("finalized", ev.Kind);
+        Assert.Equal("雨夜霓虹街頭的銀髮少女，寫實攝影", ev.IntentSummary);
     }
 
     [Fact]

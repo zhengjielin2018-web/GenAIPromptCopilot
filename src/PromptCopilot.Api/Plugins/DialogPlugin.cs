@@ -61,12 +61,14 @@ public sealed class DialogPlugin(TurnContext turn, FacetCatalog catalog, Orchest
         [Description("英文、逗號分隔 tag")] string positivePrompt,
         [Description("英文、逗號分隔 tag")] string negativePrompt,
         [Description("繁中生成建議：哪些 facet 留白、可以怎麼補")] string tips,
+        [Description("繁中一句話（20–40 字）描述使用者這次的需求：題材、主要風格、場景。不含提問與閒聊。會成為共享庫的檢索鍵，要寫成另一個使用者會怎麼描述同樣的需求")] string intentSummary,
         [Description("目前每個 facet 的狀態")] FacetStateEntry[] facetStates)
     {
         if (S.Profile is null) return "錯誤：請先呼叫 SetProfile";
         if (string.IsNullOrWhiteSpace(positivePrompt)) return "錯誤：positivePrompt 不可為空";
+        if (string.IsNullOrWhiteSpace(intentSummary)) return "錯誤：intentSummary 不可為空";
         SessionPlugin.Apply(turn, catalog, facetStates);
-        S.RecordFinalize(new FinalPrompt(positivePrompt.Trim(), negativePrompt.Trim(), tips.Trim()));
+        S.RecordFinalize(new FinalPrompt(positivePrompt.Trim(), negativePrompt.Trim(), tips.Trim(), intentSummary.Trim()));
         turn.Outcome = new FinalizedOutcome(S.LastFinal!);
         return "ok";
     }

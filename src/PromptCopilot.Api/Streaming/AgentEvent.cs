@@ -16,6 +16,7 @@ public sealed record FinalEvent(
     string Kind,
     string? Preamble = null, IReadOnlyList<AskItem>? Asks = null,
     string? Message = null, IReadOnlyList<OptionItem>? Options = null,
-    string? Positive = null, string? Negative = null, string? Tips = null) : AgentEvent("final");
+    string? Positive = null, string? Negative = null, string? Tips = null,
+    string? IntentSummary = null) : AgentEvent("final");
 public sealed record BlockedEvent(string Reason, string Message) : AgentEvent("blocked");
 public sealed record ErrorEvent(string Code, string Message) : AgentEvent("error");

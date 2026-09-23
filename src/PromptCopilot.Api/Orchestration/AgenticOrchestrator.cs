@@ -237,11 +237,11 @@ public sealed class AgenticOrchestrator(
         else h.Insert(0, new ChatMessageContent(AuthorRole.System, prompt));
     }
 
-    internal static FinalEvent ToFinal(TurnOutcome o) => o switch
+    public static FinalEvent ToFinal(TurnOutcome o) => o switch
     {
         AskOutcome a => new FinalEvent("ask", Preamble: a.Preamble, Asks: a.Asks),
         MessageOutcome m => new FinalEvent("message", Message: m.Message, Options: m.Options),
-        FinalizedOutcome f => new FinalEvent("finalized", Positive: f.Final.Positive, Negative: f.Final.Negative, Tips: f.Final.Tips),
+        FinalizedOutcome f => new FinalEvent("finalized", Positive: f.Final.Positive, Negative: f.Final.Negative, Tips: f.Final.Tips, IntentSummary: f.Final.IntentSummary),
         SaveConsentOutcome => new FinalEvent("save_consent_requested"),
         _ => throw new InvalidOperationException($"無法轉成 final 事件：{o.GetType().Name}"),
     };

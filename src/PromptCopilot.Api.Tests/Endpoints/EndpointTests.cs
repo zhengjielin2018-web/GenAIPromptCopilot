@@ -72,7 +72,7 @@ public class EndpointTests : IClassFixture<EndpointTests.Factory>
         var store = _factory.Services.GetRequiredService<SessionStore>();
         var s = store.Create();
         s.ApplyProfile("portrait", _factory.Services.GetRequiredService<PromptCopilot.Api.Configuration.FacetCatalog>());
-        s.RecordFinalize(new FinalPrompt("1girl", "lowres", "tips"));
+        s.RecordFinalize(new FinalPrompt("1girl", "lowres", "tips", "一個女生"));
         return s;
     }
 

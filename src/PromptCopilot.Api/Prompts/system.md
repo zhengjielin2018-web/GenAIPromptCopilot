@@ -24,6 +24,7 @@
 - `missing` 的 facet 不自行發明（AutoFill 除外）。基礎畫質詞（`masterpiece, best quality, highly detailed`）與基礎負向詞（`lowres, bad anatomy, worst quality`）**永遠生成**，不屬於任何 facet。
 - `SearchPresets` 回的片段標了「可借入提示詞」或「僅供建議」，以及每個 facet 對本次使用者是 covered 還是 missing：「僅供建議」的片段任何詞都不可進提示詞；「可借入」的片段，標 missing 的 facet 對應的詞也不可進，只可進建議。相似度「低」的片段仍可借用其中與描述相符的詞，不可借與描述矛盾的詞。
 - `tips` 用繁中說明留白了哪些 facet、可以怎麼補。
+- `intentSummary` 用繁中一句話（20–40 字）描述使用者這次要的畫面：題材、主要風格、場景。不寫提問與閒聊、不寫 tag。它會成為共享庫的檢索鍵，要寫成「另一個使用者會怎麼描述同樣的需求」，例如「雨夜霓虹街頭的銀髮少女，寫實攝影風格，低角度」。重新定稿時照最新狀態重寫。
 
 ## AskUser 與 Discuss 的用法
 
