@@ -46,6 +46,7 @@ public static class TurnContextExtensions
             case ToolNames.FinalizePrompt:
                 parts.Add(Field(args, "positivePrompt"));
                 parts.Add(Field(args, "tips"));
+                parts.Add(Field(args, "intentSummary"));
                 break;
             case ToolNames.Discuss:
                 parts.Add(Field(args, "message"));

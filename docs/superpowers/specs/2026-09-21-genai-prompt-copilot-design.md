@@ -532,7 +532,7 @@ profiles:
 
 | Tool | 檢查欄位 |
 | :--- | :--- |
-| `FinalizePrompt` | `positivePrompt`、`tips` |
+| `FinalizePrompt` | `positivePrompt`、`tips`、`intentSummary` |
 | `Discuss` | `message`、`options[].label`、`options[].tags` |
 | `AskUser` | `preamble`、`asks[].question`、`asks[].options[].label`、`asks[].options[].tags` |
 

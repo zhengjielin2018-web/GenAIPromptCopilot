@@ -141,20 +141,23 @@ public class FiltersTests
     }
 
     /// <summary>主規格 §6.2 把 FinalizePrompt 的輸出檢查限在 positivePrompt：SD 的負向詞本來就
-    /// 長成「nsfw, nude, naked」（那是排除清單），整包參數餵進去等於叫分類器攔自己的排除詞。</summary>
+    /// 長成「nsfw, nude, naked」（那是排除清單），整包參數餵進去等於叫分類器攔自己的排除詞。
+    /// `intentSummary` 會進共享庫，跟 `positivePrompt` 同一等級（子專案 3 設計 §2.3）。</summary>
     [Fact]
-    public void OutputTextFor_finalize_takes_positive_and_tips_only()
+    public void OutputTextFor_finalize_takes_positive_tips_and_intent_summary()
     {
         var text = TurnContextExtensions.OutputTextFor("FinalizePrompt", new KernelArguments
         {
             ["positivePrompt"] = "1girl, silver hair, neon street",
             ["negativePrompt"] = "nsfw, nude, naked, lowres",
             ["tips"] = "服裝留白，可自行補上",
+            ["intentSummary"] = "雨夜霓虹街頭的少女",
             ["facetStates"] = new[] { new { facetId = "appearance.hair", state = "covered" } },
         });
 
         Assert.Contains("silver hair", text);
         Assert.Contains("服裝留白", text);
+        Assert.Contains("雨夜霓虹街頭的少女", text);
         Assert.DoesNotContain("nsfw", text);
         Assert.DoesNotContain("nude", text);
         Assert.DoesNotContain("facetId", text);
