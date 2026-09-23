@@ -2,6 +2,8 @@
 
 想直接試用對話流程：[`manual-tests/README.md`](../manual-tests/README.md)（`start_api.py` 一行起 API，`chat.py` 在終端機逐輪對話）。
 
+瀏覽器介面在 [`PromptCopilot.Frontend/README.md`](PromptCopilot.Frontend/README.md)。
+
 ## 跑起來
 
 ```bash

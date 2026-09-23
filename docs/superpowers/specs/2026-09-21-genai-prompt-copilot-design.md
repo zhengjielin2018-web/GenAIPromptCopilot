@@ -1,7 +1,7 @@
 # GenAI Prompt Copilot — 設計規格
 
 日期：2026-09-21
-狀態：已定案。子專案 1（資料地基）已實作並通過 §14 驗收（2026-09-22）；子專案 2（SK Agent 核心）已實作，以 `manual-tests/chat.py` 手動跑完對話迴圈（2026-09-24），降級檢查點結論見 §4.10；子專案 3–4 未開始
+狀態：已定案。子專案 1（資料地基）已實作並通過 §14 驗收（2026-09-22）；子專案 2（SK Agent 核心）已實作，以 `manual-tests/chat.py` 手動跑完對話迴圈（2026-09-24），降級檢查點結論見 §4.10；子專案 3（Nuxt 3 前端 + SSE）已實作並通過 §14 驗收（2026-09-24，瀏覽器，結果見 `docs/eval-cases.md`）；子專案 4 未開始
 前身文件：[docs/初步想法.md](../../初步想法.md)（本文件取代其中的架構與流程章節；技術棧與階段藍圖以本文件為準）
 
 ---
@@ -743,7 +743,7 @@ scripts/
 | `tool_call` | `{ callId, name, argsSummary }` | 對話流插入行內卡片 |
 | `tool_result` | `{ callId, name, summary, presets?: [{id, title, imageUrl}] }` | 展開卡片；餵抽屜。`callId` **等於**對應 `tool_call` 的 `callId`（同一次呼叫的兩個事件），前端據此配對 |
 | `dimensions` | `{ profile, facetStates: {facetId: state} }` | 儀表板更新 |
-| `token` | `{ text }` | 打字機 |
+| `token` | `{ text }` | 接到最近一則討論訊息後面。**後端現況不發**（回覆內容都是終止型 tool 的參數，一次到位）；前端 reducer 保留處理，但不對一次到位的文字做假的逐字動畫（子專案 3 設計 §1.2） |
 | `final` | 四種 `kind`，見下 | 追問卡／對話氣泡／定稿卡片／高亮入庫按鈕 |
 | `blocked` | `{ reason, message }` | 標記原因，**保留失敗的訊息並附「重試」按鈕；按下把原文填回輸入框**，使用者可改可直接送 |
 | `error` | `{ code, message }` | 同上（不加 `retryable` 欄位——session 已回滾，重送等價首次送出，§4.6） |
@@ -798,7 +798,9 @@ hover 顯示 facet 名稱與狀態。`notApplicable` 的整個維度（如風景
 
 單一 Pinia store。SSE 事件以 reducer `applyEvent(state, event)` 處理——純函式，vitest 可測，不用跑瀏覽器。
 
-**前端也要回滾。** 失敗前已串出去的 `tool_call` 卡片、`dimensions` 更新都是這一輪的半成品。reducer 是純函式，做法跟後端對稱：收到 `session` 事件（輪次開始）時 snapshot store，收到 `error` / `blocked` 時 restore。後端回滾、前端回滾，兩邊一致（§4.6）。
+**前端也要回滾。** 失敗前已串出去的 `tool_call` 卡片、`dimensions` 更新都是這一輪的半成品。reducer 是純函式，做法跟後端對稱：**送出當下**就 snapshot store（不是等 `session` 事件——斷線可能發生在第一個事件之前），收到 `error`／`blocked`、或串流沒有以終止事件收尾就斷掉（記成 `stream_ended`）時 restore，再推一筆帶原文的失敗條目。後端回滾、前端回滾，兩邊一致（§4.6）。
+
+**重載恢復。** 對話流（顯示用的 transcript）與 sessionId 存 `sessionStorage`；權威狀態（status、profile、facetStates、askCount、lastFinal）重載時從 `GET /api/sessions/{id}` 拿回，`404` 就開新 session 並提示已過期（子專案 3 設計 §3.4）。
 
 ## 12. 測試策略
 
@@ -924,7 +926,13 @@ GenAIPromptCopilot/
 │  │  ├─ Prompts/system.md
 │  │  └─ Configuration/facets.yaml
 │  ├─ PromptCopilot.Api.Tests/
-│  └─ PromptCopilot.Frontend/            # Nuxt 3 SPA + Tailwind + Pinia
+│  └─ PromptCopilot.Frontend/            # Nuxt 3 SPA（ssr: false）+ Tailwind + Pinia + vitest
+│     ├─ types/api.ts                     # 後端 DTO 與 SSE 事件型別，唯一定義處
+│     ├─ lib/                             # 純函式：sse、reducer、persist、composer、dashboard、copy
+│     ├─ composables/useApi.ts
+│     ├─ stores/session.ts                # 唯一的 Pinia store，狀態變更全走 lib/reducer
+│     ├─ components/
+│     └─ tests/                           # vitest，node 環境，不跑瀏覽器
 ├─ scripts/
 │  ├─ pipeline/
 │  ├─ seed_data.py
@@ -948,7 +956,7 @@ GenAIPromptCopilot/
 | :--- | :--- | :--- |
 | 1 | 資料地基 | docker-compose 起 db 並自動建 schema；管線跑完兩張表皆有資料；一支查詢腳本用「昏暗雨夜的科幻城市」能從 presets 檢索到合理結果 |
 | 2 | SK Agent 核心 | Swagger 打完整一輪：追問 → 討論 → 回答 → 定稿 → 討論 → 修改；上游攔截後 session 可繼續；NSFW 被攔；`audit_logs` 有紀錄；§12.1 測試全綠；降級檢查點在此 |
-| 3 | 前端 + SSE | 瀏覽器端到端跑完 §12.3 第 1、3、6、11 條 |
+| 3 | 前端 + SSE | 瀏覽器端到端跑完 §12.3 第 1、3、6、11 條，加子專案 3 設計 §7 的 F1–F3（重載恢復、攔截後重試、存共享庫） |
 | 4 | 收尾 | `docker compose up` 一鍵可用；README 含架構圖與截圖；CI 綠 |
 
 Azure 部署排除。

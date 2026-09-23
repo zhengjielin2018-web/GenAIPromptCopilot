@@ -1,7 +1,7 @@
 # 子專案 3：Nuxt 3 前端 + SSE — 設計規格
 
 日期：2026-09-24
-狀態：已定案，未實作
+狀態：已實作並通過驗收（2026-09-24，結果見 `docs/eval-cases.md`）。devProxy 實測不緩衝 SSE，§2.5 的 CORS 備案沒有用到
 主規格：[2026-09-21-genai-prompt-copilot-design.md](2026-09-21-genai-prompt-copilot-design.md) §10、§11、§14 第 3 列
 多輪設計：[2026-09-22-multi-turn-dialogue-design.md](2026-09-22-multi-turn-dialogue-design.md) §5.1、§5.4、§5.6、§11 最後一條
 
@@ -257,3 +257,16 @@ xUnit（後端）：
 | chip 累積 | 手動改過後只附加 | 不能蓋掉使用者手打的字 |
 | 測試 | vitest 純函式 + xUnit 端點，不引 Playwright | 驗收本來就是人工跑 eval |
 | session 商品化 | 延後 | 本階段先能 demo；後端 session 壽命是另一個設計題 |
+
+## 10. 實作偏差
+
+實作（2026-09-24）與上文不同的地方。以程式為準，上文保留當時的設計理由。
+
+| 上文 | 實作 | 理由 |
+| :--- | :--- | :--- |
+| §3.1 純函式放 `stores/`、SSE 放 `composables/useSse.ts` | 純函式全在 `lib/`（`sse`、`reducer`、`persist`、`composer`、`dashboard`、`copy`），型別在 `types/api.ts` | `lib/` 不用 Nuxt auto-import，vitest 在 node 環境直接跑 |
+| §3.2 用 `structuredClone` 做快照 | JSON 來回複製 | store 傳進 reducer 的是 Vue reactive proxy，`structuredClone` 會丟 `DataCloneError`；狀態全是純資料，JSON 不失真 |
+| §4 `waived` 用「實心去飽和加『略』記號」 | 斜線網紋加刪除線；儀表板底部加四態圖例、頂部加涵蓋計數 | 視覺整理（打樣稿語彙）時換成印刷的「不上墨」網紋，不靠顏色也跟另外三態分得開 |
+| §4 按鈕文字「儲存至共享知識庫」「已儲存」 | 「存進共享知識庫」「已存進共享知識庫」 | 同一個動作在整個流程用同一個名字 |
+| §5 `404` 時顯示「上次的對話已過期」 | 開新 session 後把提示放在對話流頂端的通知列，原文留在輸入框 | 開新 session 會清掉 transcript，放成失敗條目會跟著被清掉 |
+| §1.3 Node 22，套件未指定版本 | Nuxt 3.21、Pinia 4、vitest 5；TypeScript 釘在 5.x | vue-tsc 3 需要 TS 5 的 JS API，TS 7 會讓 `nuxi typecheck` 起不來 |

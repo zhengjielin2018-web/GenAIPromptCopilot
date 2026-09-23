@@ -5,17 +5,17 @@
 
 | # | 輸入 | 預期 | prompt_version | 結果 | 日期 |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| 1 | 一個女生 | 追問（`final.kind = ask`），asks ≤ 3 則 | c75ecc83e606 | ✅ `ask`，2 則（≤ 3）。實跑輸入是走查用的「一個銀髮少女站在雨夜的霓虹街頭」，不是原案例的「一個女生」。 | 2026-09-23 |
+| 1 | 一個女生 | 追問（`final.kind = ask`），asks ≤ 3 則 | 8c10dcfe1f16 | ✅ 瀏覽器（子專案 3 驗收）：追問卡 2 則（風格、鏡頭），儀表板恰好高亮這兩列。先前 2026-09-23 以 chat.py 跑的是走查用的長句，這次是原案例「一個女生」。 | 2026-09-24 |
 | 2 | 完整人像描述（風格、場景、鏡頭、樣貌、動作、穿著都有） | 直接定稿 | | | |
-| 3 | 山上的日出 | profile = landscape；人物三維 notApplicable | | | |
+| 3 | 山上的日出 | profile = landscape；人物三維 notApplicable | 8c10dcfe1f16 | ✅ 瀏覽器：題材「風景」，人物樣貌／動作／穿著三列標「此題材不適用」並淡化；該輪以 3 則追問結束。 | 2026-09-24 |
 | 4 | 一台紅色跑車在雨夜街頭 | profile = vehicle | | | |
 | 5 | 一個女生，其他隨便 | 不追問直接定稿，missing 全補齊 | | | |
-| 6 | 一個穿洋裝的女生，不要指定鞋子 | `clothing.footwear` waived，prompt 無鞋子 | | | |
+| 6 | 一個穿洋裝的女生，不要指定鞋子 | `clothing.footwear` waived，prompt 無鞋子 | 8c10dcfe1f16 → 2621ea8b1928 | ✅ 瀏覽器：第 1 輪追問、第 2 輪「其他你決定」定稿。儀表板「鞋履」為斜線網紋（waived），定稿 positive 無任何鞋類詞（`…, 1girl, dress`）。 | 2026-09-24 |
 | 7 | 連續兩輪模糊回答 | 第三輪強制定稿，missing 不補，tips 列出未指定項 | | | |
 | 8 | 鞋子隨便，背景我要想一下 | 仍追問背景，只有鞋子有委託 note | | | |
 | 9 | NSFW 輸入 | `blocked`，`Blocked_NSFW` | （無） | ✅ `blocked` `Blocked_NSFW`（輸入「一個裸體的女生」）。輸入側攔截在組 system prompt 之前，該筆 audit 沒有 prompt_version；下一輪照常可用。 | 2026-09-23 |
 | 10 | 真實公眾人物 | `blocked`，`Blocked_Celebrity` | | | |
-| 11 | 定稿後「把背景改成黃昏」 | 重新定稿，不追問 | e9a3f20f9a96 | ✅ `finalized`，本輪只有 FinalizePrompt 一個 tool call，沒有追問。 | 2026-09-23 |
+| 11 | 定稿後「把背景改成黃昏」 | 重新定稿，不追問 | 4ff5e413718e | ✅ 瀏覽器：接在 #6 之後，新定稿卡（1→2 張），沒有新追問卡；positive 多了 `golden hour, sunset background`。 | 2026-09-24 |
 | 12 | 中途「改成風景」 | profile 切換，facet 重置，AskCount 不重置 | | | |
 | 13 | 回答與追問無關 | 不崩，仍以終止型 tool 結束 | | | |
 | 14 | 追問後問「寫實跟動漫差在哪？」 | `final.kind = message`，AskCount 不變，儀表板不高亮 | db8cd76b6f41 | ✅ `message`；本輪的 `dimensions` 事件與上一輪逐字相同（facet 狀態沒動），AskCount 未被消耗。 | 2026-09-23 |
@@ -54,3 +54,20 @@ session `f26f44b01bbc4c9d8582e1cea515d126`（`audit_logs` 留著，26 筆）。�
 - 第 5、6 兩輪的 prompt_version 相同：Discuss 不動 facet 狀態也不動定稿，下一輪組出來的 prompt 逐字一樣。
 - `SearchPresets` 的結果都帶 `poolSize`（style 4455、camera 2147），知識庫覆蓋看得見。
 - 這次驗收先修了兩個擋住整條迴圈的問題（connector 的 `function` role、重試層誤判 tool 訊息），見 `src/PromptCopilot.Api/Llm/GeminiRoleFixHandler.cs` 與 `LlmFailures.cs` 的註解。
+
+## 2026-09-24 子專案 3 瀏覽器驗收
+
+前端 `src/PromptCopilot.Frontend`（分支 `feat/subproject-3-frontend`，HEAD `b254cb4`），`npm run dev` 經 devProxy 打本機 API。
+用一支一次性的 puppeteer-core 腳本驅動本機 Chrome 走完，腳本不進 repo；判定條件就是下表的「應該看到」。
+#6、#11、F1–F3 在同一個 session（`69cfcdba…`）裡依序跑。全程沒有 `Turn_Failed`，沒有任何一輪需要重送。
+
+| # | 操作 | 應該看到 | 結果 |
+| :--- | :--- | :--- | :--- |
+| F1 | 定稿後整頁重載 | 儀表板、定稿卡片、對話流都回來；有 `GET /api/sessions/{id}` | ✅ 重載時呼叫 1 次 `GET /api/sessions/{id}`；定稿卡 2→2 張；每個 facet 的狀態逐一相同；題材「人像，已涵蓋 5/31」不變 |
+| F2 | 「一個裸體的女生」→ 按重試 → 改寫後送出 | 失敗條目；原文回輸入框並聚焦；儀表板不變；改寫後正常 | ✅ 「輸入被安全規則攔下」；重試後輸入框是原文且有焦點；儀表板 facet 狀態與攔截前相同；改寫成「一個穿洋裝的女生在海邊散步，不要指定鞋子」後正常定稿（2→3 張），沒有新的失敗條目 |
+| F3 | 定稿後按「存進共享知識庫」，改描述後送出 | 預填 `intentSummary`；送出成功，按鈕變「已存進共享知識庫」 | ✅ 預填「海邊散步的洋裝女性人像，寫實攝影風格，鞋履不指定。」；尾端加字後送出，按鈕變「已存進共享知識庫」並停用；`audit_logs` 有 `Saved_To_Shared`；那筆測試資料（`cecbe94a…`）驗完即刪 |
+
+另外觀察（沒有對應的案例編號）：
+
+- 走查過程中有一次「一個女生」回 `Protocol_Violation` 後接 `Turn_Failed`（Gemini 400）：純文字補救的重試請求被上游拒絕。前端照設計回滾並給重試鈕；後端的問題留給子專案 2 的調整清單。
+- 被攔下的那句不佔輪次：`Blocked_NSFW` 與下一輪 `Turn_Completed` 的 `turn_index` 都是 4。

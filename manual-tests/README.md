@@ -33,6 +33,16 @@ python manual-tests/start_api.py            # 預設埠 5000；換埠：--port 5
 再以 Development 環境啟動 API。這個視窗會一直掛著顯示 API 的 log，Ctrl+C 停止。
 資料庫容器不會跟著停，要停就 `docker compose stop db`。
 
+## 1.5 用瀏覽器試用
+
+另開一個終端機（需要 Node LTS 22）：
+
+```bash
+cd src/PromptCopilot.Frontend && npm install && npm run dev      # http://localhost:3000
+```
+
+API 照第 1 節先起好。前端把 `/api` 轉到 `localhost:5000`，不用改任何設定。對話流存在分頁的 `sessionStorage`，重新整理頁面會回到原本的對話；API 重啟過就會開新對話。
+
 ## 2. 對話試用
 
 另開一個終端機：
