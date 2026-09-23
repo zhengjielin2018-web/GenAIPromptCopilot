@@ -925,6 +925,7 @@ GenAIPromptCopilot/
 │  ├─ seed_data.py
 │  ├─ requirements.txt
 │  └─ data/{raw,clean,structured}/       # git ignore
+├─ manual-tests/                         # 手動試用：start_api.py 起 API、chat.py 終端機對話
 ├─ docker/
 │  ├─ Dockerfile.api
 │  └─ Dockerfile.frontend
