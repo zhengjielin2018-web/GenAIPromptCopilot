@@ -123,6 +123,39 @@ public class EndpointTests : IClassFixture<EndpointTests.Factory>
     }
 
     [Fact]
+    public async Task Get_session_returns_authoritative_state_and_null_final_before_finalize()
+    {
+        var id = (await (await _client.PostAsync("/api/sessions", null)).Content.ReadFromJsonAsync<Dictionary<string, string>>())!["sessionId"];
+        var doc = await _client.GetFromJsonAsync<System.Text.Json.JsonElement>($"/api/sessions/{id}");
+        Assert.Equal(id, doc.GetProperty("sessionId").GetString());
+        Assert.Equal("Collecting", doc.GetProperty("status").GetString());
+        Assert.Equal(System.Text.Json.JsonValueKind.Null, doc.GetProperty("profile").ValueKind);
+        Assert.Equal(0, doc.GetProperty("askCount").GetInt32());
+        Assert.Equal(2, doc.GetProperty("askLimit").GetInt32());
+        Assert.Equal(0, doc.GetProperty("facetStates").EnumerateObject().Count());
+        Assert.Equal(System.Text.Json.JsonValueKind.Null, doc.GetProperty("lastFinal").ValueKind);
+    }
+
+    [Fact]
+    public async Task Get_session_returns_facets_and_last_final_after_finalize()
+    {
+        var s = FinalizedSession();
+        var doc = await _client.GetFromJsonAsync<System.Text.Json.JsonElement>($"/api/sessions/{s.Id}");
+        Assert.Equal("Finalized", doc.GetProperty("status").GetString());
+        Assert.Equal("portrait", doc.GetProperty("profile").GetString());
+        Assert.Equal("missing", doc.GetProperty("facetStates").GetProperty("style.genre").GetString());
+        var f = doc.GetProperty("lastFinal");
+        Assert.Equal("1girl", f.GetProperty("positive").GetString());
+        Assert.Equal("一個女生", f.GetProperty("intentSummary").GetString());
+    }
+
+    [Fact]
+    public async Task Get_session_404_for_unknown()
+    {
+        Assert.Equal(HttpStatusCode.NotFound, (await _client.GetAsync("/api/sessions/nope")).StatusCode);
+    }
+
+    [Fact]
     public async Task Save_requires_finalized()
     {
         var id = (await (await _client.PostAsync("/api/sessions", null)).Content.ReadFromJsonAsync<Dictionary<string, string>>())!["sessionId"];
@@ -160,6 +193,7 @@ public class EndpointTests : IClassFixture<EndpointTests.Factory>
     /// 開 session 其實回 201，400／404／409 也全部看不到，照文件寫的客戶端會漏接。</summary>
     [Theory]
     [InlineData("/api/sessions", "post", "201")]
+    [InlineData("/api/sessions/{id}", "get", "200,404")]
     [InlineData("/api/sessions/{id}/messages", "post", "200,400,404,409")]
     [InlineData("/api/sessions/{id}/save-to-shared", "post", "200,400,404,409")]
     [InlineData("/api/presets/{id}", "get", "200,404")]

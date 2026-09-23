@@ -722,6 +722,7 @@ scripts/
 | 方法 | 路徑 | 說明 |
 | :--- | :--- | :--- |
 | `POST` | `/api/sessions` | 建立 session → `{ sessionId }` |
+| `GET` | `/api/sessions/{id}` | session 目前的權威狀態（status、profile、facetStates、askCount／askLimit、lastFinal）；前端重載重建用；不拿 session 鎖；`404` 表示不存在或已過期 |
 | `POST` | `/api/sessions/{id}/messages` | body `{ text }`；回 `text/event-stream`；同一 session 已有一輪在跑 → `409` |
 | `POST` | `/api/sessions/{id}/save-to-shared` | body `{ intent }`；需 `Finalized`，否則 `409`；寫 `shared_prompt_histories` 並向量化；**唯一的寫入路徑** |
 | `GET` | `/api/config/facets` | 回 `facets.yaml` 內容供前端渲染 |
