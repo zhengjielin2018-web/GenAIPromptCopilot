@@ -6,7 +6,15 @@ export interface OptionItem { label: string; tags: string; presetId?: number | n
 export interface AskItem { dimension: string; question: string; missingFacetIds: string[]; options: OptionItem[] }
 export interface PresetRef { id: number; title: string; imageUrl?: string | null }
 
-export interface FinalizedData { kind: 'finalized'; positive: string; negative: string; tips: string; intentSummary: string }
+/** 定稿 tag 的來源，伺服器定稿時比對 ledger 算的。rag：知識庫片段（presetIds 依片段被撈到的先後，presetTitle 取第一個）；
+ *  llm：模型生成；base：基礎畫質詞／負向詞。presetTitle 為 null 時線上省略。 */
+export interface TagSource { tag: string; origin: 'rag' | 'llm' | 'base'; presetIds: number[]; presetTitle?: string | null }
+
+/** positiveSources／negativeSources 是 2026-09-25 加的：之前存進 sessionStorage 的定稿卡沒有，畫面退回純文字。 */
+export interface FinalizedData {
+  kind: 'finalized'; positive: string; negative: string; tips: string; intentSummary: string
+  positiveSources?: TagSource[]; negativeSources?: TagSource[]
+}
 export type FinalData =
   | { kind: 'ask'; preamble: string; asks: AskItem[] }
   | { kind: 'message'; message: string; options?: OptionItem[] }
@@ -35,7 +43,7 @@ export interface SessionSnapshotDto {
   askCount: number
   askLimit: number
   facetStates: Record<string, FacetState>
-  lastFinal: { positive: string; negative: string; tips: string; intentSummary: string } | null
+  lastFinal: Omit<FinalizedData, 'kind'> | null
 }
 
 /** GET /api/config/facets */

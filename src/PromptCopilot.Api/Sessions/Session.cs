@@ -5,7 +5,10 @@ namespace PromptCopilot.Api.Sessions;
 
 public enum FacetState { Covered, Missing, Waived, NotApplicable }
 public enum SessionStatus { Collecting, Finalized }
-public sealed record FinalPrompt(string Positive, string Negative, string Tips, string IntentSummary);
+/// <summary>PositiveSources／NegativeSources：定稿時由伺服器比對 ledger 標的 tag 來源（<see cref="TagAttribution"/>）。
+/// 可為 null 只是為了讓舊的呼叫端不用改；讀取端一律 <c>?? Array.Empty</c>。</summary>
+public sealed record FinalPrompt(string Positive, string Negative, string Tips, string IntentSummary,
+    IReadOnlyList<TagSource>? PositiveSources = null, IReadOnlyList<TagSource>? NegativeSources = null);
 
 public sealed record SessionSnapshot(
     SessionStatus Status, string? Profile, int AskCount, int DiscussStreak, bool AutoFill,

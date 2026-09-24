@@ -52,7 +52,7 @@
 ```
 
 - `facetStates` 的值用 `FacetStateParser.ToWire` 的字串（跟 `dimensions` 事件一致）。
-- `lastFinal` 未定稿時為 `null`。
+- `lastFinal` 未定稿時為 `null`。2026-09-25 起多帶 `positiveSources`／`negativeSources`（逐 tag 來源，形狀同 `final` 事件，見 §4 末段）。
 - `404`：session 不存在或已過期，body 同 `messages` 的 `ErrorBody`。
 - 不回 `ChatHistory`（SK 內部結構，含 tool 訊息、截到 10 輪）、不回 ledger（只給模型用）。
 
@@ -180,6 +180,15 @@ drawer: presetId | null
 - `message` 的「參考方向」也用同一套，只是視覺較輕。
 
 **視覺方向**：實作時走 frontend-design skill，本文件不定色票。原則兩條：儀表板四態不靠顏色也分得出來；tool call 卡片是配角，摺疊後一行高。
+
+**定稿 tag chip 與圖例（2026-09-25 補，上表 `FinalCard` 的偏差）**：後端定稿時比對 ledger 標每個 tag 的來源（主規格 §9），`final` 事件與 `GET` 的 `lastFinal` 多帶 `positiveSources`／`negativeSources`，每筆 `{ tag, origin, presetIds, presetTitle? }`。`PromptBlock` 有 sources 時把 `<pre>` 換成一排 chip（`flex flex-wrap gap-1`），沒有（這之前存進 `sessionStorage` 的舊卡）維持整段純文字：
+
+- `rag`（知識庫片段）：`border-cyan bg-cyan-wash`，是按鈕，`title`「來自〈presetTitle〉」，點了開 preset 抽屜（`presetIds[0]`），hover 反白成 `bg-cyan text-paper`。青沿用「焦點、進行中」那個強調色，也是卡片上唯一可點的 chip。
+- `llm`（模型生成）：`border-rule bg-surface`，一般邊框。
+- `base`（基礎詞）：`border-rule/60 bg-paper text-muted`，淡化。
+- chip 列下方一行圖例「■ 知識庫片段 ■ 模型生成 ■ 基礎詞」，小方塊用同一組邊框與底色。
+- 複製鈕仍複製整段原文 `text`，不是把 chip 串回去。
+- reducer 不用改：`final` 事件與 `hydrate` 本來就整包展開進 `FinalizedData`，新欄位跟著走；型別在 `types/api.ts` 加上，`tests/reducer.test.ts` 釘住兩條路徑都保留它。
 
 ## 5. 錯誤處理
 

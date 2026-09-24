@@ -139,6 +139,25 @@ public class DialogPluginTests
         Assert.Equal("雨夜霓虹街頭的銀髮少女，寫實攝影", ev.IntentSummary);
     }
 
+    /// <summary>tag 來源由伺服器比對 ledger 標，不信模型自述（主規格 §9）。Make 的 ledger 有 id 5、片段 "p"。</summary>
+    [Fact]
+    public void FinalizePrompt_attributes_each_tag_against_the_ledger()
+    {
+        var (p, turn, s) = Make();
+        var r = p.FinalizePrompt("p, 1girl, masterpiece", "lowres, blurry", "t", "一個女生", Array.Empty<FacetStateEntry>());
+
+        Assert.Equal("ok", r);
+        var pos = s.LastFinal!.PositiveSources!;
+        Assert.Equal(new[] { "p", "1girl", "masterpiece" }, pos.Select(x => x.Tag));
+        Assert.Equal(new[] { "rag", "llm", "base" }, pos.Select(x => x.Origin));
+        Assert.Equal(new long[] { 5 }, pos[0].PresetIds);
+        Assert.Equal("t", pos[0].PresetTitle);
+        Assert.Equal(new[] { "base", "llm" }, s.LastFinal.NegativeSources!.Select(x => x.Origin));
+        var ev = AgenticOrchestrator.ToFinal(turn.Outcome!);
+        Assert.Same(s.LastFinal.PositiveSources, ev.PositiveSources);
+        Assert.Same(s.LastFinal.NegativeSources, ev.NegativeSources);
+    }
+
     /// <summary>定稿閘門（主規格 §4.6）：AskUser 還在清單上＝追問額度沒用完，有缺就不准定稿。
     /// system.md 寫了「還有 missing 就 AskUser」，模型不遵守（2026-09-25 實測 20/31 facet 缺仍定稿），改由程式擋。</summary>
     [Fact]

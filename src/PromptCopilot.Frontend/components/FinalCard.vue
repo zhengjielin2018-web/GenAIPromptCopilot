@@ -5,8 +5,8 @@
       <span class="text-[11px] tabular-nums text-muted">第 {{ turnIndex }} 輪</span>
     </header>
 
-    <PromptBlock label="正向提示詞" :text="data.positive" />
-    <PromptBlock label="負向提示詞" :text="data.negative" />
+    <PromptBlock label="正向提示詞" :text="data.positive" :sources="data.positiveSources" />
+    <PromptBlock label="負向提示詞" :text="data.negative" :sources="data.negativeSources" />
 
     <section v-if="data.tips" class="mt-4">
       <h4 class="text-xs font-bold">生成建議</h4>

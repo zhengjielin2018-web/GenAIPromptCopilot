@@ -70,7 +70,11 @@ public sealed class DialogPlugin(TurnContext turn, FacetCatalog catalog, Orchest
         SessionPlugin.Apply(turn, catalog, facetStates);
         if (UnaskedMissing() is { Count: > 0 } missing)
             return $"錯誤：還有 {missing.Count} 個 facet 缺少而且追問額度未用完，請先呼叫 AskUser 追問（一次最多 {options.MaxAsksPerCall} 個維度）：{string.Join(",", missing)}";
-        S.RecordFinalize(new FinalPrompt(positivePrompt.Trim(), negativePrompt.Trim(), tips.Trim(), intentSummary.Trim()));
+        // tag 來源由伺服器比對 ledger 標，不要求模型自述（主規格 §9）
+        var positive = positivePrompt.Trim();
+        var negative = negativePrompt.Trim();
+        S.RecordFinalize(new FinalPrompt(positive, negative, tips.Trim(), intentSummary.Trim(),
+            TagAttribution.Attribute(positive, S.Ledger, negative: false), TagAttribution.Attribute(negative, S.Ledger, negative: true)));
         turn.Outcome = new FinalizedOutcome(S.LastFinal!);
         return "ok";
     }

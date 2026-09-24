@@ -151,6 +151,7 @@ public class AgenticOrchestratorTests
         // 主規格 §5.1：LLM 挑了哪些 facet 追問要看得見；不另開事件，寫在 Turn_Completed 的 payload 裡
         Assert.Contains("""askedFacetIds":["style.genre"]""", completed.PayloadJson!);
         Assert.Contains("waivedFacetIds", completed.PayloadJson!);
+        Assert.DoesNotContain("tagOrigins", completed.PayloadJson!);                      // 只有定稿那一輪才寫
         var askCall = h.Session.ChatHistory.SelectMany(m => m.Items.OfType<FunctionCallContent>()).Single(c => c.FunctionName == "AskUser");
         Assert.DoesNotContain("photo realism", askCall.Arguments!["asks"]!.ToString());   // history 已壓縮
     }
@@ -448,12 +449,18 @@ public class AgenticOrchestratorTests
             Assert.Equal(AuthorRole.System, hist.Last().Role);
             Assert.Single(k!.Plugins);                                 // 只剩 Dialog
             Assert.Single(k.Plugins["Dialog"]);                        // 只剩 FinalizePrompt
-            return new[] { await Invoke(hist, k, "Dialog", "FinalizePrompt", new { positivePrompt = "1girl", negativePrompt = "lowres", tips = "t", intentSummary = "一個女生", facetStates = Array.Empty<object>() }) };
+            return new[] { await Invoke(hist, k, "Dialog", "FinalizePrompt", new { positivePrompt = "masterpiece, 1girl", negativePrompt = "lowres", tips = "t", intentSummary = "一個女生", facetStates = Array.Empty<object>() }) };
         });
         var events = await h.RunAsync("一個少女");
-        Assert.Equal("finalized", Assert.Single(events.OfType<FinalEvent>()).Kind);
+        var final = Assert.Single(events.OfType<FinalEvent>());
+        Assert.Equal("finalized", final.Kind);
+        Assert.NotNull(final.PositiveSources);
+        Assert.NotNull(final.NegativeSources);
         Assert.Equal(SessionStatus.Finalized, h.Session.Status);
         Assert.Contains(h.Audit.Entries, a => a.EventType == "Tool_Budget_Exhausted");
+        // positive 的三種來源計數，加總等於 positive 的 tag 數（eval #25）
+        var completed = Assert.Single(h.Audit.Entries, a => a.EventType == "Turn_Completed");
+        Assert.Contains("""tagOrigins":{"rag":0,"llm":1,"base":1}""", completed.PayloadJson!);
     }
 
     private sealed class ThrowingSink : IAuditSink

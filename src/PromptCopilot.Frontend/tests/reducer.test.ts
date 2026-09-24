@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { initialState, beginTurn, applyEvent, endTurn, failHttp, hydrate, latestFinalizedTurn, type ChatState, type Entry } from '../lib/reducer'
-import type { AgentEvent, SessionSnapshotDto } from '../types/api'
+import type { AgentEvent, SessionSnapshotDto, TagSource } from '../types/api'
 
 const session = (turnIndex = 1): AgentEvent => ({ type: 'session', sessionId: 's1', turnIndex, status: 'Collecting' })
 const call = (id: string, name = 'SearchPresets'): AgentEvent => ({ type: 'tool_call', callId: id, name, argsSummary: 'dimension: style' })
@@ -8,6 +8,9 @@ const result = (id: string): AgentEvent => ({ type: 'tool_result', callId: id, n
 const dims: AgentEvent = { type: 'dimensions', profile: 'portrait', facetStates: { 'style.genre': 'covered', 'scene.location': 'missing' } }
 const ask: AgentEvent = { type: 'final', kind: 'ask', preamble: 'p', asks: [{ dimension: 'style', question: 'q', missingFacetIds: ['style.genre'], options: [{ label: 'a', tags: 't', presetId: null }] }] }
 const finalized: AgentEvent = { type: 'final', kind: 'finalized', positive: 'P', negative: 'N', tips: 'T', intentSummary: 'I' }
+// 線上照 WhenWritingNull：llm／base 的 presetTitle 是 null，整個鍵不會出現
+const POS: TagSource[] = [{ tag: 'neon lights', origin: 'rag', presetIds: [9, 3], presetTitle: '霓虹雨夜' }, { tag: '1girl', origin: 'llm', presetIds: [] }]
+const NEG: TagSource[] = [{ tag: 'lowres', origin: 'base', presetIds: [] }]
 
 function started(): ChatState {
   let s = initialState()
@@ -80,6 +83,13 @@ describe('applyEvent', () => {
     expect(s.lastFinal).toEqual({ kind: 'finalized', positive: 'P', negative: 'N', tips: 'T', intentSummary: 'I' })
     expect(s.status).toBe('Finalized')
     expect(s.askCount).toBe(0)
+  })
+
+  it('final finalized carries the tag sources into lastFinal and the card', () => {
+    const s = applyEvent(started(), { ...finalized, positiveSources: POS, negativeSources: NEG } as AgentEvent)
+    expect(s.lastFinal?.positiveSources).toEqual(POS)
+    expect(s.lastFinal?.negativeSources).toEqual(NEG)
+    expect(s.transcript.at(-1)).toMatchObject({ kind: 'final', data: { kind: 'finalized', positiveSources: POS, negativeSources: NEG } })
   })
 
   it('error restores the snapshot and appends a failure with the original text', () => {
@@ -179,6 +189,12 @@ describe('hydrate', () => {
   it('drops a trailing user entry that no entry follows, but keeps one that a final entry follows', () => {
     expect(hydrate(initialState(), dto(null), [user('a'), msg(3), user('b')]).transcript).toEqual([user('a'), msg(3)])
     expect(hydrate(initialState(), dto(null), [user('a'), msg(3)]).transcript).toEqual([user('a'), msg(3)])
+  })
+
+  it('keeps the tag sources when rebuilding lastFinal and the synthetic card', () => {
+    const s = hydrate(initialState(), dto({ ...LAST, positiveSources: POS, negativeSources: NEG }), [user('x')])
+    expect(s.lastFinal).toEqual({ kind: 'finalized', ...LAST, positiveSources: POS, negativeSources: NEG })
+    expect(s.transcript.at(-1)).toEqual({ kind: 'final', turnIndex: 4, data: { kind: 'finalized', ...LAST, positiveSources: POS, negativeSources: NEG } })
   })
 
   it('drops the dangling user entry before appending the synthetic card', () => {

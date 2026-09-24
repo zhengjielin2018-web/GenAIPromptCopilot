@@ -13,7 +13,8 @@ public sealed record SaveRequest(string Intent);
 public sealed record SessionCreated(string SessionId);
 public sealed record SavedToShared(Guid Id);
 public sealed record ErrorBody(string Error);
-public sealed record FinalDto(string Positive, string Negative, string Tips, string IntentSummary);
+public sealed record FinalDto(string Positive, string Negative, string Tips, string IntentSummary,
+    IReadOnlyList<TagSource> PositiveSources, IReadOnlyList<TagSource> NegativeSources);
 public sealed record SessionSnapshotDto(string SessionId, string Status, string? Profile, int TurnIndex, int AskCount, int AskLimit,
     IReadOnlyDictionary<string, string> FacetStates, FinalDto? LastFinal);
 
@@ -41,13 +42,15 @@ public static class SessionEndpoints
             var s = store.TryGet(id);
             if (s is null) return Results.NotFound(new ErrorBody("session 不存在或已過期"));
             // 不拿 session 鎖：重載時連線已隨頁面斷掉、那一輪已回滾；兩個分頁共用同一個 id 時讀到半途狀態是可接受的最壞情況。
-            var final = s.LastFinal is { } f ? new FinalDto(f.Positive, f.Negative, f.Tips, f.IntentSummary) : null;
+            var final = s.LastFinal is { } f
+                ? new FinalDto(f.Positive, f.Negative, f.Tips, f.IntentSummary, f.PositiveSources ?? Array.Empty<TagSource>(), f.NegativeSources ?? Array.Empty<TagSource>())
+                : null;
             return Results.Ok(new SessionSnapshotDto(s.Id, s.Status.ToString(), s.Profile, s.TurnIndex, s.AskCount, options.MaxAskCount,
                 s.FacetStates.ToDictionary(kv => kv.Key, kv => FacetStateParser.ToWire(kv.Value)), final));
         })
         .WithSummary("讀 session 目前的狀態")
         .WithDescription("""
-            給前端整頁重載後重建畫面用：狀態（`Collecting`／`Finalized`）、題材、每個 facet 的狀態、追問已用幾次（`askCount`／`askLimit`）、最後一次定稿（未定稿為 `null`）。
+            給前端整頁重載後重建畫面用：狀態（`Collecting`／`Finalized`）、題材、每個 facet 的狀態、追問已用幾次（`askCount`／`askLimit`）、最後一次定稿（未定稿為 `null`；欄位同 `final` 事件的 `finalized`，含 tag 來源）。
 
             不含對話紀錄：對話流由前端自己保存。唯讀，除了重置閒置過期的計時之外不改任何狀態。
 
@@ -91,7 +94,7 @@ public static class SessionEndpoints
             | `session` | 一定是第一筆：第幾輪（`turnIndex`）、這輪開始時的狀態（`Collecting` 還在收集／`Finalized` 已定稿） |
             | `tool_call`／`tool_result` | 模型呼叫的工具與結果，一輪可能好幾次。`tool_result.presets` 是檢索到的 preset，可拿 id 去 `GET /api/presets/{id}` |
             | `dimensions` | 題材（`profile`）與每個 facet 的狀態：`covered`／`missing`／`waived`（使用者說不指定）／`notApplicable`。輪中有變動就送，成功的一輪最後會再送一次完整的 |
-            | `final` | 這一輪的結果，看 `kind`：`ask` 追問（`preamble`、`asks`）、`message` 討論或回答問題（`message`、`options`）、`finalized` 定稿（`positive`、`negative`、`tips`、`intentSummary`：一句繁中需求描述，可拿來預填 `save-to-shared` 的 `intent`）、`save_consent_requested` 使用者要求儲存（見 `save-to-shared`） |
+            | `final` | 這一輪的結果，看 `kind`：`ask` 追問（`preamble`、`asks`）、`message` 討論或回答問題（`message`、`options`）、`finalized` 定稿（`positive`、`negative`、`tips`、`intentSummary`：一句繁中需求描述，可拿來預填 `save-to-shared` 的 `intent`；`positiveSources`／`negativeSources`：逐 tag 的來源 `{tag, origin, presetIds, presetTitle}`，`origin` 是 `rag` 知識庫片段／`llm` 模型生成／`base` 基礎詞，由伺服器比對 ledger 標註）、`save_consent_requested` 使用者要求儲存（見 `save-to-shared`） |
             | `blocked` | 被攔下，`reason`：`Blocked_NSFW`、`Blocked_Celebrity`（輸入端，不會呼叫模型）、`Blocked_Output`（模型輸出被攔）、`Blocked_Upstream`（Gemini 拒絕生成）。session 狀態不變 |
             | `error` | 這一輪失敗，`code`：`timeout`、`protocol_violation`、`turn_failed`。session 已還原到送出前，可以直接重送同一句 |
 

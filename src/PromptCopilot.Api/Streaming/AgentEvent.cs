@@ -1,5 +1,6 @@
 using System.Text.Json.Serialization;
 using PromptCopilot.Api.Plugins;
+using PromptCopilot.Api.Sessions;
 
 namespace PromptCopilot.Api.Streaming;
 
@@ -17,6 +18,7 @@ public sealed record FinalEvent(
     string? Preamble = null, IReadOnlyList<AskItem>? Asks = null,
     string? Message = null, IReadOnlyList<OptionItem>? Options = null,
     string? Positive = null, string? Negative = null, string? Tips = null,
-    string? IntentSummary = null) : AgentEvent("final");
+    string? IntentSummary = null,
+    IReadOnlyList<TagSource>? PositiveSources = null, IReadOnlyList<TagSource>? NegativeSources = null) : AgentEvent("final");
 public sealed record BlockedEvent(string Reason, string Message) : AgentEvent("blocked");
 public sealed record ErrorEvent(string Code, string Message) : AgentEvent("error");

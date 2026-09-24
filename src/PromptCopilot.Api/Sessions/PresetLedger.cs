@@ -33,6 +33,9 @@ public sealed class PresetLedger
         e.Hits.Add(hit);
     }
 
+    /// <summary>依寫進 ledger 的先後（Dictionary 不刪除時列舉順序即插入順序）。</summary>
+    public IEnumerable<LedgerEntry> Entries => _entries.Values;
+
     public bool Contains(long id) => _entries.ContainsKey(id);
     public LedgerEntry? Get(long id) => _entries.GetValueOrDefault(id);
 
