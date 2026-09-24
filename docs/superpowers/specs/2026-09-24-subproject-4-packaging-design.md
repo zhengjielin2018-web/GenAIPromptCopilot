@@ -1,7 +1,7 @@
 # 子專案 4：收尾與展示 — 設計規格
 
 日期：2026-09-24
-狀態：已定案，未實作
+狀態：形狀階段已實作（2026-09-24，§7.1）；真實測試（§7.2）待跑。實作與上文不同處見 §9
 主規格：[2026-09-21-genai-prompt-copilot-design.md](2026-09-21-genai-prompt-copilot-design.md) §2.1 第 4 項、§13、§14 第 4 列
 前端設計：[2026-09-24-frontend-sse-design.md](2026-09-24-frontend-sse-design.md) §2.5（nginx 反代同一條路徑）
 資料來源：[docs/資料來源.md](../../資料來源.md)
@@ -171,7 +171,7 @@ gh release create seed-v<N> scripts/data/seed/prompt_copilot_seed_v<N>.dump --ti
 | `dotnet` | `ubuntu-latest`、`actions/setup-dotnet` 10.0.x | `dotnet restore` → `dotnet build src/PromptCopilot.sln -c Release --no-restore` → `dotnet test --no-build`。Integration 測試因沒設 `PC_INTEGRATION` 自動 Skip |
 | `frontend` | `actions/setup-node` 22、npm cache、工作目錄 `src/PromptCopilot.Frontend` | `npm ci` → `npm test` → `npm run build` |
 | `python` | `actions/setup-python` 3.12、工作目錄 `scripts` | `pip install -r requirements.txt` → `ruff check .` → `pytest`（`pyproject.toml` 已預設 `-m 'not integration'`） |
-| `docker` | `ubuntu-latest` | `docker build -f docker/Dockerfile.api .` 與 `docker build -f docker/Dockerfile.frontend .`，不推、不起容器；用 `docker/build-push-action` 的 `push: false` 拿 GHA cache |
+| `docker` | `ubuntu-latest` | `docker build` 三個 Dockerfile（api、frontend、seed），不推、不起容器；用 `docker/build-push-action` 的 `push: false` 拿 GHA cache |
 
 - `concurrency` 以 branch 分組、取消進行中的舊 run。
 - 不部署、不發 Release（種子 Release 是手動的）。
@@ -253,3 +253,16 @@ MIT，著作權人用 git 設定的名字。只涵蓋 repo 內容，README §9 �
 | 授權檔 | 程式碼 MIT，資料另述 | 兩者授權狀態不同，混寫會誤導 |
 | README 語言 | 繁中 | 全部文件與 UI 都是繁中；受眾一致 |
 | 截圖時機 | 真實測試階段 | 形狀階段沒有從零起的環境，拍本機開發版會跟 compose 版有差 |
+| CI 也 build seed image | 是 | 三個 Dockerfile 一視同仁；多幾十秒 |
+
+## 9. 實作偏差
+
+形狀階段實作（2026-09-24）與上文不同的地方。以程式為準，上文保留當時的設計理由。
+
+| 上文 | 實作 | 理由 |
+| :--- | :--- | :--- |
+| §3.1 在開發庫上 `CREATE DATABASE seed_export TEMPLATE prompt_copilot`，刪列後 dump，匯出前要停 API | 開一個用完即丟的 `pgvector/pgvector:pg16` 容器、套 `001_schema.sql`，從開發庫 `pg_dump --data-only` 兩張表**串流**灌進去，在丟棄庫刪 `source='user'`、再從丟棄庫 dump，最後停掉容器。開發庫只被讀，API 開著也行 | 第一次實跑時開發庫的 backend 在 `CREATE DATABASE … TEMPLATE` 途中以 exit code 2 結束、整個 server 進入 crash recovery（資料無損，自動恢復）。同一份資料放在全新容器上跑同一條指令則正常，原因沒查到，也不在開發庫上重現。改成開發庫唯讀就不必知道原因；灌進全新 schema 還順便證明 dump 灌得回去 |
+| §2.2 `Llm__ApiKey=${GEMINI_API_KEY}` | `${GEMINI_API_KEY:-}`；不用 `:?` 強制 | compose 插值整份檔案，`:?` 會讓只起 db（`start_api.py`、管線）的人在 key 放 user-secrets 時也失敗 |
+| §2.2 連線字串 | 多 `GSS Encryption Mode=Disable` | aspnet image 沒有 `libgssapi_krb5`，Npgsql 預設先試 GSS，每次啟動在 log 印一行 `Error: libgssapi_krb5.so.2`（連線照常）。demo 的 log 不該看起來壞掉 |
+| §2.3 `proxy_pass http://api:8080` | `resolver 127.0.0.11` + 變數 upstream | 寫死主機名 nginx 啟動時就解析：api 容器重建換 IP 後會一直 502，`nginx -t` 單獨跑也會失敗。實測重建 api 後經 8080 打 `/health` 仍 200 |
+| §3.1 匯出前要停 API | 不用停 | 同第一列 |
