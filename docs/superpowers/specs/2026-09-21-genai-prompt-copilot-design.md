@@ -1,7 +1,7 @@
 # GenAI Prompt Copilot — 設計規格
 
 日期：2026-09-21
-狀態：已定案。子專案 1（資料地基）已實作並通過 §14 驗收（2026-09-22）；子專案 2（SK Agent 核心）已實作，以 `manual-tests/chat.py` 手動跑完對話迴圈（2026-09-24），降級檢查點結論見 §4.10；子專案 3（Nuxt 3 前端 + SSE）已實作並通過 §14 驗收（2026-09-24，瀏覽器，結果見 `docs/eval-cases.md`）；子專案 4（收尾與展示）形狀已完成（2026-09-24），真實測試待跑；設計見 [2026-09-24-subproject-4-packaging-design.md](2026-09-24-subproject-4-packaging-design.md)
+狀態：已定案。子專案 1（資料地基）已實作並通過 §14 驗收（2026-09-22）；子專案 2（SK Agent 核心）已實作，以 `manual-tests/chat.py` 手動跑完對話迴圈（2026-09-24），降級檢查點結論見 §4.10；子專案 3（Nuxt 3 前端 + SSE）已實作並通過 §14 驗收（2026-09-24，瀏覽器，結果見 `docs/eval-cases.md`）；子專案 4（收尾與展示）打包驗收通過（2026-09-24：fresh clone 一鍵啟動、種子自 Release 匯入、CI 四個 job 綠，結果見 `docs/eval-cases.md`），瀏覽器展示驗收與截圖待 `docs/known-issues.md` 第 1、2 項修正後補；設計見 [2026-09-24-subproject-4-packaging-design.md](2026-09-24-subproject-4-packaging-design.md)
 前身文件：[docs/初步想法.md](../../初步想法.md)（本文件取代其中的架構與流程章節；技術棧與階段藍圖以本文件為準）
 
 ---

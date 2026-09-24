@@ -71,3 +71,23 @@ session `f26f44b01bbc4c9d8582e1cea515d126`（`audit_logs` 留著，26 筆）。�
 
 - 走查過程中有一次「一個女生」回 `Protocol_Violation` 後接 `Turn_Failed`（Gemini 400）：純文字補救的重試請求被上游拒絕。前端照設計回滾並給重試鈕；後端的問題留給子專案 2 的調整清單。
 - 被攔下的那句不佔輪次：`Blocked_NSFW` 與下一輪 `Turn_Completed` 的 `turn_index` 都是 4。
+
+## 2026-09-24 子專案 4 打包驗收
+
+依子專案 4 設計 §7.2。分支 `feat/subproject-4-packaging`（PR #1），repo 於驗收前改為公開。
+fresh clone 在暫存目錄進行，只放 `.env`；開發用的 stack 先 `docker compose down`（保留 volume），驗完再起回來。
+
+| # | 操作 | 應該看到 | 結果 |
+| :--- | :--- | :--- | :--- |
+| P1 | 上傳 Release `seed-v1` | 資產可匿名下載，URL 與 compose 預設一致 | ✅ 匿名 `curl` 跟隨轉址後 200，`Content-Length` 104,202,876，與本機檔案位元組數相同 |
+| P2 | fresh clone，只放 `.env`，`docker compose up -d --build` | seed 下載並匯入；api、frontend 依序起來；8080 可用 | ✅ 190 秒完成（含三個 image build）。seed 印「presets 19354」「histories 6294」「完成」。經 8080 打 `/`、深路徑、`/health`、`/api/config/facets`、`/api/presets/{id}` 皆 200 |
+| P3 | 瀏覽器跑 eval #1、#3、#6 | 同子專案 3 | ⏸ 延後：`docs/known-issues.md` 第 1 項會讓有細節的人像第一輪強制定稿，修正後再跑。改以 API 經 nginx 跑一輪「一個女生」驗證 SSE：11 個事件在 0.1–10.1 秒間逐筆到達（`SetProfile` 2.8s、兩次 `SearchPresets` 4.0–5.3s、`AskUser` 8.9s、`final ask` 10.1s），**沒有被緩衝** |
+| P4 | 抽屜出處 | civitai 與 kisegae 各有連結 | ✅ API 層：kisegae preset 41544 的 `sourceUrl` = `https://github.com/hayde0096/Kisegaeningyou`；civitai 見形狀階段（`https://civitai.com/images/<id>`）。瀏覽器畫面隨 P3 一起看 |
+| P5 | 同一 volume 再 `up` | seed 跳過 | ✅「已有資料 19354 筆，跳過。」 |
+| P6 | 新 volume、`SEED_URL=` 空字串 | seed 跳過、api 照起、知識庫為空 | ✅「未設定 SEED_URL，跳過種子。」api healthy，presets 0 筆 |
+| P7 | push、CI、README 渲染、截圖 | CI 四個 job 綠 | ✅ CI（PR #1）：docker build 4m0s、dotnet 1m30s、npm 35s、ruff+pytest 20s 全部 pass。⏸ 截圖隨 P3 延後 |
+
+另外確認：
+
+- 匯入後 `prompt_knowledge_presets_id_seq` 的 `last_value` 41928 ≥ `max(id)` 41920，種子之上再跑管線 `load` 不會撞主鍵。
+- 匯出前掃過全部 156 個 commit：沒有 Google API key 樣式的字串、沒有 `.env` 或本機設定檔進過版控。
