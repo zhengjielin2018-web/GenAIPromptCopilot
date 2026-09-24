@@ -266,3 +266,5 @@ MIT，著作權人用 git 設定的名字。只涵蓋 repo 內容，README §9 �
 | §2.2 連線字串 | 多 `GSS Encryption Mode=Disable` | aspnet image 沒有 `libgssapi_krb5`，Npgsql 預設先試 GSS，每次啟動在 log 印一行 `Error: libgssapi_krb5.so.2`（連線照常）。demo 的 log 不該看起來壞掉 |
 | §2.3 `proxy_pass http://api:8080` | `resolver 127.0.0.11` + 變數 upstream | 寫死主機名 nginx 啟動時就解析：api 容器重建換 IP 後會一直 502，`nginx -t` 單獨跑也會失敗。實測重建 api 後經 8080 打 `/health` 仍 200 |
 | §3.1 匯出前要停 API | 不用停 | 同第一列 |
+| §2.5 `db` 現有設定不變 | healthcheck 改 `pg_isready -h 127.0.0.1`（TCP） | 全分支審查發現：socket 版在官方 image 跑 `db/init` 的暫時 server 期間就回 ready，fresh clone 首次 `up` 時 seed 可能在建表前就查表而失敗。實測 socket 版每次都抓到一次違規、TCP 版零次 |
+| （未提及） | API 啟動時 `Llm:ApiKey` 空白就印 warning，指出 `.env` 的 `GEMINI_API_KEY` 與 user-secrets | compose 使用者忘了填 key 時整套照樣起來、每一輪卻都 500，畫面上沒有線索 |
