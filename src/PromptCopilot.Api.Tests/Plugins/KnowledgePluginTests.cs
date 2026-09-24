@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Threading.Channels;
+using Microsoft.SemanticKernel;
 using PromptCopilot.Api.Configuration;
 using PromptCopilot.Api.Data;
 using PromptCopilot.Api.Llm;
@@ -185,6 +186,23 @@ public class KnowledgePluginTests
         Assert.Equal(ToolNames.SearchPresets, ev.Name);
         Assert.Equal("風格 池 4455 → 2・鏡頭 池 2147 → 1・hair 錯誤", ev.Summary);
         Assert.Equal(new long[] { 1, 2 }, ev.Presets!.Select(x => x.Id));
+    }
+
+    [Fact]
+    public async Task Kernel_binds_json_queries_argument_to_SearchQuery_array()
+    {
+        var (p, _, _, embed, presets, _) = Make();
+        presets.Pools["style.genre"] = 10;
+        var kernel = new Kernel();
+        AgentKernelFactory.AddFiltered(kernel, "Knowledge", p, ToolNames.Always);
+        var ka = new KernelArguments();
+        ka["queries"] = JsonSerializer.SerializeToElement(new[] { new { dimension = "style", query = "寫實攝影" }, new { dimension = "style", query = "動漫插畫" } });
+
+        var r = (await kernel.Plugins["Knowledge"][ToolNames.SearchPresets].InvokeAsync(kernel, ka)).ToString();
+
+        var call = Assert.Single(embed.Calls);
+        Assert.Equal(new[] { "寫實攝影", "動漫插畫" }, call);
+        Assert.Equal(2, JsonDocument.Parse(r).RootElement.GetProperty("results").GetArrayLength());
     }
 
     [Fact]
