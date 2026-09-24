@@ -46,7 +46,11 @@ public static class HistoryTrimmer
                             return (JsonNode)new JsonObject { ["dimension"] = r["dimension"]?.DeepClone(), ["error"] = r["error"]!.DeepClone() };
                         var hits = r["hits"] as JsonArray ?? new JsonArray();
                         var ids = new JsonArray(hits.OfType<JsonObject>().Select(x => (JsonNode)new JsonObject { ["id"] = x["id"]?.DeepClone(), ["title"] = x["title"]?.DeepClone() }).ToArray());
-                        return new JsonObject { ["dimension"] = r["dimension"]?.DeepClone(), ["poolSize"] = r["poolSize"]?.DeepClone(), ["hits"] = ids };
+                        var slimItem = new JsonObject { ["dimension"] = r["dimension"]?.DeepClone() };
+                        if (r["facetId"] is JsonNode facetId) slimItem["facetId"] = facetId.DeepClone();   // facet 項目才有；維度項目是 null，不保留
+                        slimItem["poolSize"] = r["poolSize"]?.DeepClone();
+                        slimItem["hits"] = ids;
+                        return slimItem;
                     }).ToArray());
                     return new JsonObject { ["results"] = slim }.ToJsonString(Json);
                 }

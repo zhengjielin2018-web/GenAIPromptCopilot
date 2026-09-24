@@ -57,6 +57,23 @@ public class HistoryTrimmerTests
     }
 
     [Fact]
+    public void CompressTurn_keeps_facetId_on_facet_items_only()
+    {
+        var h = new ChatHistory();
+        h.Add(ToolResult("SearchPresets", """{"results":[{"dimension":"clothing","facetId":"clothing.footwear","query":"拖鞋","grounded":true,"poolSize":19,"hits":[{"id":5,"title":"拖鞋","positive":"very long"}]},{"dimension":"style","facetId":null,"query":"寫實","grounded":false,"poolSize":4455,"hits":[]}]}"""));
+
+        HistoryTrimmer.CompressTurn(h, 0);
+
+        var result = h[0].Items.OfType<FunctionResultContent>().Single().Result!.ToString()!;
+        var items = JsonDocument.Parse(result).RootElement.GetProperty("results").EnumerateArray().ToList();
+        Assert.Equal("clothing.footwear", items[0].GetProperty("facetId").GetString());
+        Assert.Equal("clothing", items[0].GetProperty("dimension").GetString());
+        Assert.Equal(19, items[0].GetProperty("poolSize").GetInt64());
+        Assert.False(items[1].TryGetProperty("facetId", out _));                    // 有才保留
+        Assert.DoesNotContain("very long", result);
+    }
+
+    [Fact]
     public void CompressTurn_leaves_legacy_single_dimension_shape_untouched()
     {
         const string legacy = """{"dimension":"style","poolSize":4455,"hits":[{"id":1,"title":"a","positive":"long text"}]}""";

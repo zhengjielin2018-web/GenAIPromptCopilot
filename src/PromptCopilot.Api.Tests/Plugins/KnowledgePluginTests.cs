@@ -28,22 +28,27 @@ public class KnowledgePluginTests
         }
     }
 
-    /// <summary>記下每次 Search／PoolSize 的參數。命中由 <see cref="Hits"/> 決定：key 是 facetIds 的第一個 id。</summary>
+    /// <summary>記下每次 Search／PoolSize 的參數。命中由 <see cref="Hits"/> 決定：key 是 facetIds 的第一個 id。
+    /// <see cref="SearchFacetSets"/>／<see cref="PoolFacetSets"/> 記完整的 facetIds，分得出單一 facet 與整個維度。</summary>
     private sealed class FakePresets() : PresetRepository(null!)
     {
         public List<(string firstFacet, int k, float queryIndex)> Searches { get; } = new();
         public List<string> PoolCalls { get; } = new();
+        public List<IReadOnlyList<string>> SearchFacetSets { get; } = new();
+        public List<IReadOnlyList<string>> PoolFacetSets { get; } = new();
         public Dictionary<string, IReadOnlyList<PresetHit>> Hits { get; } = new();
         public Dictionary<string, long> Pools { get; } = new();
 
         public override Task<IReadOnlyList<PresetHit>> SearchAsync(float[] query, IReadOnlyList<string> facetIds, int k, CancellationToken ct)
         {
             Searches.Add((facetIds[0], k, query[0]));
+            SearchFacetSets.Add(facetIds.ToArray());
             return Task.FromResult(Hits.GetValueOrDefault(facetIds[0], Array.Empty<PresetHit>()));
         }
         public override Task<long> PoolSizeAsync(IReadOnlyList<string> facetIds, CancellationToken ct)
         {
             PoolCalls.Add(facetIds[0]);
+            PoolFacetSets.Add(facetIds.ToArray());
             return Task.FromResult(Pools.GetValueOrDefault(facetIds[0], 0L));
         }
     }
@@ -71,6 +76,11 @@ public class KnowledgePluginTests
 
     private static SearchQuery[] Q(params (string d, string q)[] xs) => xs.Select(x => new SearchQuery(x.d, x.q)).ToArray();
 
+    /// <summary>facet 項目：不帶 dimension。</summary>
+    private static SearchQuery F(string facetId, string query) => new(null, query, facetId);
+
+    private static List<JsonElement> Results(string json) => JsonDocument.Parse(json).RootElement.GetProperty("results").EnumerateArray().ToList();
+
     private static List<AgentEvent> Drain(ChannelReader<AgentEvent> r)
     {
         var list = new List<AgentEvent>();
@@ -96,12 +106,17 @@ public class KnowledgePluginTests
     }
 
     [Fact]
-    public async Task More_than_twelve_items_is_an_error_without_embedding()
+    public async Task Up_to_24_items_run_and_25_is_an_error_without_embedding()
     {
         var (p, _, _, embed, _, _) = Make();
-        var thirteen = Enumerable.Range(0, 13).Select(i => new SearchQuery("style", $"q{i}")).ToArray();
-        var r = await p.SearchPresetsAsync(thirteen, default);
-        Assert.StartsWith("錯誤", r); Assert.Contains("12", r); Assert.Empty(embed.Calls);
+        var twentyFour = Enumerable.Range(0, 24).Select(i => new SearchQuery("style", $"q{i}")).ToArray();
+        Assert.Equal(24, Results(await p.SearchPresetsAsync(twentyFour, default)).Count);
+        Assert.Equal(24, Assert.Single(embed.Calls).Count);
+
+        var twentyFive = Enumerable.Range(0, 25).Select(i => new SearchQuery("style", $"q{i}")).ToArray();
+        var r = await p.SearchPresetsAsync(twentyFive, default);
+        Assert.StartsWith("錯誤", r); Assert.Contains("24", r);
+        Assert.Single(embed.Calls);                                                  // 25 項沒打 embedding
     }
 
     [Fact]
@@ -203,6 +218,160 @@ public class KnowledgePluginTests
         var call = Assert.Single(embed.Calls);
         Assert.Equal(new[] { "寫實攝影", "動漫插畫" }, call);
         Assert.Equal(2, JsonDocument.Parse(r).RootElement.GetProperty("results").GetArrayLength());
+    }
+
+    /// <summary>2026-09-25 根因 1：一句「泳裝上衣與短褲與拖鞋」查整個 clothing 池撈到整套穿搭，單品進不了 ledger。
+    /// facet 項目把候選池縮到單一 facet。</summary>
+    [Fact]
+    public async Task FacetId_item_narrows_the_pool_to_that_single_facet()
+    {
+        var (p, _, s, embed, presets, _) = Make();
+        presets.Pools["clothing.footwear"] = 19;
+        presets.Hits["clothing.footwear"] = new[] { Hit(5, "拖鞋", "clothing.footwear", 0.2) };
+
+        var r = await p.SearchPresetsAsync(new[] { F("clothing.footwear", "拖鞋") }, default);
+
+        Assert.Equal(new[] { "拖鞋" }, Assert.Single(embed.Calls));
+        Assert.Equal(new[] { "clothing.footwear" }, Assert.Single(presets.SearchFacetSets));
+        Assert.Equal(new[] { "clothing.footwear" }, Assert.Single(presets.PoolFacetSets));
+        var item = Assert.Single(Results(r));
+        Assert.Equal("clothing", item.GetProperty("dimension").GetString());
+        Assert.Equal("clothing.footwear", item.GetProperty("facetId").GetString());
+        Assert.Equal("拖鞋", item.GetProperty("query").GetString());
+        Assert.Equal(19, item.GetProperty("poolSize").GetInt64());
+        Assert.Equal(1, item.GetProperty("hits").GetArrayLength());
+        Assert.Equal("clothing", Assert.Single(s.Ledger.Get(5)!.Hits).Dimension);  // ledger 仍記維度
+    }
+
+    [Fact]
+    public async Task Dimension_item_has_no_facetId()
+    {
+        var (p, _, _, _, _, _) = Make();
+        var item = Assert.Single(Results(await p.SearchPresetsAsync(Q(("style", "寫實")), default)));
+        Assert.Equal("style", item.GetProperty("dimension").GetString());
+        Assert.True(!item.TryGetProperty("facetId", out var f) || f.ValueKind == JsonValueKind.Null);
+    }
+
+    [Theory]
+    [InlineData("scene.season")]       // 存在，但只有 landscape 有；portrait 不適用
+    [InlineData("clothing.shoes")]     // 不存在
+    public async Task FacetId_outside_the_profile_is_an_item_error_and_the_rest_run(string facetId)
+    {
+        var (p, _, _, embed, presets, _) = Make();
+
+        var results = Results(await p.SearchPresetsAsync(new[] { F(facetId, "秋天"), new SearchQuery("style", "寫實") }, default));
+
+        Assert.Equal(2, results.Count);
+        var error = results[0].GetProperty("error").GetString()!;
+        Assert.Contains(facetId, error); Assert.Contains("portrait", error);
+        Assert.False(results[1].TryGetProperty("error", out _));
+        Assert.Equal(new[] { "寫實" }, Assert.Single(embed.Calls));
+        Assert.Single(presets.Searches);
+    }
+
+    [Fact]
+    public async Task FacetId_wins_over_a_mismatched_dimension()
+    {
+        var (p, _, _, _, presets, _) = Make();
+
+        var item = Assert.Single(Results(await p.SearchPresetsAsync(new[] { new SearchQuery("style", "拖鞋", "clothing.footwear") }, default)));
+
+        Assert.False(item.TryGetProperty("error", out _));
+        Assert.Equal("clothing", item.GetProperty("dimension").GetString());
+        Assert.Equal("clothing.footwear", item.GetProperty("facetId").GetString());
+        Assert.Equal(new[] { "clothing.footwear" }, Assert.Single(presets.SearchFacetSets));
+    }
+
+    [Theory]
+    [InlineData(null, null)]
+    [InlineData("", "  ")]
+    public async Task Item_without_dimension_or_facetId_is_an_item_error(string? dimension, string? facetId)
+    {
+        var (p, _, _, embed, _, _) = Make();
+
+        var results = Results(await p.SearchPresetsAsync(new[] { new SearchQuery(dimension, "拖鞋", facetId), new SearchQuery("style", "寫實") }, default));
+
+        Assert.Contains("dimension 或 facetId", results[0].GetProperty("error").GetString());
+        Assert.False(results[1].TryGetProperty("error", out _));
+        Assert.Equal(new[] { "寫實" }, Assert.Single(embed.Calls));
+    }
+
+    [Fact]
+    public async Task FacetId_item_with_blank_query_is_an_item_error()
+    {
+        var (p, _, _, embed, _, _) = Make();
+        var item = Assert.Single(Results(await p.SearchPresetsAsync(new[] { F("clothing.footwear", "  ") }, default)));
+        Assert.Contains("clothing.footwear", item.GetProperty("error").GetString());
+        Assert.Empty(embed.Calls);
+    }
+
+    /// <summary>grounded 仍以維度判定：同維度任何一個 facet covered，這個維度的 facet 項目就能借入。</summary>
+    [Fact]
+    public async Task FacetId_item_is_grounded_by_its_dimension()
+    {
+        var (p, _, s, _, presets, _) = Make(covered: new[] { "clothing.upper" });
+        presets.Hits["clothing.footwear"] = new[] { Hit(5, "拖鞋", "clothing.footwear", 0.2) };
+
+        var item = Assert.Single(Results(await p.SearchPresetsAsync(new[] { F("clothing.footwear", "拖鞋") }, default)));
+
+        Assert.Equal(KnowledgePlugin.KCovered, Assert.Single(presets.Searches).k);
+        Assert.True(item.GetProperty("grounded").GetBoolean());
+        Assert.Equal("可借入提示詞", item.GetProperty("hits")[0].GetProperty("usable").GetString());
+        var hit = Assert.Single(s.Ledger.Get(5)!.Hits);
+        Assert.Equal("clothing", hit.Dimension); Assert.True(hit.Grounded);
+    }
+
+    [Fact]
+    public async Task Event_summary_uses_the_facet_label_for_facet_items()
+    {
+        var (p, _, _, _, presets, events) = Make();
+        presets.Pools["clothing.footwear"] = 19; presets.Pools["style.genre"] = 4455;
+        presets.Hits["clothing.footwear"] = new[] { Hit(5, "拖鞋", "clothing.footwear", 0.2) };
+
+        await p.SearchPresetsAsync(new[] { F("clothing.footwear", "拖鞋"), new SearchQuery("style", "寫實"), F("scene.season", "秋天") }, default);
+
+        var ev = Assert.IsType<ToolResultEvent>(Assert.Single(Drain(events)));
+        Assert.Equal("鞋履 池 19 → 1・風格 池 4455 → 0・scene.season 錯誤", ev.Summary);   // 鞋履：facets.yaml 的 label
+    }
+
+    /// <summary>候選池計數的快取鍵是實際用的 facetIds 集合：同一 facet 兩項只數一次；
+    /// facet 項目與同維度的 dimension 項目池不同，各數一次。</summary>
+    [Fact]
+    public async Task Pool_is_counted_once_per_facet_set()
+    {
+        var (p, _, _, _, presets, _) = Make();
+        presets.Pools["clothing.footwear"] = 19; presets.Pools["clothing.head"] = 3000;   // 整個 clothing 維度的第一個 facet 是 clothing.head
+
+        var results = Results(await p.SearchPresetsAsync(new[]
+        {
+            F("clothing.footwear", "拖鞋"), F("clothing.footwear", "夾腳拖"),
+            new SearchQuery("clothing", "泳裝"), new SearchQuery("clothing", "運動服"),
+        }, default));
+
+        Assert.Equal(2, presets.PoolFacetSets.Count);
+        Assert.Equal(new[] { "clothing.footwear" }, presets.PoolFacetSets[0]);
+        Assert.Equal(Catalog.FacetsOf("portrait", "clothing"), presets.PoolFacetSets[1]);
+        Assert.Equal(new long[] { 19, 19, 3000, 3000 }, results.Select(x => x.GetProperty("poolSize").GetInt64()));
+        Assert.Equal(4, presets.Searches.Count);
+    }
+
+    /// <summary>2026-09-25 根因 3：模型自發用 <c>{"facetId":"appearance.hair","query":"銀色雙馬尾"}</c> 的形狀呼叫，沒有 dimension。</summary>
+    [Fact]
+    public async Task Kernel_binds_facetId_items_without_dimension()
+    {
+        var (p, _, _, embed, presets, _) = Make();
+        var kernel = new Kernel();
+        AgentKernelFactory.AddFiltered(kernel, "Knowledge", p, ToolNames.Always);
+        var ka = new KernelArguments();
+        ka["queries"] = JsonSerializer.SerializeToElement(new object[] { new { facetId = "appearance.hair", query = "銀色雙馬尾" }, new { dimension = "style", query = "寫實攝影" } });
+
+        var r = (await kernel.Plugins["Knowledge"][ToolNames.SearchPresets].InvokeAsync(kernel, ka)).ToString();
+
+        Assert.Equal(new[] { "銀色雙馬尾", "寫實攝影" }, Assert.Single(embed.Calls));
+        Assert.Equal(new[] { "appearance.hair" }, presets.SearchFacetSets[0]);
+        var results = Results(r);
+        Assert.Equal("appearance", results[0].GetProperty("dimension").GetString());
+        Assert.False(results[0].TryGetProperty("error", out _));
     }
 
     [Fact]
