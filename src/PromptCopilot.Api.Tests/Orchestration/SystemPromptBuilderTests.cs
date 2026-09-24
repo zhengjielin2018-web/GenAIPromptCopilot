@@ -96,4 +96,18 @@ public class SystemPromptBuilderTests
         Assert.Contains("用一次 `SearchPresets` 帶上所有適用的維度", prompt);
         Assert.DoesNotContain("分兩次呼叫", prompt);
     }
+
+    /// <summary>known-issues #9 與追問政策反轉：第一輪先標 covered 再檢索（grounded 才有值），
+    /// 之後只要還有 missing 的維度就追問，不再「缺了無法定稿才問」。</summary>
+    [Fact]
+    public void Flow_rule_asks_for_every_missing_dimension_and_marks_covered_before_search()
+    {
+        var (prompt, _) = Make().Build(new Session("s"), ToolNames.Always);
+        Assert.Contains("先 `SetFacetStates`", prompt);
+        Assert.True(
+            prompt.IndexOf("先 `SetFacetStates`", StringComparison.Ordinal) < prompt.IndexOf("用一次 `SearchPresets`", StringComparison.Ordinal),
+            "第 1 條要先 SetFacetStates 標 covered，再 SearchPresets");
+        Assert.Contains("只要還有 missing 的維度就 `AskUser`", prompt);
+        Assert.DoesNotContain("才 `AskUser`", prompt);
+    }
 }
