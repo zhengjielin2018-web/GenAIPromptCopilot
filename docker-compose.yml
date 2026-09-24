@@ -12,7 +12,9 @@ services:
       - pgdata:/var/lib/postgresql/data
       - ./db/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-prompt_copilot}"]
+      # 走 TCP：官方 image 跑 db/init 期間的暫時 server 只聽 socket。socket 版會在建表完成前就回 ready，
+      # seed 接著走 TCP 查表就會失敗（實測重現）。TCP 通了才是跑完 init 的正式 server。
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-prompt_copilot}"]
       interval: 5s
       timeout: 3s
       retries: 12
