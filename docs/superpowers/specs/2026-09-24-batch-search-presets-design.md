@@ -1,7 +1,7 @@
 # 批次 `SearchPresets` 與工具預算 — 設計規格
 
 日期：2026-09-24
-狀態：已實作（分支 `fix/batch-search-presets`），待瀏覽器驗收（§7）
+狀態：已實作（分支 `fix/batch-search-presets`），待瀏覽器驗收（§7）；facetId 擴充見 §8
 起因：[docs/known-issues.md](../../known-issues.md) #1「人像題材第一輪常被強制定稿，整個 session 不再追問」
 主規格：[2026-09-21-genai-prompt-copilot-design.md](2026-09-21-genai-prompt-copilot-design.md) §4.2 工具表、§4.5 `ToolBudgetFilter`、§4.6 強制定稿、§9 檢索策略、§15 決定紀錄
 前置：known-issues #2（HNSW 過濾後回 0 筆）已在分支 `fix/hnsw-iterative-scan` 修正。#2 的 0 筆結果會讓模型換說法重搜、多吃預算，本設計的驗收以 #2 已合併為前提。
@@ -195,3 +195,48 @@ public sealed record SearchQuery(string Dimension, string Query);
 2. eval #1「一個女生」與 #3「山上的日出」重跑，行為不變（仍追問）。
 3. eval #18「一個少女」重跑，記錄追問維度數是否改善（預算不再是原因之一；若仍偏少，記回 known-issues #5）。
 4. `dotnet test` 全綠；`PC_INTEGRATION=1` 下 `RepositoryIntegrationTests` 全綠。
+
+## 8. 後記（2026-09-25）：facet 層級查詢
+
+### 8.1 起因
+
+使用者定稿後看到服裝 tag 被標成 `llm`，但知識庫明明有。查明三個原因：
+
+1. **一個維度只送一句查詢、k 只有 5。** 「泳裝上衣與短褲與拖鞋」查 clothing 池，撈到的是整套穿搭片段；`sandals`（知識庫 19 筆）、`short shorts`（18 筆）都沒進 ledger。改查單品「短褲」「拖鞋」就撈得到。§9 的推導（單一整句向量是多個面向的模糊平均）在維度內部同樣成立：一個維度底下講了三件單品，一句話的向量只貼近「整套」。
+2. **`TagAttribution` 只認整段相等。** 片段寫 `platform sandals`、`torn short shorts`、`denim shorts`，模型寫 `sandals`、`short shorts`，全落到 `llm`。
+3. **模型自發用 `{"facetId":"appearance.hair","query":"銀色雙馬尾"}` 的形狀呼叫**（前一步 `SetFacetStates` 用的是 `facetId`），被判維度不存在。它想做的正是每個 facet 各查一句。
+
+### 8.2 契約
+
+```csharp
+public sealed record SearchQuery   // 呼叫端照舊：new SearchQuery("style", "寫實")、new SearchQuery(null, "拖鞋", "clothing.footwear")
+{
+    public string? Dimension { get; init; }   // "dimension"
+    public string Query { get; init; }        // "query"
+    public string? FacetId { get; init; }     // "facetId"
+}
+```
+
+- 每個項目 `dimension` 與 `facetId` 至少一個，**`facetId` 優先**：必須存在且屬於目前 profile，否則該項目 `error`「facet {id} 對 {profile} 不適用或不存在」；合法時候選池只剩這個 facet，維度取 facet 所屬的。同時給了不一致的 `dimension`，以 `facetId` 為準，不報錯。兩者都空 → 該項目 `error`「每個項目要有 dimension 或 facetId」。
+- **schema 只有 `query` 必填。** SK 1.80 把「沒有預設值的建構子參數」一律列進 `required`，不看 nullable；照 §3.1 寫成三參數 positional record，`dimension` 會變成必填。所以 `SearchQuery` 只讓 `query` 當反序列化建構子的參數，`dimension`／`facetId` 是 init 屬性。Google connector 送出的 item schema：`required: ["query"]`，`dimension`、`facetId` 都是 `{"type":"string","nullable":true}`（`GeminiToolDeclarationTests` 照此斷言）。
+- **上限 12 → 24**：使用者講到的每個 facet 各一項，加上沒講的維度各兩項。embedding 仍是一次 batch，多的只是每項一次 SQL。
+- **`grounded` 仍以維度判定**，`LedgerHit.Dimension` 也仍記維度；`k` 照舊（grounded 5、否則 3）。`grounded` 的意義是「使用者講過這個維度」，查得比較窄不改變它；維度內 missing 的 facet 對應的詞不可借入，仍由 system.md 的規則與每筆命中的 `facets` 標記管。
+- **候選池計數的快取鍵是實際用的 facetIds 集合**：同一 facet 兩項只數一次；facet 項目與同維度的 `dimension` 項目池不同，各數一次。
+- 結果項目多 `facetId`（維度項目為 `null`）；`HistoryTrimmer` 壓縮時有 `facetId` 才保留。
+- 事件摘要：facet 項目用 facet 的 label（`facets.yaml`），例如 `鞋履 池 19 → 1・風格 池 4455 → 3`；錯誤項目顯示原始的 `facetId` 或 `dimension`，例如 `scene.season 錯誤`。
+
+### 8.3 提示
+
+`Prompts/system.md` 第 1 條的 `SearchPresets` 段改成：
+
+> 再**用一次 `SearchPresets`**：使用者講到的每個 facet 各一項，用 `facetId` 加上他描述那一項的原話（例：`clothing.footwear`＋「拖鞋」、`appearance.hair`＋「銀色雙馬尾」）；使用者沒講的維度每個用 `dimension` 給兩個對比方向的項目（例：「寫實攝影」與「日系動漫插畫」）。不要把整句描述丟給一個維度，也不要一個項目一次呼叫。
+
+工具與 `queries` 參數的 Description 同步改寫成兩種項目。
+
+### 8.4 tag 來源字尾相符
+
+`Sessions/TagAttribution.cs`：一個 tag 算 `rag` 的條件，除了正規化後整段相等，再加兩種**以空白為界的字尾相符**——片段以「空白＋tag」結尾（`platform sandals` ↔ `sandals`），或 tag 以「空白＋片段」結尾（`short shorts` ↔ `shorts`）。只比字尾、只在空白邊界，不做子字串：`top` 不會命中 `laptop`；但 `top` 會命中 `crop top`，是接受的代價。整段相等的命中排前面，其次字尾命中，`presetIds` 依 ledger 插入順序去重，`presetTitle` 取第一個。`base` 優先的規則不變，negative 同樣適用。
+
+### 8.5 驗收
+
+eval #26（`docs/eval-cases.md`）：第一輪 `SearchPresets` 對 clothing 是三個 facet 項目（upper、lower、footwear）而非一句；定稿卡 `shorts`／`sandals` 類 tag 標 `rag`。

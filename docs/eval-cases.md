@@ -30,6 +30,7 @@
 | 23 | 觸發上游攔截的描述（少女＋泳裝） | `blocked` `Blocked_Upstream`，訊息保留，重送或改寫後正常 | 6ff34e1a7c9c | ➖ 未觸發：「少女穿泳裝在海邊」沒有被上游攔截，直接 `finalized`。依規定只試一次不重送，`Blocked_Upstream` 這條路徑本次沒有實證。 | 2026-09-23 |
 | 24 | 有細節但缺風格與鏡頭的人像描述：「一個老爺爺在稻田裡面喝茶，遠處是房子，太陽很大，老爺爺有著白色捲髮，穿著白色短衣」 | `final.kind = ask`；audit 無 `Tool_Budget_Exhausted`；`Turn_Completed.toolCalls` ≤ 5；只有一張 `SearchPresets` 工具卡，摘要列出每個維度的候選池筆數；儀表板場景／樣貌／穿著為 covered | | （追問政策反轉後待重測） | |
 | 25 | 任一定稿 | 定稿卡的 tag 有三種樣式（知識庫片段／模型生成／基礎詞）；點 rag chip 開抽屜顯示該片段；`Turn_Completed.tagOrigins` 三個計數加總等於 positive 的 tag 數 | | | |
+| 26 | 一個銀髮少女站在雨夜的霓虹街頭，她穿著泳裝上衣與短褲與拖鞋 | 第一輪 `SearchPresets` 對 clothing 是三個 facet 項目（upper、lower、footwear）而非一句；定稿卡 `shorts`／`sandals` 類 tag 為 rag | | | |
 
 ## 2026-09-23 驗收跑的那一輪
 

@@ -97,7 +97,7 @@ LLM：**`gemini-3.5-flash-lite`**（子專案 1 執行時實測定案。注意�
 | Plugin.Function | 參數 | 性質 |
 | :--- | :--- | :--- |
 | `KnowledgePlugin.SearchSimilarPrompts` | `intent: string, topK: int = 3` | 可重複；RAG 1，查 `shared_prompt_histories`，以 session profile 過濾 |
-| `KnowledgePlugin.SearchPresets` | `queries: {dimension, query}[]`（≤ 12） | RAG 2，**分維度檢索** `prompt_knowledge_presets`：一次呼叫帶本輪所有要查的維度，每項一個維度專屬語句，同維度可重複（對比方向），見 §9 |
+| `KnowledgePlugin.SearchPresets` | `queries: {dimension?, facetId?, query}[]`（≤ 24） | RAG 2，**分維度檢索** `prompt_knowledge_presets`：一次呼叫帶本輪所有要查的項目，每項一個 facet 或一個維度的專屬語句，同維度可重複（對比方向），見 §9 |
 | `SessionPlugin.SetProfile` | `profile: portrait \| landscape \| object \| vehicle` | 可重複；設定題材 profile，重置 facet 狀態 |
 | `SessionPlugin.SetFacetStates` | `updates: FacetStateEntry[]` | 可重複；第一輪先標使用者已描述的 facet 為 covered，再檢索；也用於 `waived` 與委託 note |
 | `DialogPlugin.AskUser` | `preamble: string, asks: { dimension, question, missingFacetIds, options }[], facetStates: FacetStateEntry[]` | **終止型**；`asks` 1–3 則，每則 `options` 2–4 個 |
@@ -113,7 +113,7 @@ LLM：**`gemini-3.5-flash-lite`**（子專案 1 執行時實測定案。注意�
 
 **`facetStates` 是陣列不是 dictionary。** `FacetStateEntry = { facetId: string, state: FacetState, note?: string }`，與 `SetFacetStates.updates` 同一個型別。SK 由 C# 型別產 function declaration 給 Gemini，`Dictionary<string, X>` 會變成「任意鍵的物件」——Gemini 的 schema 不支援開放鍵的 map，描述不出「鍵必須是 facet id」。陣列則能把 `facetId` 寫成具名欄位，順便讓 `note`（「使用者委託此項」）有地方放。
 
-**`SearchPresets` 的每個項目只收 `dimension` 與 `query`，`facetIds` 與 `k` 由伺服器導出。** 維度 → facet 集合是 `facets.yaml` 加 session profile 的函式，LLM 傳進來只是多一個可被捏造的欄位（同 §9 的 `grounded` 原則）；`k` 則取決於該維度 grounded 與否（grounded 5、missing 3），也是伺服器才知道的事。
+**`SearchPresets` 的每個項目只收 `dimension` 或 `facetId` 加上 `query`，`facetIds` 集合與 `k` 由伺服器導出。** 維度 → facet 集合是 `facets.yaml` 加 session profile 的函式，LLM 傳進來只是多一個可被捏造的欄位（同 §9 的 `grounded` 原則）；`facetId`（2026-09-25 起）是單一 facet，伺服器驗證它屬於本 profile 後候選池只剩它，維度取它所屬的（[批次設計 §8](2026-09-24-batch-search-presets-design.md)）；`k` 則取決於該維度 grounded 與否（grounded 5、missing 3），也是伺服器才知道的事。
 
 **`AskUser` 完整簽名**
 
@@ -355,7 +355,7 @@ RunTurnAsync(session, text, ct):
 
 `Finalized` 之後 `Discuss` 不限次，history 沒有上限；而 `options` 改成結構化之後，call args 每輪都留在 history 裡，越積越肥。三條：
 
-1. **tool result 壓縮**：每輪結束後，將本輪 tool result 訊息內容壓成摘要（`SearchPresets` → `{results: [{dimension, poolSize, hits: [{id, title}]}]}`；`SearchSimilarPrompts` → `[{id, intent 前 40 字}]`）。
+1. **tool result 壓縮**：每輪結束後，將本輪 tool result 訊息內容壓成摘要（`SearchPresets` → `{results: [{dimension, facetId?, poolSize, hits: [{id, title}]}]}`，`facetId` 只有 facet 項目才留；`SearchSimilarPrompts` → `[{id, intent 前 40 字}]`）。
 2. **call args 也壓**：該輪結束後，`AskUser.asks[].options` 與 `Discuss.options` 壓成 `[{label, presetId}]`，去掉 `tags`。完整內容 ledger 有（§4.4）。
 3. **整體截斷**：保留 system message + 最近 **10 輪**（一輪 = 一則 user message 起到終止型 tool 止），更早的丟掉。`PresetLedger`、`FacetStates`、`LastFinal` 是 session 事實，不靠 history 記住，所以丟掉是安全的。
 
@@ -700,14 +700,14 @@ scripts/
 
 **GIN 過濾本身不夠。** 實測（2026-09-22）：同樣過濾到 Style 候選池，用使用者整句描述的向量排序撈回無關片段（dist 0.354），用該維度專屬的查詢語句撈回正確風格（0.229–0.234）。單一整句向量是六維度的模糊平均，只會貼近最泛用的片段，且使用者沒提到的維度永遠撈不到。因此 agent 呼叫 `SearchPresets` 時：
 
-- 一次呼叫帶本輪所有要查的維度（`queries[]`，每項一個維度），`facetIds` 由伺服器依 profile 導出。
+- 一次呼叫帶本輪所有要查的維度（`queries[]`，每項一個維度），`facetIds` 由伺服器依 profile 導出。項目可帶 `facetId` 把候選池縮到單一 facet：使用者講到的每個 facet 各一項、用他描述那一項的原話（2026-09-25：一句複合描述查整個維度撈到的是整套穿搭片段，單品進不了 ledger；見[批次設計 §8](2026-09-24-batch-search-presets-design.md)）。`grounded` 仍以維度判定。
 - `query` 是該維度的專屬語句：使用者已描述的維度用其原話；未描述的維度由 agent 依整體畫面推想，且應給對比方向（例：寫實攝影 vs 動漫插畫）在同一次呼叫裡放兩個項目。
 - 使用者未描述的維度撈到的片段只可用於追問與建議，不得直接寫入提示詞。
 - 不設距離門檻；tool result 帶相似度分級（`<0.25` 高、`<0.30` 中、其餘低），由 agent 判斷。
 - `tags && $2` 決定不做：OR 上 tags 會把候選池撐到維度外，與分維度前提衝突。
 - **跨維度去重：歸屬規則為「grounded 優先、距離次之」，且在定稿時才算，不在檢索時算。** 一筆 preset 的 `facet_ids` 可能橫跨數維（實測 859 筆裡 134 筆、15.6%），會在多個候選池出現，agent 可能從兩個維度分別拿到兩份結果、兩個不同的 `grounded` 值。規則：若有任何 grounded 維度撈到它，歸給這些維度中距離最小的那個；完全沒有才退回全體最小距離。**不能單純比距離**——歸屬決定借用資格，而 `grounded` 是「這個維度使用者講了沒」的屬性，不是片段的屬性；單純比距離會讓一個 grounded 維度正當撈到的片段，因為某個 missing 維度**推想出來**的查詢剛好更近，就被降級成「僅供建議」而失去借用資格。
 - **落地方式：session ledger。** `SearchPresets` 每個項目照實回傳自己維度的結果，不做跨維度去重。session 內維護 `presetId → [(dimension, dist, grounded)]`，每次呼叫累加；歸屬與借用資格到定稿驗證時才套上面的規則。這本 ledger 本來就非有不可——借用來源的驗證（借的 tag 必須真的在片段裡、且真的在提示詞裡，不信 LLM 自述）查的是同一本帳。附帶好處：agent 只呼叫部分維度時自然成立，而且能回報「這片段你在某維度看過了」。
-- **定稿 tag 來源標示（2026-09-25 實作）。** C# 端不要求模型自述借用，改由伺服器在定稿時以 ledger 片段比對 tag 來源（`Sessions/TagAttribution.cs`，純函式）：positive／negative 以逗號拆段，比對前小寫、底線視同空白、連續空白壓成一個、剝掉外層成對括號與 `:數字` 權重；negative 只比 `NegativeSnippet`。基礎詞（§5.5：`masterpiece, best quality, highly detailed`／`lowres, bad anatomy, worst quality`）標 `base` 且優先，命中 ledger 片段標 `rag`（`presetIds` 依寫進 ledger 的先後、`presetTitle` 取第一筆），其餘 `llm`。結果存進 `LastFinal`，隨 `final` 事件回傳 `positiveSources`／`negativeSources`（§10.2），`GET /api/sessions/{id}` 的 `lastFinal` 也帶；前端以 chip 標示，`rag` 可點開 preset 抽屜。`SearchSimilarPrompts` 的結果不進 ledger（只供參考），不算來源。這一步只**標**來源，不判借用資格：片段可不可以借入仍由 prompt 規則與 `grounded` 管。
+- **定稿 tag 來源標示（2026-09-25 實作）。** C# 端不要求模型自述借用，改由伺服器在定稿時以 ledger 片段比對 tag 來源（`Sessions/TagAttribution.cs`，純函式）：positive／negative 以逗號拆段，比對前小寫、底線視同空白、連續空白壓成一個、剝掉外層成對括號與 `:數字` 權重；negative 只比 `NegativeSnippet`。基礎詞（§5.5：`masterpiece, best quality, highly detailed`／`lowres, bad anatomy, worst quality`）標 `base` 且優先，命中 ledger 片段標 `rag`，其餘 `llm`。命中指正規化後整段相等，或以空白為界的字尾相符（2026-09-25 起：片段 `platform sandals` ↔ tag `sandals`、tag `short shorts` ↔ 片段 `shorts`；不做子字串，`top` 不命中 `laptop`，但會命中 `crop top`，是接受的代價）；`presetIds` 整段相等的在前、字尾相符的在後，各依寫進 ledger 的先後，`presetTitle` 取第一筆。結果存進 `LastFinal`，隨 `final` 事件回傳 `positiveSources`／`negativeSources`（§10.2），`GET /api/sessions/{id}` 的 `lastFinal` 也帶；前端以 chip 標示，`rag` 可點開 preset 抽屜。`SearchSimilarPrompts` 的結果不進 ledger（只供參考），不算來源。這一步只**標**來源，不判借用資格：片段可不可以借入仍由 prompt 規則與 `grounded` 管。
 - **`grounded` 由伺服器算，不是 LLM 傳進來的參數。** agent 傳 `facetIds`，伺服器映射到維度後查 `Session.FacetStates`（§4.4）自行判定。與 Python `grounded_dimensions()` 不問 LLM 同一個原則：少一個可被捏造的欄位。
 - **候選池大小要跟著 tool result 一起回。** `池 2 → 2` 這種「這維度過濾後有多少候選、其中命中幾筆」的資訊，是分維度檢索最有價值的副產品：它讓知識庫覆蓋缺口（例如 vehicle 的 pose 只有 2 筆）在使用當下就看得見，不必事後查資料庫才發現。tool result 除了相似度分級，也要帶上 GIN 過濾後的候選池筆數，否則子專案 2 會失去這個可見度。
 
@@ -1000,6 +1000,7 @@ Azure 部署排除。
 | `AskUser` 多維度 | 一次最多 3 則 | 3 × 2 = 6 覆蓋六維度全缺的最壞情況；一張卡 12 個 chip 分三區不至於糊掉 |
 | 追問政策 | 還有任何 facet 是 missing 的維度都要問（waived 與有委託 note 的 facet 不算），只講一部分的維度也問剩下的 facet；一次問滿 3 個 | 原本「能省就省」導致追問偏少（eval #18、使用者 2026-09-25 實測）；使用者選擇「盡量追問」，接受完整描述也可能先被追問（eval #2）；額度 2×3 剛好能問完人像 6 維 |
 | tag 來源 | 伺服器定稿時比對 ledger 標 `rag`／`llm`／`base`，不信模型自述 | 同 §9 借用來源驗證的原則：少一個可被捏造的欄位；ledger 本來就是那一本帳 |
+| tag 來源字尾相符 | 片段或 tag 以對方為字尾即算 rag | 片段多為更具體的複合 tag（`platform sandals`）；只在空白邊界比字尾，不做子字串（§9） |
 | 定稿閘門 | 有缺就不准定稿，直到追問額度用完（`AskUser` 離開清單）；委託 note 的 facet 不算缺；強制定稿放行 | system.md 的追問政策模型不遵守（2026-09-25 實測：`AskUser` 還在清單上、31 個 facet 有 20 個 missing，模型直接 `FinalizePrompt`）；沿用 §4.3「違規的選項不給選」 |
 | `OutputSafetyFilter` 範圍 | 全檢（定稿 + 討論 + 追問的文字與選項） | §6.2 原文的理由對 `options` 一字不差地成立；合規是對外賣點，出口不一致難講 |
 | `presetId` 不在 ledger | 降級為 null，不移除 | `presetId` 本來就可為 null；輸出過濾兜住自由發明的內容 |
@@ -1018,8 +1019,9 @@ Azure 部署排除。
 | 資料存取 | Npgsql + Pgvector 原生 SQL，不用 EF Core | 查詢全帶 `<=>` 與 `&&`，EF 對兩者都要走 raw SQL，多一層翻譯沒有收益（§7） |
 | embedding 客戶端 | 自己打 REST `:batchEmbedContents` | 要鎖住 `taskType`／`outputDimensionality`／L2 正規化與 Python 管線一致，SK 抽象當時蓋不到（§9） |
 | `facetStates` 形狀 | `FacetStateEntry[]`，不是 dictionary | Gemini 的 function declaration schema 描述不出開放鍵的 map；陣列還能放 `note`（§4.2） |
-| `SearchPresets` 參數 | 只收 `dimension` 與 `query` | `facetIds` 與 `k` 都是伺服器算得出來的，傳進來只是多一個可被捏造的欄位（§4.2、§9） |
+| `SearchPresets` 參數 | 只收 `dimension` 或 `facetId` 與 `query` | `facetIds` 集合與 `k` 都是伺服器算得出來的，傳進來只是多一個可被捏造的欄位；`facetId` 是單一 facet，伺服器驗證屬於本 profile（§4.2、§9） |
 | `SearchPresets` 批次簽名 | `queries: {dimension, query}[]`，一輪一次呼叫 | 逐維度呼叫的規則跟預算 8 在算術上不相容（人像 6 維 + 對比方向 > 8），第一輪就強制定稿；Python 管線本來就是一次 `embed_batch`（known-issues #1、[批次設計](2026-09-24-batch-search-presets-design.md)） |
+| facet 層級查詢 | 項目可用 `facetId`（≤ 24 項） | 一句複合描述撈不到單品（`sandals` 19 筆卻沒進 ledger）；模型自發用 `facetId` 呼叫（[批次設計 §8](2026-09-24-batch-search-presets-design.md)） |
 | `MaxToolCallsPerTurn` | 16（原 8） | 批次後預期一輪 4–5 次；16 是模型仍逐維度呼叫時的保險，不是設計目標 |
 | filter 介面 | 四個都是 `IAutoFunctionInvocationFilter` | `IFunctionInvocationFilter` 拿不到 `Terminate`，攔截停不了整個迴圈（§4.5） |
 | 攔截的表達方式 | `Terminate` + `BlockedOutcome`，不丟例外 | filter 的例外會被 SK 當成連線層失敗往上冒，重試層看不懂（§4.5） |
