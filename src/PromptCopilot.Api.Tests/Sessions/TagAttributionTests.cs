@@ -124,4 +124,77 @@ public class TagAttributionTests
         var s = Assert.Single(TagAttribution.Attribute("lowres", new PresetLedger(), negative: false));
         Assert.Equal("llm", s.Origin);
     }
+
+    // ---- 以空白為界的字尾相符（2026-09-25：片段多是更具體的複合 tag，模型寫的是單品） ----
+
+    [Theory]
+    [InlineData("platform sandals", "sandals")]        // 片段以「空白＋tag」結尾
+    [InlineData("torn short shorts", "short shorts")]
+    [InlineData("shorts", "short shorts")]             // tag 以「空白＋片段」結尾
+    [InlineData("Platform_Sandals", "(sandals:1.1)")]  // 兩邊都先正規化
+    public void A_tag_and_a_snippet_match_when_one_ends_with_the_other_at_a_space(string snippet, string tag)
+    {
+        var s = Assert.Single(TagAttribution.Attribute(tag, Ledger((4, "夏日", $"1girl, {snippet}", null)), negative: false));
+        Assert.Equal("rag", s.Origin);
+        Assert.Equal(new long[] { 4 }, s.PresetIds);
+        Assert.Equal("夏日", s.PresetTitle);
+    }
+
+    [Theory]
+    [InlineData("laptop", "top")]          // 不在空白邊界：不算
+    [InlineData("top", "laptop")]
+    [InlineData("sandals strap", "sandals")]   // 只比字尾，不比字首或中段
+    [InlineData("short shorts", "short")]
+    public void Suffix_match_needs_a_space_boundary_and_is_not_a_substring_match(string snippet, string tag)
+    {
+        var s = Assert.Single(TagAttribution.Attribute(tag, Ledger((4, "x", snippet, null)), negative: false));
+        Assert.Equal("llm", s.Origin);
+    }
+
+    /// <summary>已知代價：<c>top</c> 會命中 <c>crop top</c>。只比空白邊界的字尾，分不出「top」是泛指上衣還是那件 crop top。</summary>
+    [Fact]
+    public void Known_cost_top_matches_crop_top()
+    {
+        var s = Assert.Single(TagAttribution.Attribute("top", Ledger((4, "露臍", "crop top", null)), negative: false));
+        Assert.Equal("rag", s.Origin);
+    }
+
+    [Fact]
+    public void Exact_hits_come_before_suffix_hits_in_PresetIds_and_title()
+    {
+        // ledger 順序是 1（字尾命中）在前、2（整段相等）在後；整段相等要排前面。
+        var ledger = Ledger((1, "厚底涼鞋", "platform sandals", null), (2, "涼鞋", "sandals, beach", null), (3, "綁帶涼鞋", "strappy sandals", null));
+
+        var s = Assert.Single(TagAttribution.Attribute("sandals", ledger, negative: false));
+
+        Assert.Equal("rag", s.Origin);
+        Assert.Equal(new long[] { 2, 1, 3 }, s.PresetIds);
+        Assert.Equal("涼鞋", s.PresetTitle);
+    }
+
+    [Fact]
+    public void A_snippet_that_matches_both_exactly_and_by_suffix_is_listed_once()
+    {
+        var s = Assert.Single(TagAttribution.Attribute("sandals", Ledger((1, "涼鞋", "sandals, platform sandals", null)), negative: false));
+        Assert.Equal(new long[] { 1 }, s.PresetIds);
+    }
+
+    [Fact]
+    public void Suffix_match_applies_to_negative_snippets_too()
+    {
+        var ledger = Ledger((1, "負向", "masterpiece, platform sandals", "blurry, extra fingers"));
+
+        var r = TagAttribution.Attribute("very blurry, fingers, sandals", ledger, negative: true);
+
+        Assert.Equal("rag", Only(r, "very blurry").Origin);    // tag 以「空白＋片段」結尾
+        Assert.Equal("rag", Only(r, "fingers").Origin);        // 片段以「空白＋tag」結尾
+        Assert.Equal("llm", Only(r, "sandals").Origin);        // 正向片段不算
+    }
+
+    [Fact]
+    public void Base_words_still_win_over_a_suffix_hit()
+    {
+        var s = Assert.Single(TagAttribution.Attribute("best quality", Ledger((1, "畫質", "very best quality", null)), negative: false));
+        Assert.Equal("base", s.Origin);
+    }
 }
