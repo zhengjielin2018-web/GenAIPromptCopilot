@@ -46,6 +46,17 @@ describe('applyEvent', () => {
     expect((s.transcript.at(-1) as any).presets[0].id).toBe(7)
   })
 
+  // 縮圖角落的來源標籤靠 sourceRef；reducer 整包帶過去，不能在這裡被挑掉
+  it('tool_result keeps the sourceRef on each preset', () => {
+    let s = applyEvent(started(), call('c1'))
+    s = applyEvent(s, { type: 'tool_result', callId: 'c1', name: 'SearchPresets', summary: 's',
+      presets: [{ id: 7, title: 't', imageUrl: 'https://img', sourceRef: 'civitai:12345:0' }, { id: 8, title: 'u' }] })
+    expect((s.transcript.at(-1) as any).presets).toEqual([
+      { id: 7, title: 't', imageUrl: 'https://img', sourceRef: 'civitai:12345:0' },
+      { id: 8, title: 'u' },
+    ])
+  })
+
   it('terminal tool calls are not turned into tool entries', () => {
     const s = applyEvent(started(), call('c9', 'FinalizePrompt'))
     expect(s.transcript.some(e => e.kind === 'tool')).toBe(false)

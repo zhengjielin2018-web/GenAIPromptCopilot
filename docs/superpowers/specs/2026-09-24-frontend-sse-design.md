@@ -190,6 +190,13 @@ drawer: presetId | null
 - 複製鈕仍複製整段原文 `text`，不是把 chip 串回去。
 - reducer 不用改：`final` 事件與 `hydrate` 本來就整包展開進 `FinalizedData`，新欄位跟著走；型別在 `types/api.ts` 加上，`tests/reducer.test.ts` 釘住兩條路徑都保留它。
 
+**2026-09-25 圖片來源說明（上表 `ToolCallCard`、`PresetDrawer` 與上段 `rag` chip 的偏差）**：知識庫的圖不轉存、只連到來源站，使用者要一眼看出圖是別人的（`docs/資料來源.md`「署名機制」）。原本只有抽屜最底下一行 11px 灰字，縮圖完全沒標。後端 `tool_result` 的每筆 preset（`PresetRef`）與 `TagSource` 多帶 `sourceRef`（null 時線上省略，舊的 `sessionStorage` 資料沒有，都當成不認得的來源）；`lib/copy.ts` 加 `sourceNotice(sourceRef)` → `{ name, text }`，civitai／kisegae 各一句，其他退回「圖片來自來源網站，著作權屬原作者；本服務不轉存。」：
+
+- `PresetDrawer`：說明框放在圖片正下方、標題之前（`rounded-[4px] border border-rule bg-paper px-3 py-2 text-xs`），內容是 `sourceNotice(sourceRef).text`，有 `sourceUrl` 時接「查看原頁 →」（`target="_blank" rel="noopener noreferrer"`）。圖載入失敗或沒有圖也照樣顯示。原本底部那行刪掉。
+- `ToolCallCard`：縮圖列上方一行 `text-[11px] text-muted`「圖片來自來源網站，著作權屬原作者，點圖看出處」；每張縮圖右下角疊來源名小標籤（`bg-ink/70 text-paper text-[9px]`），`sourceName` 為 null 或「無圖」佔位不加。
+- `PromptBlock`：`rag` chip 的 `title` 從「來自〈presetTitle〉」改成「來自〈presetTitle〉（Civitai）」，認不出來源時不加括號。
+- 測試：`tests/copy.test.ts` 釘 `sourceNotice` 三種情況，`tests/reducer.test.ts` 釘 `tool_result` 的 preset 保留 `sourceRef`；元件本身沒有 mount 測試，靠 eval #27 人工看。
+
 ## 5. 錯誤處理
 
 除 §3.3 的串流失敗與 §3.4 的重載：

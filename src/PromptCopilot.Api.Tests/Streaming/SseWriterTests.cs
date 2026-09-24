@@ -46,4 +46,20 @@ public class SseWriterTests
         Assert.Contains("\"positiveSources\":[{\"tag\":\"p\",\"origin\":\"rag\",\"presetIds\":[5],\"presetTitle\":\"霓虹\"},{\"tag\":\"1girl\",\"origin\":\"llm\",\"presetIds\":[]}]", text);
         Assert.Contains("\"negativeSources\":[]", text);
     }
+
+    /// <summary>前端 types/api.ts 的 PresetRef／TagSource 靠 sourceRef 標圖片與片段的來源；null 時照 WhenWritingNull 省略。</summary>
+    [Fact]
+    public async Task Tool_result_presets_and_tag_sources_carry_sourceRef()
+    {
+        var ctx = new DefaultHttpContext();
+        var body = new MemoryStream(); ctx.Response.Body = body;
+        await SseWriter.WriteOneAsync(ctx.Response, new ToolResultEvent("c1", "SearchPresets", "s",
+            new[] { new PresetRef(5, "霓虹", "u", "civitai:12345:0"), new PresetRef(6, "無來源", null) }), default);
+        await SseWriter.WriteOneAsync(ctx.Response, new FinalEvent("finalized", Positive: "p", Negative: "", Tips: "t", IntentSummary: "i",
+            PositiveSources: new[] { new TagSource("p", "rag", new long[] { 5 }, "霓虹", "civitai:12345:0") }, NegativeSources: Array.Empty<TagSource>()), default);
+        var text = System.Text.Encoding.UTF8.GetString(body.ToArray());
+
+        Assert.Contains("\"presets\":[{\"id\":5,\"title\":\"霓虹\",\"imageUrl\":\"u\",\"sourceRef\":\"civitai:12345:0\"},{\"id\":6,\"title\":\"無來源\"}]", text);
+        Assert.Contains("\"positiveSources\":[{\"tag\":\"p\",\"origin\":\"rag\",\"presetIds\":[5],\"presetTitle\":\"霓虹\",\"sourceRef\":\"civitai:12345:0\"}]", text);
+    }
 }

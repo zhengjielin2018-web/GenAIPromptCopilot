@@ -40,7 +40,7 @@ public class RepositoryIntegrationTests(ITestOutputHelper output) : IAsyncLifeti
     {
         var repo = new PresetRepository(_ds);
         var hits = await repo.SearchAsync(Unit(0), new[] { "style.genre" }, 5, default);
-        Assert.Contains(hits, h => h.Title == "測試片段" && h.Dist < 1e-6);
+        Assert.Contains(hits, h => h.Title == "測試片段" && h.Dist < 1e-6 && h.SourceRef == Ref);
         Assert.Empty(await repo.SearchAsync(Unit(0), new[] { "nope.facet" }, 5, default));
         Assert.True(await repo.PoolSizeAsync(new[] { "style.genre" }, default) >= 1);
     }

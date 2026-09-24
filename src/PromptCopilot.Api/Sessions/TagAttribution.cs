@@ -3,9 +3,9 @@ using System.Text.RegularExpressions;
 namespace PromptCopilot.Api.Sessions;
 
 /// <summary>定稿 tag 的來源。Origin：<c>rag</c>（命中 ledger 裡的片段）｜<c>llm</c>（模型自己寫的）｜<c>base</c>（基礎畫質詞／負向詞）。
-/// rag 的 PresetIds 整段相等的命中在前、字尾相符在後，各自依片段寫進 ledger 的先後、不重複，PresetTitle 取第一個；
-/// 其餘兩種 PresetIds 空、PresetTitle 為 null。</summary>
-public sealed record TagSource(string Tag, string Origin, IReadOnlyList<long> PresetIds, string? PresetTitle);
+/// rag 的 PresetIds 整段相等的命中在前、字尾相符在後，各自依片段寫進 ledger 的先後、不重複，PresetTitle 與 SourceRef 取第一個；
+/// 其餘兩種 PresetIds 空、PresetTitle 與 SourceRef 為 null。</summary>
+public sealed record TagSource(string Tag, string Origin, IReadOnlyList<long> PresetIds, string? PresetTitle, string? SourceRef = null);
 
 /// <summary>定稿時由伺服器比對 ledger 標 tag 來源，不信模型自述（主規格 §9）。純函式、無 I/O。
 /// 只看 ledger：SearchSimilarPrompts 的結果不進 ledger（只供參考），不算來源。
@@ -54,7 +54,7 @@ public static class TagAttribution
             foreach (var (snippet, e) in snippets)
                 if ((EndsWithWord(snippet, key) || EndsWithWord(key, snippet)) && !hits.Contains(e)) hits.Add(e);
             return hits.Count > 0
-                ? new TagSource(tag, Rag, hits.Select(h => h.Id).ToArray(), hits[0].Title)
+                ? new TagSource(tag, Rag, hits.Select(h => h.Id).ToArray(), hits[0].Title, hits[0].SourceRef)
                 : new TagSource(tag, Llm, Array.Empty<long>(), null);
         }).ToList();
     }

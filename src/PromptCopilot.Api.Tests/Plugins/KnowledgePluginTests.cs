@@ -55,8 +55,8 @@ public class KnowledgePluginTests
 
     private sealed class FakeHistories() : HistoryRepository(null!);
 
-    private static PresetHit Hit(long id, string title, string facet, double dist) =>
-        new(id, title, "Cat", new[] { facet }, $"tags for {title}", null, null, dist);
+    private static PresetHit Hit(long id, string title, string facet, double dist, string? sourceRef = null) =>
+        new(id, title, "Cat", new[] { facet }, $"tags for {title}", null, null, dist, sourceRef);
 
     private static (KnowledgePlugin plugin, TurnContext turn, Session s, FakeEmbeddings embed, FakePresets presets, ChannelReader<AgentEvent> events)
         Make(string[]? covered = null, bool profile = true)
@@ -201,6 +201,22 @@ public class KnowledgePluginTests
         Assert.Equal(ToolNames.SearchPresets, ev.Name);
         Assert.Equal("風格 池 4455 → 2・鏡頭 池 2147 → 1・hair 錯誤", ev.Summary);
         Assert.Equal(new long[] { 1, 2 }, ev.Presets!.Select(x => x.Id));
+    }
+
+    /// <summary>圖片屬於原作者（docs/資料來源.md「署名機制」）：tool_result 的 preset 帶 sourceRef，前端縮圖據此標來源；
+    /// ledger 也記下，定稿 tag 來源用得到。沒有 source_ref 的片段就是 null。</summary>
+    [Fact]
+    public async Task Event_presets_and_ledger_carry_the_source_ref()
+    {
+        var (p, _, s, _, presets, events) = Make();
+        presets.Hits["style.genre"] = new[] { Hit(1, "寫實", "style.genre", 0.2, "civitai:12345:0"), Hit(2, "動漫", "style.genre", 0.22) };
+
+        await p.SearchPresetsAsync(Q(("style", "寫實攝影")), default);
+
+        var ev = Assert.IsType<ToolResultEvent>(Assert.Single(Drain(events)));
+        Assert.Equal(new string?[] { "civitai:12345:0", null }, ev.Presets!.Select(x => x.SourceRef));
+        Assert.Equal("civitai:12345:0", s.Ledger.Get(1)!.SourceRef);
+        Assert.Null(s.Ledger.Get(2)!.SourceRef);
     }
 
     [Fact]
