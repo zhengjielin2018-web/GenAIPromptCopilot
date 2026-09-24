@@ -8,6 +8,8 @@
 | 3 | 純文字補救的重試請求被 Gemini 回 400 | bug | 中 |
 | 4 | 無害描述被上游 SAFETY 連續誤擋 | 行為 | 中 |
 | 7 | log 不足：看不出被擋的原因，一輪的經過只在資料庫裡 | 可觀測性 | 中（#4 要靠它確認） |
+| 8 | `HistoryTrimmer` 對 Gemini 的工具結果從未生效 | 可觀測性／成本 | 中 |
+| 9 | 第一輪 `grounded` 永遠是空的 | 效果調整 | 中 |
 | 5 | eval #5、#18 行為不符預期；§14 端到端要在新 HEAD 重跑 | 調整 | 低 |
 | 6 | 子專案 4 全分支審查留下的小項目 | 整理 | 低 |
 
@@ -55,6 +57,19 @@
 - `appsettings.json` 把 `System.Net.Http` 調到 Warning。
 
 **驗收**：重送「中年阿姨在廚房夾菜，穿著圍裙」，`Blocked_Upstream` 的 payload 看得到是哪一種攔截、哪個類別、什麼機率；`docker compose logs api` 每輪有一行摘要，沒有 embedding 請求的雜訊。
+
+## 8. `HistoryTrimmer` 對 Gemini 的工具結果從未生效（可觀測性／成本，中）
+
+- 現象：Google connector 把工具結果放在 `GeminiChatMessageContent.CalledToolResult`，tool 訊息的 `Items` 只有一個空的 `TextContent`，所以 `HistoryTrimmer.CompressTurn` 的 `Items.OfType<FunctionResultContent>()` 找不到東西，多輪 §6.3 的壓縮實際上一次都沒跑；下一輪請求仍帶完整片段本文。Reviewer 用 connector 真實產生的 history 實測確認（2026-09-24）。
+- 影響：只在合成測試裡有效；正式路徑沒有壓縮，token 成本比設計高。舊形狀的 history 不受影響（session 只在記憶體，重啟即清）。
+- 修正方向：把 tool 訊息正規化成 `FunctionResultContent`（或直接重建訊息），並用 connector 產生的 history 寫測試。
+
+## 9. 第一輪 `grounded` 永遠是空的（效果調整，中）
+
+- 現象：`SetProfile` 把所有 facet 重設為 missing；system.md 第 1 條要模型緊接著 `SearchPresets`，`SetFacetStates` 在之後才（可能）呼叫。所以第一輪的每個維度都是 `grounded = false`：k 一律 3、片段一律「僅供建議」，即使使用者已描述該維度。批次化之後這件事必然發生（第一輪只有一次檢索、緊跟在 `SetProfile` 之後）。
+- 影響：第一輪就定稿（描述完整或「都你決定」）時，模型被告知不可借用使用者已描述維度的知識庫詞。
+- 修正方向：system.md 第 1 條改成 `SetProfile` → 先 `SetFacetStates` 標 covered → 再 `SearchPresets`；同步主規格 §4.2 呼叫順序與批次設計 §3.4 的範例。要重跑 eval。
+- 備註：主規格 §9「grounded 由伺服器算」原則不變，只是要讓伺服器有資料可算。
 
 ## 5. 效果調整（非 bug）
 
@@ -116,6 +131,8 @@ prompt_version 都是 `8c10dcfe1f16`，跟子專案 3 驗收時能正常追問�
 - 強制定稿提示要求 `facetStates` 依使用者原話標 covered；`FinalizePrompt` 本來就收 `facetStates`，不需要多一次 `SetFacetStates`。
 
 **驗收**：待 merge 後依設計 §7 跑，結果記到 `docs/eval-cases.md`。
+
+**備註**：若 §7 驗收發現模型仍逐維度呼叫，16 沒有餘裕（1 + 12 + 1 + 1 + 1 = 16），任何一次重搜就會再觸發強制定稿；屆時考慮再放寬或在 Description 加強批次指示。
 
 ### 2. `SearchPresets` 在候選池有幾千筆時回 0 筆
 

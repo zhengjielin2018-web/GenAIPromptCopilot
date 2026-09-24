@@ -113,7 +113,7 @@ LLM：**`gemini-3.5-flash-lite`**（子專案 1 執行時實測定案。注意�
 
 **`facetStates` 是陣列不是 dictionary。** `FacetStateEntry = { facetId: string, state: FacetState, note?: string }`，與 `SetFacetStates.updates` 同一個型別。SK 由 C# 型別產 function declaration 給 Gemini，`Dictionary<string, X>` 會變成「任意鍵的物件」——Gemini 的 schema 不支援開放鍵的 map，描述不出「鍵必須是 facet id」。陣列則能把 `facetId` 寫成具名欄位，順便讓 `note`（「使用者委託此項」）有地方放。
 
-**`SearchPresets` 只收 `dimension` 與 `query`，`facetIds` 與 `k` 由伺服器導出。** 維度 → facet 集合是 `facets.yaml` 加 session profile 的函式，LLM 傳進來只是多一個可被捏造的欄位（同 §9 的 `grounded` 原則）；`k` 則取決於該維度 grounded 與否（grounded 5、missing 3），也是伺服器才知道的事。
+**`SearchPresets` 的每個項目只收 `dimension` 與 `query`，`facetIds` 與 `k` 由伺服器導出。** 維度 → facet 集合是 `facets.yaml` 加 session profile 的函式，LLM 傳進來只是多一個可被捏造的欄位（同 §9 的 `grounded` 原則）；`k` 則取決於該維度 grounded 與否（grounded 5、missing 3），也是伺服器才知道的事。
 
 **`AskUser` 完整簽名**
 
@@ -354,7 +354,7 @@ RunTurnAsync(session, text, ct):
 
 `Finalized` 之後 `Discuss` 不限次，history 沒有上限；而 `options` 改成結構化之後，call args 每輪都留在 history 裡，越積越肥。三條：
 
-1. **tool result 壓縮**：每輪結束後，將本輪 tool result 訊息內容壓成摘要（`SearchPresets` → `[{id, title}]`；`SearchSimilarPrompts` → `[{id, intent 前 40 字}]`）。
+1. **tool result 壓縮**：每輪結束後，將本輪 tool result 訊息內容壓成摘要（`SearchPresets` → `{results: [{dimension, poolSize, hits: [{id, title}]}]}`；`SearchSimilarPrompts` → `[{id, intent 前 40 字}]`）。
 2. **call args 也壓**：該輪結束後，`AskUser.asks[].options` 與 `Discuss.options` 壓成 `[{label, presetId}]`，去掉 `tags`。完整內容 ledger 有（§4.4）。
 3. **整體截斷**：保留 system message + 最近 **10 輪**（一輪 = 一則 user message 起到終止型 tool 止），更早的丟掉。`PresetLedger`、`FacetStates`、`LastFinal` 是 session 事實，不靠 history 記住，所以丟掉是安全的。
 

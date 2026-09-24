@@ -444,6 +444,7 @@ public class AgenticOrchestratorTests
         {
             Assert.Contains("定稿", hist.Last().Content!);
             Assert.Contains("covered", hist.Last().Content!);
+            Assert.Contains("留白", hist.Last().Content!);
             Assert.Equal(AuthorRole.System, hist.Last().Role);
             Assert.Single(k!.Plugins);                                 // 只剩 Dialog
             Assert.Single(k.Plugins["Dialog"]);                        // 只剩 FinalizePrompt

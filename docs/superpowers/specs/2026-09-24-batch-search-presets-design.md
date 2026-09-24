@@ -126,7 +126,7 @@ public sealed record SearchQuery(string Dimension, string Query);
 
 `AgenticOrchestrator.ForcedFinalizeAsync` 的系統提示改成：
 
-> tool 呼叫預算已用盡。請立即以現有資訊呼叫 FinalizePrompt 定稿；不要再檢索。`facetStates` 依使用者原話標記：使用者講過的 facet 標 covered，真的沒講的才是 missing。
+> tool 呼叫預算已用盡。請立即以現有資訊呼叫 FinalizePrompt 定稿；不要再檢索。`facetStates` 依使用者原話標記：使用者講過的 facet 標 covered，真的沒講的才是 missing，其餘 missing 的 facet 留白。
 
 `FinalizePrompt` 本來就收 `facetStates`，不需要在強制定稿前多一次 `SetFacetStates`。
 
