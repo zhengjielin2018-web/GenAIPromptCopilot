@@ -186,6 +186,29 @@ def test_retrieve_presets_pool_is_empty_for_a_dimension_the_profile_lacks():
 
 
 @pytest.mark.integration
+def test_retrieve_presets_fills_k_from_the_style_pool_for_a_query_among_scene_presets():
+    """HNSW 先取 hnsw.ef_search 筆近鄰、之後才套 facet 過濾。scene 片段的近鄰幾乎都是 scene，
+    資料庫沒開 hnsw.iterative_scan 時對 style 池查會回 0 筆（docs/known-issues.md 已修正 #2）。
+    查詢向量取 id 最小、帶 scene facet 但不帶 style facet 的片段；帶 style facet 的話它自己就是 style 池的第一名。"""
+    with _conn_with_data() as conn:
+        row = conn.execute(
+            "SELECT preset_embedding FROM prompt_knowledge_presets"
+            " WHERE EXISTS (SELECT 1 FROM unnest(facet_ids) f WHERE f LIKE 'scene.%')"
+            " AND NOT EXISTS (SELECT 1 FROM unnest(facet_ids) f WHERE f LIKE 'style.%')"
+            " ORDER BY id LIMIT 1"
+        ).fetchone()
+        if row is None:
+            pytest.skip("知識庫沒有帶 scene facet 又不帶 style facet 的片段")
+        q = DimensionQuery("style", "q", False, 3)
+        dh = retrieve_presets(conn, [q], [row[0]], CAT, "portrait")[0]
+        style = set(dimension_facets(CAT, "portrait", "style"))
+        assert len(dh.hits) == 3
+        assert all(style & set(c.preset["facet_ids"]) for c in dh.hits)
+        dists = [c.dist for c in dh.hits]
+        assert dists == sorted(dists)
+
+
+@pytest.mark.integration
 def test_retrieve_histories_filters_by_profile():
     with _conn_with_data() as conn:
         rows = retrieve_histories(conn, _unit_vector(), "portrait", 3)

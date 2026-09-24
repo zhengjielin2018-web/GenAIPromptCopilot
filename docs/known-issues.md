@@ -6,7 +6,6 @@
 | # | 問題 | 類型 | 優先 |
 | :--- | :--- | :--- | :--- |
 | 1 | 人像題材第一輪常被強制定稿，整個 session 不再追問 | bug | 高 |
-| 2 | `SearchPresets` 在候選池有幾千筆時回 0 筆 | bug | 高（#1 的成因之一） |
 | 3 | 純文字補救的重試請求被 Gemini 回 400 | bug | 中 |
 | 4 | 無害描述被上游 SAFETY 連續誤擋 | 行為 | 中 |
 | 7 | log 不足：看不出被擋的原因，一輪的經過只在資料庫裡 | 可觀測性 | 中（#4 要靠它確認） |
@@ -49,34 +48,6 @@ prompt_version 都是 `8c10dcfe1f16`，跟子專案 3 驗收時能正常追問�
 3. 另外考慮：強制定稿前先補一次 `SetFacetStates`，或讓強制定稿的 prompt 明確要求依使用者原話標 covered。
 
 **驗收**：用上表兩句重跑，應該看到追問卡；audit 沒有 `Tool_Budget_Exhausted`；`Turn_Completed.toolCalls` 在預算內。另外補一條 eval 案例：「有細節但缺風格與鏡頭的人像描述」→ `final.kind = ask`。
-
-## 2. `SearchPresets` 在候選池有幾千筆時回 0 筆
-
-**現象**：`"style 老爺爺在稻田裡面喝茶"` 回 `{"poolSize":4455,"hits":[]}`；`"camera 動漫插畫視角"` 回 `{"poolSize":2147,"hits":[]}`。
-
-**根因**：`prompt_knowledge_presets.preset_embedding` 上是 HNSW 近似索引。帶 `WHERE facet_ids && …` 的查詢，pgvector 先從全表取最近的 `hnsw.ef_search`（預設 40）筆，**之後**才套過濾。查詢句的最近鄰若都落在別的維度，過濾完就一筆不剩。風格池只佔全表 23%，鏡頭池只佔 11%，用整句畫面描述去搜時特別容易發生。
-
-**實測**（2026-09-24，唯讀查詢）：以「日本稻田風景」(id 20920) 的向量代替整句查詢，對風格池取前 3 筆。
-
-| 查法 | 結果 |
-| :--- | :--- |
-| 現行（HNSW 索引） | 0 筆 |
-| `SET LOCAL enable_indexscan = off`（精確掃描） | 3 筆，最近距離 0.153（高） |
-| `SET LOCAL hnsw.iterative_scan = relaxed_order` | 3 筆 |
-
-以「日系動漫風格」(id 9474) 的向量搜鏡頭池，HNSW 同樣回 0 筆。
-
-**影響範圍**：
-
-- `src/PromptCopilot.Api/Data/PresetRepository.cs` 的 `SearchSql`
-- `scripts/pipeline/retrieval.py` 的同一條 SQL（`scripts/demo.py` 走它）
-- `HistoryRepository` 的 `SearchSimilarPrompts` 也是 HNSW 加 `subject_profile` 過濾，理論上有同樣風險，修的時候一起確認
-
-**修正方向**：pgvector 已是 0.8.6，支援 iterative scan。在過濾搜尋的交易內 `SET LOCAL hnsw.iterative_scan = strict_order`（結果嚴格依距離排序）；或在資料庫層級 `ALTER DATABASE prompt_copilot SET hnsw.iterative_scan = strict_order`，但這要同步寫進 `db/init/001_schema.sql` 才會跟著 fresh clone 走。候選池最大只有 6,752 筆，改成精確掃描也可以接受，但會失去 HNSW 的展示意義。
-
-**驗收**：加一條整合測試（`[IntegrationFact]`）：拿某個 scene preset 的向量對 style facet 查，筆數必須等於 k。Python 端在 `tests/test_retrieval.py` 加對應的 integration 測試。
-
-**備註**：這一項之前被記成「模型要自己換成『寫實攝影』重搜」的 prompt 調整問題，實際上是檢索 bug。
 
 ## 3. 純文字補救的重試請求被 Gemini 回 400
 
@@ -147,4 +118,49 @@ prompt_version 都是 `8c10dcfe1f16`，跟子專案 3 驗收時能正常追問�
 
 ## 已修正
 
-（尚無）
+### 2. `SearchPresets` 在候選池有幾千筆時回 0 筆
+
+**現象**：`"style 老爺爺在稻田裡面喝茶"` 回 `{"poolSize":4455,"hits":[]}`；`"camera 動漫插畫視角"` 回 `{"poolSize":2147,"hits":[]}`。
+
+**根因**：`prompt_knowledge_presets.preset_embedding` 上是 HNSW 近似索引。帶 `WHERE facet_ids && …` 的查詢，pgvector 先從全表取最近的 `hnsw.ef_search`（預設 40）筆，**之後**才套過濾。查詢句的最近鄰若都落在別的維度，過濾完就一筆不剩。風格池只佔全表 23%，鏡頭池只佔 11%，用整句畫面描述去搜時特別容易發生。
+
+**實測**（2026-09-24，唯讀查詢）：以「日本稻田風景」(id 20920) 的向量代替整句查詢，對風格池取前 3 筆。
+
+| 查法 | 結果 |
+| :--- | :--- |
+| 現行（HNSW 索引） | 0 筆 |
+| `SET LOCAL enable_indexscan = off`（精確掃描） | 3 筆，最近距離 0.153（高） |
+| `SET LOCAL hnsw.iterative_scan = relaxed_order` | 3 筆 |
+
+以「日系動漫風格」(id 9474) 的向量搜鏡頭池，HNSW 同樣回 0 筆。
+
+**影響範圍**：
+
+- `src/PromptCopilot.Api/Data/PresetRepository.cs` 的 `SearchSql`
+- `scripts/pipeline/retrieval.py` 的同一條 SQL（`scripts/demo.py` 走它）
+- `HistoryRepository` 的 `SearchSimilarPrompts` 也是 HNSW 加 `subject_profile` 過濾，理論上有同樣風險，修的時候一起確認
+
+**修正**（分支 `fix/hnsw-iterative-scan`，commit hash 待 merge 後補）：`db/init/001_schema.sql` 在 `CREATE EXTENSION vector` 之後把資料庫層級設成 `hnsw.iterative_scan = strict_order`，用 `current_database()` 組 `ALTER DATABASE`，資料庫名跟著 `POSTGRES_DB` 走。過濾後不足 k 筆時 HNSW 會繼續往外搜，結果仍嚴格依距離排序。SQL 不用改，`PresetRepository`、`HistoryRepository` 與 `retrieval.py` 一起生效。沒改成精確掃描：候選池最大 6,752 筆，精確也可行，但會失去 HNSW 的展示意義。完整說明見[檢索設計 §12.1](superpowers/specs/2026-09-22-dimension-scoped-retrieval-design.md#121-hnsw-是先搜再過濾2026-09-24)。
+
+**驗收**（2026-09-24，開發機資料庫）：
+
+| 測試 | 修正前 | 修正後 |
+| :--- | :--- | :--- |
+| C# `Database_turns_on_hnsw_iterative_scan_in_strict_order` | `off` | `strict_order` |
+| C# `Preset_search_fills_k_from_the_style_pool_when_the_query_sits_among_scene_presets`（id 最小、帶 scene 不帶 style facet 的片段向量對風格池取 3 筆） | 0 筆 | 3 筆，與精確掃描同 id 同順序 |
+| Python `test_retrieve_presets_fills_k_from_the_style_pool_for_a_query_among_scene_presets` | 0 筆 | 3 筆 |
+| Python 既有的 `test_retrieve_presets_pool_is_empty_for_a_dimension_the_profile_lacks`（單位向量對 clothing 池） | 0 筆，同一個原因失敗 | 通過 |
+
+`HistoryRepository` 的 `SearchSimilarPrompts` 確認有同樣風險：拿 200 筆 portrait 紀錄的向量對其他 profile 各取 3 筆，關掉 iterative scan 時 155–198 筆不足 3，開了之後 0 筆。同一個設定一起修掉。
+
+**備註**：
+
+- 已經建好的資料庫不會重跑 `db/init`，要手動執行一次（開發機的 `prompt_copilot` 已在 2026-09-24 執行過）：
+
+  ```bash
+  docker compose exec db psql -U postgres -d prompt_copilot -c "ALTER DATABASE prompt_copilot SET hnsw.iterative_scan = strict_order"
+  ```
+
+  只對之後建立的連線生效。API 連線池裡的舊連線不會變，重啟 API（`docker compose restart api`）才保證全部生效。
+- 種子還原（`docker/seed.sh`）是 `pg_restore --data-only` 灌進既有的資料庫，不會重建資料庫，設定不會丟。`scripts/export_seed.py` 的丟棄容器套同一份 schema，也會有這個設定，但 dump 是 data-only，不帶資料庫設定。
+- 這一項之前被記成「模型要自己換成『寫實攝影』重搜」的 prompt 調整問題，實際上是檢索 bug。

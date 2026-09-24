@@ -333,3 +333,28 @@ ORDER BY dist LIMIT %(k)s
 - **分級門檻是絕對值**，跨四種 profile 驗過但只有數個題目。若之後發現漂移，改成池內相對分位。
 - **missing 維度的推想子查詢已隱含創作決定**（推想「動漫」就只撈動漫）。兩句對比方向是緩解不是解決；子專案 2 的追問流程才是正解。
 - **本檔的去重是「一次看得到全部維度」的模型**，子專案 2 的 `SearchPresets` 逐維度各自呼叫，看不到全局。對應作法見主規格 §9：不在檢索時去重，改由 session ledger 累積 `presetId → [(dimension, dist, grounded)]`，到定稿驗證時才套 §5.3 的歸屬規則。
+
+## 12. 實作偏差與後記
+
+### 12.1 HNSW 是先搜再過濾（2026-09-24）
+
+§5.1、§10 的「GIN 過濾該維度 facet 後向量排序」描述的是想要的結果，不是 PostgreSQL 實際的執行方式。planner 看候選池大小選路：
+
+- 池很小（例如 vehicle 的 pose 池 2 筆）：走 GIN 取出整池，再精確排序。這條路沒問題。
+- 池有幾千筆：走 HNSW 索引依距離往外取，`WHERE facet_ids && …` 只逐筆套在取出來的近鄰上。HNSW 預設只取 `hnsw.ef_search`（40）筆，過濾完不足 k 筆就停。
+
+風格池只佔全表 23%、鏡頭池 11%。查詢向量的近鄰若都落在別的維度，過濾完就一筆不剩。實測：`"style 老爺爺在稻田裡面喝茶"` 回 `{"poolSize":4455,"hits":[]}`；抽 300 筆帶 scene facet、不帶 style facet 的片段，拿各自的向量對風格池取 3 筆，178 筆不足 3、其中 95 筆是 0 筆。子專案 2 的 agent 看到 0 筆會換說法重搜，吃掉工具預算（known-issues #1 的成因之一）。
+
+**修正**：`db/init/001_schema.sql` 在 `CREATE EXTENSION vector` 之後把資料庫層級設成 `hnsw.iterative_scan = strict_order`（pgvector 0.8+，目前 image 是 0.8.6）。資料庫名跟著 `POSTGRES_DB` 走，所以用 `current_database()` 組 `ALTER DATABASE`。
+
+- iterative scan：過濾後不足 `LIMIT` 筆就繼續往外搜，上限 `hnsw.max_scan_tuples`（預設 20,000，比全表 19,354 筆還多）。
+- `strict_order`：結果仍嚴格依距離排序，SQL 的 `ORDER BY dist` 不用改。`relaxed_order` 也能補足筆數，但順序可能小幅錯亂，要多包一層重排。
+- 實測：上面那個 0 筆的查詢改回 3 筆，id 與順序都跟精確掃描相同，約 9 ms。
+
+**為什麼設在資料庫層級**：C# 的 `PresetRepository`、`HistoryRepository` 與 Python 的 `retrieval.py` 用的是同樣的 SQL。設在資料庫上三處都自動生效，不用各自包交易 `SET LOCAL`。代價有兩個：要寫進 schema 才會跟著 fresh clone 走；已經建好的資料庫要手動執行一次 `ALTER DATABASE <庫名> SET hnsw.iterative_scan = strict_order`，而且只對之後建立的連線生效。種子還原（`docker/seed.sh`）是 `pg_restore --data-only` 灌進既有的資料庫，不會重建資料庫，設定不會丟。
+
+**為什麼不改成精確掃描**：候選池最大約 6,752 筆（場景池），全表 19,354 筆，精確排序也只要幾毫秒，效能上完全可行。但那等於放棄 HNSW，而這個專案要展示的正是 pgvector 近似索引在帶過濾條件時的正確用法。iterative scan 保留索引，只補上過濾後不足 k 筆的缺口。
+
+**`SearchSimilarPrompts` 也受影響**：它用 `subject_profile` 過濾，vehicle 只佔 histories 的 1.9%。唯讀實測：拿 200 筆 portrait 紀錄的向量去查其他 profile 各取 3 筆，關掉 iterative scan 時有 155–198 筆不足 3，`strict_order` 下 0 筆。同一個資料庫設定一起修掉，不另外改程式。
+
+**回歸測試**：C# `RepositoryIntegrationTests`（`SHOW hnsw.iterative_scan` 必須是 `strict_order`；id 最小、帶 scene facet 但不帶 style facet 的片段向量對風格池取 3 筆，必須剛好 3 筆、都在池內、距離遞增）；Python `test_retrieval.py` 用同一個情境走 `retrieve_presets`。兩條在修正前都是 0 筆。
