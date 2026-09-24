@@ -29,7 +29,12 @@
             <span v-for="f in preset.facetIds" :key="f" class="rounded-[3px] border border-rule px-1.5 py-0.5 font-mono text-[11px] text-muted">{{ f }}</span>
           </div>
         </section>
-        <p class="mt-5 text-[11px] text-muted">圖片來自來源網站，本服務不轉存。</p>
+        <p class="mt-5 text-[11px] text-muted">
+          <template v-if="preset.sourceUrl && sourceName(preset.sourceRef)">
+            出處：<a :href="preset.sourceUrl" target="_blank" rel="noopener noreferrer" class="underline underline-offset-2 hover:text-ink">{{ sourceName(preset.sourceRef) }}</a>。圖片不轉存。
+          </template>
+          <template v-else>圖片來自來源網站，本服務不轉存。</template>
+        </p>
       </template>
     </aside>
   </transition>
@@ -37,6 +42,7 @@
 
 <script setup lang="ts">
 import type { PresetDetail } from '../types/api'
+import { sourceName } from '../lib/copy'
 const s = useSessionStore()
 const api = useApi()
 const preset = ref<PresetDetail | null>(null)

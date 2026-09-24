@@ -1,7 +1,7 @@
 # GenAI Prompt Copilot — 設計規格
 
 日期：2026-09-21
-狀態：已定案。子專案 1（資料地基）已實作並通過 §14 驗收（2026-09-22）；子專案 2（SK Agent 核心）已實作，以 `manual-tests/chat.py` 手動跑完對話迴圈（2026-09-24），降級檢查點結論見 §4.10；子專案 3（Nuxt 3 前端 + SSE）已實作並通過 §14 驗收（2026-09-24，瀏覽器，結果見 `docs/eval-cases.md`）；子專案 4 未開始
+狀態：已定案。子專案 1（資料地基）已實作並通過 §14 驗收（2026-09-22）；子專案 2（SK Agent 核心）已實作，以 `manual-tests/chat.py` 手動跑完對話迴圈（2026-09-24），降級檢查點結論見 §4.10；子專案 3（Nuxt 3 前端 + SSE）已實作並通過 §14 驗收（2026-09-24，瀏覽器，結果見 `docs/eval-cases.md`）；子專案 4（收尾與展示）打包驗收通過（2026-09-24：fresh clone 一鍵啟動、種子自 Release 匯入、CI 四個 job 綠，結果見 `docs/eval-cases.md`），瀏覽器展示驗收與截圖待 `docs/known-issues.md` 第 1、2 項修正後補；設計見 [2026-09-24-subproject-4-packaging-design.md](2026-09-24-subproject-4-packaging-design.md)
 前身文件：[docs/初步想法.md](../../初步想法.md)（本文件取代其中的架構與流程章節；技術棧與階段藍圖以本文件為準）
 
 ---
@@ -726,7 +726,7 @@ scripts/
 | `POST` | `/api/sessions/{id}/messages` | body `{ text }`；回 `text/event-stream`；同一 session 已有一輪在跑 → `409` |
 | `POST` | `/api/sessions/{id}/save-to-shared` | body `{ intent }`；需 `Finalized`，否則 `409`；寫 `shared_prompt_histories` 並向量化；**唯一的寫入路徑** |
 | `GET` | `/api/config/facets` | 回 `facets.yaml` 內容供前端渲染 |
-| `GET` | `/api/presets/{id}` | preset 詳情（抽屜用） |
+| `GET` | `/api/presets/{id}` | preset 詳情（抽屜用）；含 `sourceRef` 與伺服器算的 `sourceUrl`（出處連結，子專案 4） |
 | `GET` | `/health` | |
 
 `save-to-shared` 的 `intent` 是使用者這次需求的整句繁中原話（會被向量化成 `intent_embedding`，即 RAG 1 的檢索鍵），不是定稿的英文提示詞；定稿內容從 session 的 `LastFinal` 取，不由客戶端送。
@@ -908,6 +908,8 @@ GenAIPromptCopilot/
 ├─ docs/
 │  ├─ 初步想法.md
 │  ├─ eval-cases.md
+│  ├─ 資料來源.md                         # 來源、授權、署名、公開散布與免責聲明
+│  ├─ images/                            # README 截圖
 │  └─ superpowers/specs/2026-09-21-genai-prompt-copilot-design.md
 ├─ db/init/001_schema.sql
 ├─ src/
@@ -936,19 +938,27 @@ GenAIPromptCopilot/
 ├─ scripts/
 │  ├─ pipeline/
 │  ├─ seed_data.py
+│  ├─ export_seed.py                     # 匯出公開的知識庫種子 dump（丟棄容器裡過濾，開發庫唯讀）
 │  ├─ requirements.txt
 │  └─ data/{raw,clean,structured}/       # git ignore
 ├─ manual-tests/                         # 手動試用：start_api.py 起 API、chat.py 終端機對話
 ├─ docker/
-│  ├─ Dockerfile.api
-│  └─ Dockerfile.frontend
-├─ docker-compose.yml                    # db + api + frontend
-├─ .github/workflows/ci.yml              # dotnet build/test, npm build, ruff；不部署
+│  ├─ Dockerfile.api                     # sdk 編譯 → aspnet 執行
+│  ├─ Dockerfile.frontend                # nuxi generate → nginx
+│  ├─ Dockerfile.seed                    # pgvector 底圖 + curl，跑 seed.sh
+│  ├─ seed.sh                            # 空庫才從 Release 下載 dump 並 pg_restore
+│  └─ nginx.conf                         # 靜態檔 + 反代 /api /health /swagger（不緩衝 SSE）
+├─ docker-compose.yml                    # db → seed → api → frontend
+├─ .github/workflows/ci.yml              # dotnet build/test、npm test/build、ruff+pytest、docker build；不部署
+├─ .dockerignore
+├─ .gitattributes                        # *.sh 強制 LF
+├─ README.md
+├─ LICENSE                               # MIT，只涵蓋程式碼
 ├─ .env.example
 └─ .gitignore
 ```
 
-金鑰：`.env`（管線）與 user-secrets（API 本機開發），皆不入版控。
+金鑰：`.env`（管線，以及 `docker compose` 的 api 容器：`GEMINI_API_KEY` 映射成 `Llm__ApiKey`）與 user-secrets（API 本機開發），皆不入版控。
 
 ## 14. 子專案順序與驗收
 
@@ -957,7 +967,7 @@ GenAIPromptCopilot/
 | 1 | 資料地基 | docker-compose 起 db 並自動建 schema；管線跑完兩張表皆有資料；一支查詢腳本用「昏暗雨夜的科幻城市」能從 presets 檢索到合理結果 |
 | 2 | SK Agent 核心 | Swagger 打完整一輪：追問 → 討論 → 回答 → 定稿 → 討論 → 修改；上游攔截後 session 可繼續；NSFW 被攔；`audit_logs` 有紀錄；§12.1 測試全綠；降級檢查點在此 |
 | 3 | 前端 + SSE | 瀏覽器端到端跑完 §12.3 第 1、3、6、11 條，加子專案 3 設計 §7 的 F1–F3（重載恢復、攔截後重試、存共享庫） |
-| 4 | 收尾 | `docker compose up` 一鍵可用；README 含架構圖與截圖；CI 綠 |
+| 4 | 收尾 | `docker compose up` 一鍵可用（fresh clone 只放 `.env`；seed 灌入、二次啟動跳過）；抽屜有出處連結；README 含架構圖與截圖；CI 四個 job 綠。細項見子專案 4 設計 §7.2 P1–P7 |
 
 Azure 部署排除。
 

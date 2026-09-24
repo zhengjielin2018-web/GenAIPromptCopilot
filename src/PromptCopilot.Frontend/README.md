@@ -17,6 +17,10 @@ devProxy 不會緩衝 SSE：2026-09-24 實測，一輪的事件在 12 秒內逐�
 
 `lib/` 不依賴 Nuxt，測試在 node 環境跑，不需要瀏覽器或 API。
 
+## 容器
+
+`docker/Dockerfile.frontend`：`nuxi generate` 產靜態檔交給 nginx，`docker/nginx.conf` 反代 `/api`、`/health`、`/swagger` 到 api 容器且不緩衝 SSE。`runtimeConfig.public.apiBase` 維持 `''`，開發與容器走同一條同源路徑。
+
 ## 結構
 
 - `types/api.ts`：後端 DTO 與 SSE 事件型別，唯一定義處

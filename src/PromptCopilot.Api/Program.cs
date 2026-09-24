@@ -92,6 +92,9 @@ services.AddSingleton<IPromptOrchestrator>(sp =>
 });
 
 var app = builder.Build();
+// Gemini 的 service 在第一輪才建；key 沒設時整套照樣起來、每一輪卻都 500。至少在啟動時講清楚。
+if (string.IsNullOrWhiteSpace(app.Services.GetRequiredService<IOptions<LlmOptions>>().Value.ApiKey))
+    app.Logger.LogWarning("Llm:ApiKey 未設定：API 會起來，但每一輪對話都會失敗。docker compose 請在 .env 填 GEMINI_API_KEY；本機開發用 user-secrets（見 manual-tests/README.md）。");
 app.UseSwagger();
 app.UseSwaggerUI();
 SessionEndpoints.Map(app);

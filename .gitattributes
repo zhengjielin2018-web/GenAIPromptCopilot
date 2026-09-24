@@ -1,0 +1,2 @@
+# shell script 進容器要 LF；Windows 的 autocrlf 不得改它
+*.sh text eol=lf

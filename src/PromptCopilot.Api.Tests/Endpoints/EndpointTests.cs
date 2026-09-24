@@ -42,6 +42,15 @@ public class EndpointTests : IClassFixture<EndpointTests.Factory>
         public override Task<Guid> InsertAsync(HistoryInsert h, CancellationToken ct) => Task.FromResult(Guid.NewGuid());
     }
 
+    /// <summary>不打 DB。id 1 是一筆 civitai 的 preset，其他都不存在。</summary>
+    private sealed class FakePresets() : PresetRepository(null!)
+    {
+        public override Task<PresetDetail?> GetAsync(long id, CancellationToken ct) => Task.FromResult(id == 1
+            ? new PresetDetail(1, "霓虹雨夜街頭", "Scene", "昏暗雨夜的賽博龐克街道", ["neon", "rain"], ["scene.location"],
+                "neon city street, rain, night", null, null, "civitai:12345:0", SourceAttribution.UrlFor("civitai:12345:0"))
+            : null);
+    }
+
     public sealed class ExplodingAudit : IAuditSink
     {
         public Task WriteAsync(AuditEntry entry, CancellationToken ct) => throw new IOException("audit db down");
@@ -57,6 +66,7 @@ public class EndpointTests : IClassFixture<EndpointTests.Factory>
                 s.AddSingleton<IPromptOrchestrator, FakeOrchestrator>();
                 s.AddSingleton<IEmbeddingClient>(new FakeEmbeddings());
                 s.AddSingleton<HistoryRepository>(new FakeHistories());
+                s.AddSingleton<PresetRepository>(new FakePresets());
                 s.AddSingleton<IAuditSink>(new ExplodingAudit());                   // 稽核掛掉不該讓 200 變 500
             });
         }
@@ -187,6 +197,17 @@ public class EndpointTests : IClassFixture<EndpointTests.Factory>
         Assert.Equal(HttpStatusCode.OK, r.StatusCode);
         Assert.False(string.IsNullOrWhiteSpace((await r.Content.ReadFromJsonAsync<Dictionary<string, string>>())!["id"]));
         Assert.Equal(1, s.Lock.CurrentCount);        // 鎖有放掉
+    }
+
+    /// <summary>資料一旦公開散布，出處要跟著資料走：抽屜靠這兩個欄位顯示「出處：Civitai」。</summary>
+    [Fact]
+    public async Task Preset_detail_carries_its_source_ref_and_url()
+    {
+        var d = await _client.GetFromJsonAsync<System.Text.Json.JsonElement>("/api/presets/1");
+
+        Assert.Equal("civitai:12345:0", d.GetProperty("sourceRef").GetString());
+        Assert.Equal("https://civitai.com/images/12345", d.GetProperty("sourceUrl").GetString());
+        Assert.Equal(HttpStatusCode.NotFound, (await _client.GetAsync("/api/presets/2")).StatusCode);
     }
 
     /// <summary>Swagger 上寫的回應碼要等於端點真的會回的。沒標就只剩框架預設的 200：

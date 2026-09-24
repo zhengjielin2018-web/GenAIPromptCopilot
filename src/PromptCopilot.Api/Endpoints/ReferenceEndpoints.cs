@@ -36,7 +36,7 @@ public static class ReferenceEndpoints
             await presets.GetAsync(id, ct) is { } d ? Results.Ok(d) : Results.NotFound()).WithTags("Reference")
             .WithSummary("查知識庫的一筆 preset")
             .WithDescription("""
-                回傳完整內容：標題、分類、說明、tags、對應的 facet、`promptSnippet`、`negativeSnippet`、`imageUrl`（指向來源網站的原圖，本服務不轉存）。
+                回傳完整內容：標題、分類、說明、tags、對應的 facet、`promptSnippet`、`negativeSnippet`、`imageUrl`（指向來源網站的原圖，本服務不轉存）、`sourceRef`（資料來源識別，如 `civitai:12345:0`）、`sourceUrl`（出處頁面；前端顯示圖片時要一併顯示這個連結，見 `docs/資料來源.md`；來源不明時為 null）。
 
                 對話事件裡出現的 preset id 都能拿來查：`tool_result.presets[].id`、選項的 `presetId`。
 

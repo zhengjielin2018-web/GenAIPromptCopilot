@@ -3,6 +3,8 @@
 把 API 跑起來、在終端機逐輪對話，看追問、討論、定稿實際長什麼樣子。
 自動化測試（單元、整合、契約）在 `src/PromptCopilot.Api.Tests`，見文末。
 
+只想看 demo、不想裝 .NET 與 Node：根目錄 `docker compose up`，見 [README](../README.md)。這份文件是本機開發用的。
+
 | 檔案 | 用途 |
 | :--- | :--- |
 | `start_api.py` | 起資料庫，再用 `.env` 的帳密把 API 跑在 `http://localhost:5000` |

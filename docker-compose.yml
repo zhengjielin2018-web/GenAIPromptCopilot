@@ -12,10 +12,61 @@ services:
       - pgdata:/var/lib/postgresql/data
       - ./db/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-prompt_copilot}"]
+      # 走 TCP：官方 image 跑 db/init 期間的暫時 server 只聽 socket。socket 版會在建表完成前就回 ready，
+      # seed 接著走 TCP 查表就會失敗（實測重現）。TCP 通了才是跑完 init 的正式 server。
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-prompt_copilot}"]
       interval: 5s
       timeout: 3s
       retries: 12
+
+  seed:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.seed
+    container_name: prompt-copilot-seed
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PGHOST: db
+      PGPORT: 5432
+      PGUSER: ${POSTGRES_USER:-postgres}
+      PGPASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      PGDATABASE: ${POSTGRES_DB:-prompt_copilot}
+      # 「-」不是「:-」：.env 沒這行 → 預設 Release 資產；有這行且為空 → 跳過種子
+      SEED_URL: ${SEED_URL-https://github.com/zhengjielin2018-web/GenAIPromptCopilot/releases/download/seed-v1/prompt_copilot_seed_v1.dump}
+    restart: "no"
+
+  api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.api
+    container_name: prompt-copilot-api
+    depends_on:
+      db:
+        condition: service_healthy
+      seed:
+        condition: service_completed_successfully
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      # 同一把 key 給對話與 embedding（GeminiEmbeddingClient 也讀 Llm:ApiKey）。
+      # 不用 :? 強制：compose 會插值整份檔案，那樣連只起 db 都會失敗。
+      Llm__ApiKey: ${GEMINI_API_KEY:-}
+      # GSS 關掉：aspnet image 沒有 libgssapi_krb5，Npgsql 預設會先試 GSS 加密並在 log 印一行 Error（不影響連線）
+      Database__ConnectionString: Host=db;Port=5432;Database=${POSTGRES_DB:-prompt_copilot};Username=${POSTGRES_USER:-postgres};Password=${POSTGRES_PASSWORD:-postgres};GSS Encryption Mode=Disable
+    ports:
+      - "${API_PORT:-5000}:8080"
+
+  frontend:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.frontend
+    container_name: prompt-copilot-frontend
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "${FRONTEND_PORT:-8080}:80"
 
 volumes:
   pgdata:

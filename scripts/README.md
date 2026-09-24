@@ -75,6 +75,19 @@ clean／structure／embed／load 全部五個階段，`--max-records` 預設不�
 的同名參數語意不同）。重跑安全：以 `source_ref` 續跑，且片段去重是跨來源的
 （civitai 已收錄同一組 tag 就不重複收）。
 
+## 匯出公開的知識庫種子
+
+`docker compose up` 首次啟動灌的 dump 從這裡來。它開一個用完即丟的 pgvector 容器、套上
+`db/init/001_schema.sql`，把開發庫的兩張知識表以 `pg_dump --data-only` 串流灌進去，
+在丟棄庫裡刪掉使用者自己存的紀錄（`source = 'user'`），再從丟棄庫匯出，最後停掉容器。
+開發庫只被讀，API 開著也沒關係；灌進全新 schema 這一步順便證明 dump 灌得回去。約 2 分鐘。
+
+    python export_seed.py --version 1        # 產出 data/seed/prompt_copilot_seed_v1.dump（不進版控）
+
+它會印出 `gh release create seed-v1 …` 指令，上傳是手動的。語料擴增或換 embedding 模型後
+版本號 +1，並同步 `docker-compose.yml` 的 `SEED_URL` 預設值與 `db/init/001_schema.sql` 的維度。
+授權與免責聲明見 [docs/資料來源.md](../docs/資料來源.md)。
+
 ## Demo：中文描述 → 英文提示詞
 
 `demo.py` 是子專案 1 成果的展示程式，也是子專案 2 互動流程的縮小版——它只跑一輪、

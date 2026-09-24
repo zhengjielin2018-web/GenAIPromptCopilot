@@ -1,0 +1,18 @@
+# 多階段：sdk 編譯，aspnet 執行。Configuration/facets.yaml 與 Prompts/system.md 由 csproj 的
+# CopyToOutputDirectory 帶進 publish 輸出。
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+WORKDIR /src
+COPY src/PromptCopilot.Api/PromptCopilot.Api.csproj PromptCopilot.Api/
+RUN dotnet restore PromptCopilot.Api/PromptCopilot.Api.csproj
+COPY src/PromptCopilot.Api/ PromptCopilot.Api/
+RUN dotnet publish PromptCopilot.Api/PromptCopilot.Api.csproj -c Release -o /app --no-restore
+
+FROM mcr.microsoft.com/dotnet/aspnet:10.0
+WORKDIR /app
+COPY --from=build /app .
+ENV ASPNETCORE_URLS=http://+:8080
+EXPOSE 8080
+# aspnet image 沒有 curl；用 bash 的 /dev/tcp 探埠。start-period 給 JIT 與 Npgsql 連線暖機。
+HEALTHCHECK --interval=5s --timeout=3s --start-period=20s --retries=12 \
+  CMD bash -c 'exec 3<>/dev/tcp/127.0.0.1/8080' || exit 1
+ENTRYPOINT ["dotnet", "PromptCopilot.Api.dll"]
