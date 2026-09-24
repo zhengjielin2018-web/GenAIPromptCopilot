@@ -22,13 +22,13 @@
 | 15 | 定稿後問「negative 裡的 blurry 是幹嘛的？」 | `message`，沒有新定稿卡 | e9a3f20f9a96 | ✅ `message`，`options` 為空，沒有新的定稿卡。 | 2026-09-23 |
 | 16 | Collecting 一路聊 8 次 | 第 9 輪工具清單無 Discuss → 強制定稿 → 之後還能 Discuss | | | |
 | 17 | 「厚塗油畫那個具體會加哪些 tag？」（先前選項） | 回答與 ledger 的 snippet 一致，沒有重撈 | | | |
-| 18 | 「一個少女」六缺五 | 第一次 AskUser 問 3 個維度、第二次問剩下的 | c75ecc83e606 | ⚠️ 部分不符：第一次 AskUser 只問 2 個維度（style、camera）而非 3；第二次追問沒有發生——使用者第 3 輪補完風格與角度後模型直接定稿。沒有違規（≤ 3），但沒照案例預期把缺口一次問滿。 | 2026-09-23 |
+| 18 | 「一個少女」六缺五 | 第一次 AskUser 問 3 個維度、第二次問剩下的 | c75ecc83e606 | ⚠️ 部分不符：第一次 AskUser 只問 2 個維度（style、camera）而非 3；第二次追問沒有發生——使用者第 3 輪補完風格與角度後模型直接定稿。沒有違規（≤ 3），但沒照案例預期把缺口一次問滿。（追問政策反轉後待重測） | 2026-09-23 |
 | 19 | 「都你決定」 | 該輪直接定稿，沒有 Discuss | | | |
 | 20 | 定稿後「風格改成動漫」 | 走 FinalizePrompt（或 Discuss 被拒後改用） | | | |
 | 21 | 讓第二次 LLM 呼叫 500 兩次後成功（暫時把 `Llm:Model` 改成不存在的名字再改回） | 使用者無感，audit 無 `Turn_Failed` | — | ➖ 未跑：需要改 `Llm:Model` 注入故障，本次驗收不得變更 appsettings／user-secrets。 | — |
 | 22 | 連續失敗超過重試次數 | `error`，儀表板回到輪次開始，重送後正常，AskCount 只算一次 | — | ➖ 未跑：同 21，需要故障注入。 | — |
 | 23 | 觸發上游攔截的描述（少女＋泳裝） | `blocked` `Blocked_Upstream`，訊息保留，重送或改寫後正常 | 6ff34e1a7c9c | ➖ 未觸發：「少女穿泳裝在海邊」沒有被上游攔截，直接 `finalized`。依規定只試一次不重送，`Blocked_Upstream` 這條路徑本次沒有實證。 | 2026-09-23 |
-| 24 | 有細節但缺風格與鏡頭的人像描述：「一個老爺爺在稻田裡面喝茶，遠處是房子，太陽很大，老爺爺有著白色捲髮，穿著白色短衣」 | `final.kind = ask`；audit 無 `Tool_Budget_Exhausted`；`Turn_Completed.toolCalls` ≤ 5；只有一張 `SearchPresets` 工具卡，摘要列出每個維度的候選池筆數；儀表板場景／樣貌／穿著為 covered | | | |
+| 24 | 有細節但缺風格與鏡頭的人像描述：「一個老爺爺在稻田裡面喝茶，遠處是房子，太陽很大，老爺爺有著白色捲髮，穿著白色短衣」 | `final.kind = ask`；audit 無 `Tool_Budget_Exhausted`；`Turn_Completed.toolCalls` ≤ 5；只有一張 `SearchPresets` 工具卡，摘要列出每個維度的候選池筆數；儀表板場景／樣貌／穿著為 covered | | （追問政策反轉後待重測） | |
 
 ## 2026-09-23 驗收跑的那一輪
 
