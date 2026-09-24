@@ -93,6 +93,8 @@ public sealed record SearchQuery(string Dimension, string Query);
 
 每筆命中的形狀（`id, title, band, dist, usable, facets, positive, negative`）不變。每個維度各自帶 `poolSize`，知識庫覆蓋缺口仍看得見。
 
+範例裡 scene 的 `grounded: true` 以該維度已有 covered 的 facet 為前提：第一輪由 system.md 第 1 條先 `SetFacetStates` 標 covered，`grounded` 才有值（known-issues #9）。
+
 ### 3.5 事件摘要
 
 ```text

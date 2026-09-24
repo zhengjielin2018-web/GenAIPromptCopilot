@@ -99,7 +99,7 @@ LLM：**`gemini-3.5-flash-lite`**（子專案 1 執行時實測定案。注意�
 | `KnowledgePlugin.SearchSimilarPrompts` | `intent: string, topK: int = 3` | 可重複；RAG 1，查 `shared_prompt_histories`，以 session profile 過濾 |
 | `KnowledgePlugin.SearchPresets` | `queries: {dimension, query}[]`（≤ 12） | RAG 2，**分維度檢索** `prompt_knowledge_presets`：一次呼叫帶本輪所有要查的維度，每項一個維度專屬語句，同維度可重複（對比方向），見 §9 |
 | `SessionPlugin.SetProfile` | `profile: portrait \| landscape \| object \| vehicle` | 可重複；設定題材 profile，重置 facet 狀態 |
-| `SessionPlugin.SetFacetStates` | `updates: FacetStateEntry[]` | 可重複；主要用於 `waived` |
+| `SessionPlugin.SetFacetStates` | `updates: FacetStateEntry[]` | 可重複；第一輪先標使用者已描述的 facet 為 covered，再檢索；也用於 `waived` 與委託 note |
 | `DialogPlugin.AskUser` | `preamble: string, asks: { dimension, question, missingFacetIds, options }[], facetStates: FacetStateEntry[]` | **終止型**；`asks` 1–3 則，每則 `options` 2–4 個 |
 | `DialogPlugin.Discuss` | `message: string, facetStates: FacetStateEntry[], options: { label, tags, presetId? }[]? = null` | **終止型**；`options` 0–4 個參考方向，不帶 `missingFacetIds` |
 | `DialogPlugin.FinalizePrompt` | `positivePrompt: string, negativePrompt: string, tips: string, intentSummary: string, facetStates: FacetStateEntry[]` | **終止型** |
@@ -996,6 +996,7 @@ Azure 部署排除。
 | `DiscussStreak` 誰歸零 | 只有 `FinalizePrompt` | 讓上限可以講成一個數字；`AskUser` 不代表進展 |
 | `Finalized` 後 `Discuss` 限不限次 | 不限 | 護欄的目的是確保交出東西，交了就功成身退 |
 | `AskUser` 多維度 | 一次最多 3 則 | 3 × 2 = 6 覆蓋六維度全缺的最壞情況；一張卡 12 個 chip 分三區不至於糊掉 |
+| 追問政策 | 還有任何 facet 是 missing 的維度都要問（waived 與有委託 note 的 facet 不算），只講一部分的維度也問剩下的 facet；一次問滿 3 個 | 原本「能省就省」導致追問偏少（eval #18、使用者 2026-09-25 實測）；使用者選擇「盡量追問」，接受完整描述也可能先被追問（eval #2）；額度 2×3 剛好能問完人像 6 維 |
 | `OutputSafetyFilter` 範圍 | 全檢（定稿 + 討論 + 追問的文字與選項） | §6.2 原文的理由對 `options` 一字不差地成立；合規是對外賣點，出口不一致難講 |
 | `presetId` 不在 ledger | 降級為 null，不移除 | `presetId` 本來就可為 null；輸出過濾兜住自由發明的內容 |
 | `AutoFill` 可逆 | **不做** | 有了 `Discuss` 之後問題自己解掉：`Discuss` 不看 `AutoFill`，使用者透過討論把某項變成 `covered` 或 `waived`，那一項就不在 `AutoFill` 補齊的範圍內。`waived` 本來就是為「即使委託也不補」存在的 |

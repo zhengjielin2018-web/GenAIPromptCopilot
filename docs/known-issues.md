@@ -9,7 +9,6 @@
 | 4 | 無害描述被上游 SAFETY 連續誤擋 | 行為 | 中 |
 | 7 | log 不足：看不出被擋的原因，一輪的經過只在資料庫裡 | 可觀測性 | 中（#4 要靠它確認） |
 | 8 | `HistoryTrimmer` 對 Gemini 的工具結果從未生效 | 可觀測性／成本 | 中 |
-| 9 | 第一輪 `grounded` 永遠是空的 | 效果調整 | 中 |
 | 5 | eval #5、#18 行為不符預期；§14 端到端要在新 HEAD 重跑 | 調整 | 低 |
 | 6 | 子專案 4 全分支審查留下的小項目 | 整理 | 低 |
 
@@ -64,17 +63,10 @@
 - 影響：只在合成測試裡有效；正式路徑沒有壓縮，token 成本比設計高。舊形狀的 history 不受影響（session 只在記憶體，重啟即清）。
 - 修正方向：把 tool 訊息正規化成 `FunctionResultContent`（或直接重建訊息），並用 connector 產生的 history 寫測試。
 
-## 9. 第一輪 `grounded` 永遠是空的（效果調整，中）
-
-- 現象：`SetProfile` 把所有 facet 重設為 missing；system.md 第 1 條要模型緊接著 `SearchPresets`，`SetFacetStates` 在之後才（可能）呼叫。所以第一輪的每個維度都是 `grounded = false`：k 一律 3、片段一律「僅供建議」，即使使用者已描述該維度。批次化之後這件事必然發生（第一輪只有一次檢索、緊跟在 `SetProfile` 之後）。
-- 影響：第一輪就定稿（描述完整或「都你決定」）時，模型被告知不可借用使用者已描述維度的知識庫詞。
-- 修正方向：system.md 第 1 條改成 `SetProfile` → 先 `SetFacetStates` 標 covered → 再 `SearchPresets`；同步主規格 §4.2 呼叫順序與批次設計 §3.4 的範例。要重跑 eval。
-- 備註：主規格 §9「grounded 由伺服器算」原則不變，只是要讓伺服器有資料可算。
-
 ## 5. 效果調整（非 bug）
 
 - **eval #5**「一個女生，其他隨便」：仍追問風格，沒有直接定稿。
-- **eval #18**：追問偏少，一次只問 1–2 個維度，回答後就定稿，服裝整組留空。#1 修好後要重測，預算可能是原因之一。
+- **eval #18**：追問偏少，一次只問 1–2 個維度，回答後就定稿，服裝整組留空。#1 修好後要重測，預算可能是原因之一。→ 追問政策已在 `fix/ask-all-missing` 反轉，重測。
 - **§14 端到端驗收**是在 `fc449f7` 跑的，之後改過輪次流程、重試分類、輸出安全，要在新 HEAD 重跑。
 - **eval #21／#22** 的故障注入方式（改 `Llm:Model`）測不到：404 不重試，session 在記憶體裡、重啟就沒了。要換一種注入方式，例如可設定的 fake 失敗次數。
 
@@ -180,3 +172,13 @@ prompt_version 都是 `8c10dcfe1f16`，跟子專案 3 驗收時能正常追問�
   只對之後建立的連線生效。API 連線池裡的舊連線不會變，重啟 API（`docker compose restart api`）才保證全部生效。
 - 種子還原（`docker/seed.sh`）是 `pg_restore --data-only` 灌進既有的資料庫，不會重建資料庫，設定不會丟。`scripts/export_seed.py` 的丟棄容器套同一份 schema，也會有這個設定，但 dump 是 data-only，不帶資料庫設定。
 - 這一項之前被記成「模型要自己換成『寫實攝影』重搜」的 prompt 調整問題，實際上是檢索 bug。
+
+### 9. 第一輪 `grounded` 永遠是空的
+
+**現象**：`SetProfile` 把所有 facet 重設為 missing；system.md 第 1 條原本要模型緊接著 `SearchPresets`，`SetFacetStates` 在之後才（可能）呼叫。所以第一輪的每個維度都是 `grounded = false`：k 一律 3、片段一律「僅供建議」，即使使用者已描述該維度。批次化之後這件事必然發生（第一輪只有一次檢索、緊跟在 `SetProfile` 之後）。
+
+**影響**：第一輪就定稿（描述完整或「都你決定」）時，模型被告知不可借用使用者已描述維度的知識庫詞。
+
+**修正**（分支 `fix/ask-all-missing`，commit hash 待 merge 後補）：system.md 第 1 條改為 `SetProfile` → `SetFacetStates` → `SearchPresets`；同時把追問政策反轉為問滿 missing 維度：該維度底下只要還有任何 facet 是 missing（waived 與有委託 note 的不算）就要問，只講一部分的維度也問剩下的 facet，使用者接受完整描述也可能先被追問（eval #2）。起因是使用者 2026-09-25 實測回饋「描述缺很多面向，但追問很少」，見 #5 的 eval #18。`SetFacetStates` 與 `AskUser` 的工具描述、主規格 §4.2 與 §15、批次設計 §3.4 同步。主規格 §9「grounded 由伺服器算」原則不變，只是讓伺服器有資料可算。
+
+**驗收**：重跑 eval #1、#18、#24，看第一輪 `SearchPresets` 對使用者講過的維度是否 `grounded: true`、追問是否把 missing 維度問滿。
