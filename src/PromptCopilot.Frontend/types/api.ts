@@ -55,6 +55,8 @@ export interface PresetDetail {
   promptSnippet: string
   negativeSnippet: string | null
   imageUrl: string | null
+  sourceRef: string | null
+  sourceUrl: string | null
 }
 
 /** 終止型 tool 與純狀態 tool 不發 tool_result；卡片在輪次結束時收尾。終止型的內容由 final 條目呈現，不另畫卡片。 */

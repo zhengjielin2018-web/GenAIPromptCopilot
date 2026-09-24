@@ -16,3 +16,14 @@ const TITLES: Record<string, string> = {
 export function failureTitle(source: FailureEntry['source'], code: string): string {
   return TITLES[code] ?? (source === 'blocked' ? '被攔下' : '發生錯誤')
 }
+
+/** source_ref 前綴 → 來源名稱。URL 由後端算（sourceUrl），這裡只管顯示的字。 */
+const SOURCE_NAMES: Record<string, string> = {
+  civitai: 'Civitai',
+  kisegae: 'Kisegaeningyou',
+}
+
+export function sourceName(sourceRef: string | null): string | null {
+  if (!sourceRef) return null
+  return SOURCE_NAMES[sourceRef.split(':')[0]] ?? null
+}
