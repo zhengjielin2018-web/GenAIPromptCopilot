@@ -11,7 +11,7 @@ public sealed class DialogPlugin(TurnContext turn, FacetCatalog catalog, Orchest
     private Session S => turn.Session;
 
     [KernelFunction(ToolNames.AskUser)]
-    [Description("索取：我需要使用者回答才能繼續。使用者沒講的維度都要問；一次最多 3 個維度，問不完下一輪再問。每個維度 2–4 個不同方向的選項。")]
+    [Description("索取：我需要使用者回答才能繼續。還有 facet 缺的維度都要問，只列缺的 facet；一次最多 3 個維度，問不完下一輪再問。每個維度 2–4 個不同方向的選項。")]
     public string AskUser(
         [Description("一句繁中開場")] string preamble,
         [Description("每個維度一則：dimension、question（繁中）、missingFacetIds、options[{label 繁中, tags 英文, presetId 可 null}]")] AskItem[] asks,

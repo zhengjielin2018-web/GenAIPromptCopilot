@@ -108,6 +108,8 @@ public class SystemPromptBuilderTests
             prompt.IndexOf("先 `SetFacetStates`", StringComparison.Ordinal) < prompt.IndexOf("用一次 `SearchPresets`", StringComparison.Ordinal),
             "第 1 條要先 SetFacetStates 標 covered，再 SearchPresets");
         Assert.Contains("只要還有 missing 的維度就 `AskUser`", prompt);
+        Assert.Contains("使用者只講了一部分的維度也要問剩下的 facet", prompt);
         Assert.DoesNotContain("才 `AskUser`", prompt);
+        Assert.DoesNotContain("底下的 facet 全是 missing", prompt);
     }
 }
