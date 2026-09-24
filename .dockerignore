@@ -1,0 +1,22 @@
+# build 產物與相依：image 內自己 restore／npm ci
+**/bin/
+**/obj/
+**/node_modules/
+**/.nuxt/
+**/.output/
+**/.venv/
+**/__pycache__/
+
+# 機密與本機資料
+.env
+**/appsettings.*.json
+!**/appsettings.Development.json
+scripts/data/
+.backup-pre-expansion/
+
+# 不進 image 的東西
+.git/
+.github/
+.superpowers/
+docs/
+manual-tests/

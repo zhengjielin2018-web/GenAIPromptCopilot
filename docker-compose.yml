@@ -17,5 +17,23 @@ services:
       timeout: 3s
       retries: 12
 
+  api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.api
+    container_name: prompt-copilot-api
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      # 同一把 key 給對話與 embedding（GeminiEmbeddingClient 也讀 Llm:ApiKey）。
+      # 不用 :? 強制：compose 會插值整份檔案，那樣連只起 db 都會失敗。
+      Llm__ApiKey: ${GEMINI_API_KEY:-}
+      # GSS 關掉：aspnet image 沒有 libgssapi_krb5，Npgsql 預設會先試 GSS 加密並在 log 印一行 Error（不影響連線）
+      Database__ConnectionString: Host=db;Port=5432;Database=${POSTGRES_DB:-prompt_copilot};Username=${POSTGRES_USER:-postgres};Password=${POSTGRES_PASSWORD:-postgres};GSS Encryption Mode=Disable
+    ports:
+      - "${API_PORT:-5000}:8080"
+
 volumes:
   pgdata:
