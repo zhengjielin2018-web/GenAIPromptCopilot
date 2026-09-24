@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { readSse } from '../lib/sse'
 import { initialState, beginTurn, applyEvent, endTurn, failHttp, hydrate, latestFinalizedTurn as latestFinalizedTurnOf, type ChatState } from '../lib/reducer'
-import { loadPersisted, savePersisted, clearPersisted } from '../lib/persist'
+import { loadPersisted, savePersisted } from '../lib/persist'
 import { composeDraft, appendChip, chipKey, type Chip } from '../lib/composer'
 import { AGENT_EVENT_TYPES, type AgentEvent, type FacetCatalog } from '../types/api'
 
@@ -62,8 +62,8 @@ export const useSessionStore = defineStore('session', () => {
     }
   }
 
+  /** 不先清 sessionStorage：createSession 失敗時舊對話要留著，重載還回得去。成功後最後的 persist() 會蓋掉舊的。 */
   async function newSession() {
-    clearPersisted()
     const id = await api.createSession()
     state.value = { ...initialState(), sessionId: id }
     chips.value = []; draft.value = ''; draftDirty.value = false
