@@ -1,7 +1,7 @@
 # 批次 `SearchPresets` 與工具預算 — 設計規格
 
 日期：2026-09-24
-狀態：設計已確認，待實作
+狀態：已實作（分支 `fix/batch-search-presets`），待瀏覽器驗收（§7）
 起因：[docs/known-issues.md](../../known-issues.md) #1「人像題材第一輪常被強制定稿，整個 session 不再追問」
 主規格：[2026-09-21-genai-prompt-copilot-design.md](2026-09-21-genai-prompt-copilot-design.md) §4.2 工具表、§4.5 `ToolBudgetFilter`、§4.6 強制定稿、§9 檢索策略、§15 決定紀錄
 前置：known-issues #2（HNSW 過濾後回 0 筆）已在分支 `fix/hnsw-iterative-scan` 修正。#2 的 0 筆結果會讓模型換說法重搜、多吃預算，本設計的驗收以 #2 已合併為前提。

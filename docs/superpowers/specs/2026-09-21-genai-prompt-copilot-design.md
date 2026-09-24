@@ -97,7 +97,7 @@ LLM：**`gemini-3.5-flash-lite`**（子專案 1 執行時實測定案。注意�
 | Plugin.Function | 參數 | 性質 |
 | :--- | :--- | :--- |
 | `KnowledgePlugin.SearchSimilarPrompts` | `intent: string, topK: int = 3` | 可重複；RAG 1，查 `shared_prompt_histories`，以 session profile 過濾 |
-| `KnowledgePlugin.SearchPresets` | `dimension: string, query: string` | 可重複；RAG 2，**分維度檢索** `prompt_knowledge_presets`：一次呼叫一個維度，`query` 是該維度專屬語句，見 §9 |
+| `KnowledgePlugin.SearchPresets` | `queries: {dimension, query}[]`（≤ 12） | RAG 2，**分維度檢索** `prompt_knowledge_presets`：一次呼叫帶本輪所有要查的維度，每項一個維度專屬語句，同維度可重複（對比方向），見 §9 |
 | `SessionPlugin.SetProfile` | `profile: portrait \| landscape \| object \| vehicle` | 可重複；設定題材 profile，重置 facet 狀態 |
 | `SessionPlugin.SetFacetStates` | `updates: FacetStateEntry[]` | 可重複；主要用於 `waived` |
 | `DialogPlugin.AskUser` | `preamble: string, asks: { dimension, question, missingFacetIds, options }[], facetStates: FacetStateEntry[]` | **終止型**；`asks` 1–3 則，每則 `options` 2–4 個 |
@@ -283,7 +283,7 @@ LedgerEntry {
 | Filter | 介面 | 職責 |
 | :--- | :--- | :--- |
 | `TerminalToolFilter` | `IAutoFunctionInvocationFilter` | 終止型 tool 成功（plugin 設了 `TurnContext.Outcome`）後設 `context.Terminate = true` |
-| `ToolBudgetFilter` | `IAutoFunctionInvocationFilter` | 計數單輪 tool 呼叫，超過 `MaxToolCallsPerTurn`（預設 8）→ `Terminate`，觸發強制定稿（§4.6） |
+| `ToolBudgetFilter` | `IAutoFunctionInvocationFilter` | 計數單輪 tool 呼叫，超過 `MaxToolCallsPerTurn`（預設 16）→ `Terminate`，觸發強制定稿（§4.6） |
 | `OutputSafetyFilter` | `IAutoFunctionInvocationFilter` | 掛在 `FinalizePrompt` / `AskUser` / `Discuss`；檢查範圍見 §6.2，命中則設 `BlockedOutcome` + `Terminate`，由 orchestrator 回滾本輪（§4.6） |
 | `AuditFilter` | `IAutoFunctionInvocationFilter` | 每次 tool 呼叫、每次攔截、token 與延遲寫入 `audit_logs`；也把本次的 `callId` 掛上 `TurnContext` 供 plugin 發 `tool_result`（§10.2） |
 
@@ -699,17 +699,17 @@ scripts/
 
 **GIN 過濾本身不夠。** 實測（2026-09-22）：同樣過濾到 Style 候選池，用使用者整句描述的向量排序撈回無關片段（dist 0.354），用該維度專屬的查詢語句撈回正確風格（0.229–0.234）。單一整句向量是六維度的模糊平均，只會貼近最泛用的片段，且使用者沒提到的維度永遠撈不到。因此 agent 呼叫 `SearchPresets` 時：
 
-- 一次呼叫一個維度，`facetIds` 給該維度在當前 profile 下的 facet 集合。
-- `query` 是該維度的專屬語句：使用者已描述的維度用其原話；未描述的維度由 agent 依整體畫面推想，且應給對比方向（例：寫實攝影 vs 動漫插畫）分兩次呼叫。
+- 一次呼叫帶本輪所有要查的維度（`queries[]`，每項一個維度），`facetIds` 由伺服器依 profile 導出。
+- `query` 是該維度的專屬語句：使用者已描述的維度用其原話；未描述的維度由 agent 依整體畫面推想，且應給對比方向（例：寫實攝影 vs 動漫插畫）在同一次呼叫裡放兩個項目。
 - 使用者未描述的維度撈到的片段只可用於追問與建議，不得直接寫入提示詞。
 - 不設距離門檻；tool result 帶相似度分級（`<0.25` 高、`<0.30` 中、其餘低），由 agent 判斷。
 - `tags && $2` 決定不做：OR 上 tags 會把候選池撐到維度外，與分維度前提衝突。
 - **跨維度去重：歸屬規則為「grounded 優先、距離次之」，且在定稿時才算，不在檢索時算。** 一筆 preset 的 `facet_ids` 可能橫跨數維（實測 859 筆裡 134 筆、15.6%），會在多個候選池出現，agent 可能從兩個維度分別拿到兩份結果、兩個不同的 `grounded` 值。規則：若有任何 grounded 維度撈到它，歸給這些維度中距離最小的那個；完全沒有才退回全體最小距離。**不能單純比距離**——歸屬決定借用資格，而 `grounded` 是「這個維度使用者講了沒」的屬性，不是片段的屬性；單純比距離會讓一個 grounded 維度正當撈到的片段，因為某個 missing 維度**推想出來**的查詢剛好更近，就被降級成「僅供建議」而失去借用資格。
-- **落地方式：session ledger。** `SearchPresets` 每次呼叫照實回傳自己維度的結果，不做跨維度去重（它本來也看不到別的維度）。session 內維護 `presetId → [(dimension, dist, grounded)]`，每次呼叫累加；歸屬與借用資格到定稿驗證時才套上面的規則。這本 ledger 本來就非有不可——借用來源的驗證（借的 tag 必須真的在片段裡、且真的在提示詞裡，不信 LLM 自述）查的是同一本帳。附帶好處：agent 只呼叫部分維度時自然成立，而且能回報「這片段你在某維度看過了」。
+- **落地方式：session ledger。** `SearchPresets` 每個項目照實回傳自己維度的結果，不做跨維度去重。session 內維護 `presetId → [(dimension, dist, grounded)]`，每次呼叫累加；歸屬與借用資格到定稿驗證時才套上面的規則。這本 ledger 本來就非有不可——借用來源的驗證（借的 tag 必須真的在片段裡、且真的在提示詞裡，不信 LLM 自述）查的是同一本帳。附帶好處：agent 只呼叫部分維度時自然成立，而且能回報「這片段你在某維度看過了」。
 - **`grounded` 由伺服器算，不是 LLM 傳進來的參數。** agent 傳 `facetIds`，伺服器映射到維度後查 `Session.FacetStates`（§4.4）自行判定。與 Python `grounded_dimensions()` 不問 LLM 同一個原則：少一個可被捏造的欄位。
 - **候選池大小要跟著 tool result 一起回。** `池 2 → 2` 這種「這維度過濾後有多少候選、其中命中幾筆」的資訊，是分維度檢索最有價值的副產品：它讓知識庫覆蓋缺口（例如 vehicle 的 pose 只有 2 筆）在使用當下就看得見，不必事後查資料庫才發現。tool result 除了相似度分級，也要帶上 GIN 過濾後的候選池筆數，否則子專案 2 會失去這個可見度。
 
-查詢向量於 runtime 以同一 embedding 模型計算；多個維度的查詢語句合併為單次 `embed_batch` 呼叫。
+查詢向量於 runtime 以同一 embedding 模型計算；多個維度的查詢語句合併為單次 `embed_batch` 呼叫（2026-09-24 起 C# 端也是：批次簽名的緣由見 [批次 SearchPresets 設計](2026-09-24-batch-search-presets-design.md)）。
 
 **embedding 不走 SK 抽象，直接打 REST `:batchEmbedContents`。** 要保證的是三件事跟 Python 管線逐字一致：`taskType`（查詢用 `RETRIEVAL_QUERY`、入庫用 `RETRIEVAL_DOCUMENT`）、`outputDimensionality: 768`、回來之後自己做 L2 正規化（`gemini-embedding-001` 在非預設維度下不保證單位長度，而 `vector_cosine_ops` 的距離只有在單位向量上才跟管線算出來的值可比）。SK 的 embedding 抽象當時蓋不到 `taskType` 與 `outputDimensionality`，包一層反而要繞過它。`Llm/GeminiEmbeddingClient` 因此是一個 `HttpClient` 的薄封裝，介面 `IEmbeddingClient` 只有 `EmbedAsync(texts, taskType, ct)`。
 
@@ -1014,6 +1014,8 @@ Azure 部署排除。
 | embedding 客戶端 | 自己打 REST `:batchEmbedContents` | 要鎖住 `taskType`／`outputDimensionality`／L2 正規化與 Python 管線一致，SK 抽象當時蓋不到（§9） |
 | `facetStates` 形狀 | `FacetStateEntry[]`，不是 dictionary | Gemini 的 function declaration schema 描述不出開放鍵的 map；陣列還能放 `note`（§4.2） |
 | `SearchPresets` 參數 | 只收 `dimension` 與 `query` | `facetIds` 與 `k` 都是伺服器算得出來的，傳進來只是多一個可被捏造的欄位（§4.2、§9） |
+| `SearchPresets` 批次簽名 | `queries: {dimension, query}[]`，一輪一次呼叫 | 逐維度呼叫的規則跟預算 8 在算術上不相容（人像 6 維 + 對比方向 > 8），第一輪就強制定稿；Python 管線本來就是一次 `embed_batch`（known-issues #1、[批次設計](2026-09-24-batch-search-presets-design.md)） |
+| `MaxToolCallsPerTurn` | 16（原 8） | 批次後預期一輪 4–5 次；16 是模型仍逐維度呼叫時的保險，不是設計目標 |
 | filter 介面 | 四個都是 `IAutoFunctionInvocationFilter` | `IFunctionInvocationFilter` 拿不到 `Terminate`，攔截停不了整個迴圈（§4.5） |
 | 攔截的表達方式 | `Terminate` + `BlockedOutcome`，不丟例外 | filter 的例外會被 SK 當成連線層失敗往上冒，重試層看不懂（§4.5） |
 | `Discuss` 變更閘門比對基準 | 本輪開始時的 facet 狀態 | 比現值的話，先 `SetFacetStates` 改掉再 `Discuss` 回報同值就永遠相等，閘門等於不存在（§4.5） |

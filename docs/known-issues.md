@@ -5,7 +5,6 @@
 
 | # | 問題 | 類型 | 優先 |
 | :--- | :--- | :--- | :--- |
-| 1 | 人像題材第一輪常被強制定稿，整個 session 不再追問 | bug | 高 |
 | 3 | 純文字補救的重試請求被 Gemini 回 400 | bug | 中 |
 | 4 | 無害描述被上游 SAFETY 連續誤擋 | 行為 | 中 |
 | 7 | log 不足：看不出被擋的原因，一輪的經過只在資料庫裡 | 可觀測性 | 中（#4 要靠它確認） |
@@ -13,41 +12,6 @@
 | 6 | 子專案 4 全分支審查留下的小項目 | 整理 | 低 |
 
 ---
-
-## 1. 人像題材第一輪常被強制定稿，整個 session 不再追問
-
-**現象**（2026-09-24，`docker compose up` 手動試用）：輸入一段有細節的人像描述，第一輪直接出定稿卡，沒有追問卡、沒有 chip。之後怎麼補充都只會重新定稿。儀表板上使用者講過的維度也顯示為 missing。
-
-**證據**：兩個 session 的第一輪都一樣。
-
-| session | 第一輪輸入 | audit |
-| :--- | :--- | :--- |
-| `5df96a64…` | 一個老爺爺在稻田裡面喝茶，遠處是房子，太陽很大，老爺爺有著白色捲髮，穿著白色短衣 | `SetProfile` 1 次、`SearchPresets` 7 次，第 9 次呼叫 → `Tool_Budget_Exhausted {"ToolCalls": 9}` → 強制 `FinalizePrompt`，facetStates 全部 missing |
-| `543fa33a…` | 中年女士在廚房，正把青菜放入便當內，她穿著圍裙與長褲 | 同上 |
-
-prompt_version 都是 `8c10dcfe1f16`，跟子專案 3 驗收時能正常追問的版本相同。組態也相同（user-secrets 只有 `Llm:ApiKey`）。**與 docker 無關**，用 `start_api.py` 跑一樣會發生。在這之前 33 輪一次都沒發生，差別在這次模型照 system prompt 的指示把維度搜滿了。
-
-**根因**：預算跟 system prompt 的指示在算術上不相容。
-
-- `ToolBudgetFilter` 每次工具呼叫都計數，終止型工具也算；`Orchestrator:MaxToolCallsPerTurn` = 8。
-- `Prompts/system.md` 第 1 條要求：先 `SetProfile`，再對每個適用維度呼叫 `SearchPresets`，使用者沒講的維度分兩次給對比方向。
-- 人像有 6 個維度，所以一輪需要：
-
-  ```text
-  SetProfile 1 + 六個維度各 1 + 每個沒講的維度再 1 + AskUser 1 = 8 + 沒講的維度數
-  ```
-
-  只要有一個維度沒講，照做就超過 8。#2 的 0 筆結果會讓模型換說法重搜，再多吃掉幾次。
-- 預算用盡 → 強制定稿 → `Status = Finalized` → `ToolSetBuilder` 在 Finalized 狀態不給 `AskUser`（主規格 §4.3）→ 這個 session 永遠不再追問。
-- 強制定稿時模型還沒呼叫 `SetFacetStates`，所以使用者講過的維度也是 missing，tips 會把它們全列成「未指定」。
-
-**修正方向**（擇一或併用，建議兩者都做）：
-
-1. 把 `MaxToolCallsPerTurn` 調到能容納最壞情況：1 + 6×2 + `SetFacetStates` 1 + `SearchSimilarPrompts` 1 + 終止 1 = 16。改 `appsettings.json`，主規格 §4.5 `ToolBudgetFilter` 那列的「預設 8」一起改。
-2. 讓一次 `SearchPresets` 接受多組 `(dimension, query)`，一輪只花一兩次呼叫。主規格 §9 本來就寫「多個維度的查詢語句合併為單次 `embed_batch` 呼叫」，目前的工具簽名做不到。這是工具契約變更，要同步 system.md、`OutputSafetyFilter` 取材、前端 `tool_call` 卡片的摘要。
-3. 另外考慮：強制定稿前先補一次 `SetFacetStates`，或讓強制定稿的 prompt 明確要求依使用者原話標 covered。
-
-**驗收**：用上表兩句重跑，應該看到追問卡；audit 沒有 `Tool_Budget_Exhausted`；`Turn_Completed.toolCalls` 在預算內。另外補一條 eval 案例：「有細節但缺風格與鏡頭的人像描述」→ `final.kind = ask`。
 
 ## 3. 純文字補救的重試請求被 Gemini 回 400
 
@@ -117,6 +81,41 @@ prompt_version 都是 `8c10dcfe1f16`，跟子專案 3 驗收時能正常追問�
 ---
 
 ## 已修正
+
+### 1. 人像題材第一輪常被強制定稿，整個 session 不再追問
+
+**現象**（2026-09-24，`docker compose up` 手動試用）：輸入一段有細節的人像描述，第一輪直接出定稿卡，沒有追問卡、沒有 chip。之後怎麼補充都只會重新定稿。儀表板上使用者講過的維度也顯示為 missing。
+
+**證據**：兩個 session 的第一輪都一樣。
+
+| session | 第一輪輸入 | audit |
+| :--- | :--- | :--- |
+| `5df96a64…` | 一個老爺爺在稻田裡面喝茶，遠處是房子，太陽很大，老爺爺有著白色捲髮，穿著白色短衣 | `SetProfile` 1 次、`SearchPresets` 7 次，第 9 次呼叫 → `Tool_Budget_Exhausted {"ToolCalls": 9}` → 強制 `FinalizePrompt`，facetStates 全部 missing |
+| `543fa33a…` | 中年女士在廚房，正把青菜放入便當內，她穿著圍裙與長褲 | 同上 |
+
+prompt_version 都是 `8c10dcfe1f16`，跟子專案 3 驗收時能正常追問的版本相同。組態也相同（user-secrets 只有 `Llm:ApiKey`）。**與 docker 無關**，用 `start_api.py` 跑一樣會發生。在這之前 33 輪一次都沒發生，差別在這次模型照 system prompt 的指示把維度搜滿了。
+
+**根因**：預算跟 system prompt 的指示在算術上不相容。
+
+- `ToolBudgetFilter` 每次工具呼叫都計數，終止型工具也算；`Orchestrator:MaxToolCallsPerTurn` = 8。
+- `Prompts/system.md` 第 1 條要求：先 `SetProfile`，再對每個適用維度呼叫 `SearchPresets`，使用者沒講的維度分兩次給對比方向。
+- 人像有 6 個維度，所以一輪需要：
+
+  ```text
+  SetProfile 1 + 六個維度各 1 + 每個沒講的維度再 1 + AskUser 1 = 8 + 沒講的維度數
+  ```
+
+  只要有一個維度沒講，照做就超過 8。#2 的 0 筆結果會讓模型換說法重搜，再多吃掉幾次。
+- 預算用盡 → 強制定稿 → `Status = Finalized` → `ToolSetBuilder` 在 Finalized 狀態不給 `AskUser`（主規格 §4.3）→ 這個 session 永遠不再追問。
+- 強制定稿時模型還沒呼叫 `SetFacetStates`，所以使用者講過的維度也是 missing，tips 會把它們全列成「未指定」。
+
+**修正**（分支 `fix/batch-search-presets`，commit hash 待 merge 後補；設計見 [批次 SearchPresets 設計](superpowers/specs/2026-09-24-batch-search-presets-design.md)）：採原本列的方向 2 + 3，方向 1 當保險。
+
+- `SearchPresets` 改收 `queries: {dimension, query}[]`，一輪的檢索只花一次工具呼叫，embedding 走一次 batch；`system.md` 第 1 條與工具描述同步。
+- `MaxToolCallsPerTurn` 8 → 16。批次後第一輪預期 4–5 次呼叫，16 只是模型仍拆開呼叫時的餘裕。
+- 強制定稿提示要求 `facetStates` 依使用者原話標 covered；`FinalizePrompt` 本來就收 `facetStates`，不需要多一次 `SetFacetStates`。
+
+**驗收**：待 merge 後依設計 §7 跑，結果記到 `docs/eval-cases.md`。
 
 ### 2. `SearchPresets` 在候選池有幾千筆時回 0 筆
 
