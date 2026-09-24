@@ -8,6 +8,7 @@ import { AGENT_EVENT_TYPES, type AgentEvent, type FacetCatalog } from '../types/
 type SaveStatus = { status: 'idle' | 'saving' | 'saved' | 'error'; error?: string }
 
 const BACKEND_DOWN = '連不到後端。請確認 API 在跑，再按「重試」。'
+const EXPIRED_KEPT_TEXT = '上次的對話已過期，已開新對話。原文留在輸入框，可以直接再送。'
 
 /** 唯一的 store。動作只做 I/O；對話狀態的變更全部走 lib/reducer 的純函式。 */
 export const useSessionStore = defineStore('session', () => {
@@ -39,12 +40,20 @@ export const useSessionStore = defineStore('session', () => {
   /** 最新一張定稿卡：save_consent_requested 要展開它，也只有它可以存（後端永遠存 LastFinal）。 */
   const latestFinalizedTurn = computed<number | null>(() => latestFinalizedTurnOf(state.value.transcript))
 
-  function persist() {
+  /** opts.draft 只在送出當下帶原文（輪次中重載時放回輸入框），其餘時候存空字串。 */
+  function persist(opts: { draft?: string } = {}) {
     const id = state.value.sessionId
     if (!id) return
     // 已存過的輪次跟著存：重載後定稿卡要維持「已存」，否則會再存一筆重複的進共享庫
     const savedTurns = Object.entries(saveState.value).filter(([, v]) => v.status === 'saved').map(([k]) => Number(k))
-    savePersisted({ sessionId: id, transcript: state.value.transcript, savedTurns })
+    savePersisted({ sessionId: id, transcript: state.value.transcript, savedTurns, draft: opts.draft ?? '' })
+  }
+
+  /** 輪次中重載：送出的原文放回輸入框，不自動送。 */
+  function restoreDraft(text: string | undefined) {
+    if (!text) return
+    draft.value = text
+    draftDirty.value = true
   }
 
   /** 開頁：載 catalog；有舊 session 就用 GET 拿權威狀態 + 本地 transcript 重建，404 就開新的。 */
@@ -58,10 +67,12 @@ export const useSessionStore = defineStore('session', () => {
         if (dto) {
           state.value = hydrate(initialState(), dto, saved.transcript)
           for (const t of saved.savedTurns ?? []) saveState.value[t] = { status: 'saved' }
+          restoreDraft(saved.draft)
           return
         }
         await newSession()
-        notice.value = '上次的對話已過期，已開新對話。'
+        notice.value = saved.draft ? EXPIRED_KEPT_TEXT : '上次的對話已過期，已開新對話。'
+        restoreDraft(saved.draft)
         return
       }
       await newSession()
@@ -87,13 +98,15 @@ export const useSessionStore = defineStore('session', () => {
     draft.value = ''; chips.value = []; draftDirty.value = false
     notice.value = null
     state.value = beginTurn(state.value, text)
+    // 送出當下先存一次：輪次中重載時，原文經 draft 回到輸入框（hydrate 會拿掉沒有下文的 user 條目）
+    persist({ draft: text })
     const ctl = new AbortController()
     try {
       const r = await api.openStream(state.value.sessionId!, text, ctl.signal)
       if (r.status === 404) {
         // session 過期：開新的、提示、原文留在輸入框（spec §5）。newSession 會清掉 transcript，所以提示放 notice。
         await newSession()
-        notice.value = '上次的對話已過期，已開新對話。原文留在輸入框，可以直接再送。'
+        notice.value = EXPIRED_KEPT_TEXT
         draft.value = text; draftDirty.value = true
         return
       }

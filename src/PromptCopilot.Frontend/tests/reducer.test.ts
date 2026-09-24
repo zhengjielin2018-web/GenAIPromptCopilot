@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { initialState, beginTurn, applyEvent, endTurn, failHttp, hydrate, latestFinalizedTurn, type ChatState, type Entry } from '../lib/reducer'
-import type { AgentEvent } from '../types/api'
+import type { AgentEvent, SessionSnapshotDto } from '../types/api'
 
 const session = (turnIndex = 1): AgentEvent => ({ type: 'session', sessionId: 's1', turnIndex, status: 'Collecting' })
 const call = (id: string, name = 'SearchPresets'): AgentEvent => ({ type: 'tool_call', callId: id, name, argsSummary: 'dimension: style' })
@@ -144,16 +144,46 @@ describe('failHttp', () => {
 })
 
 describe('hydrate', () => {
+  const LAST = { positive: 'P', negative: 'N', tips: 'T', intentSummary: 'I' }
+  const dto = (lastFinal: SessionSnapshotDto['lastFinal'] = LAST): SessionSnapshotDto => ({
+    sessionId: 's1', status: lastFinal ? 'Finalized' : 'Collecting', profile: 'landscape', turnIndex: 4, askCount: 2, askLimit: 2,
+    facetStates: { 'scene.location': 'covered' }, lastFinal,
+  })
+  const user = (text: string): Entry => ({ kind: 'user', text })
+  const fin = (turnIndex: number): Entry => ({ kind: 'final', turnIndex, data: { kind: 'finalized', ...LAST } })
+  const msg = (turnIndex: number): Entry => ({ kind: 'final', turnIndex, data: { kind: 'message', message: 'm' } })
+
   it('takes authoritative fields from the dto and the transcript from storage', () => {
-    const s = hydrate(initialState(), {
-      sessionId: 's1', status: 'Finalized', profile: 'landscape', turnIndex: 4, askCount: 2, askLimit: 2,
-      facetStates: { 'scene.location': 'covered' },
-      lastFinal: { positive: 'P', negative: 'N', tips: 'T', intentSummary: 'I' },
-    }, [{ kind: 'user', text: 'x' }])
+    const s = hydrate(initialState(), dto(), [user('x'), fin(4)])
     expect(s).toMatchObject({ sessionId: 's1', status: 'Finalized', profile: 'landscape', turnIndex: 4, askCount: 2, askLimit: 2 })
     expect(s.lastFinal).toEqual({ kind: 'finalized', positive: 'P', negative: 'N', tips: 'T', intentSummary: 'I' })
-    expect(s.transcript).toEqual([{ kind: 'user', text: 'x' }])
+    expect(s.transcript).toEqual([user('x'), fin(4)])
     expect(s.pending).toBeNull()
+  })
+
+  // 後端有 LastFinal、對話流卻沒有定稿卡（定稿那一輪沒來得及存進 sessionStorage）：補一張，卡片才畫得出來、也才存得了
+  it('appends a synthetic finalized card when the dto has lastFinal and the transcript has none', () => {
+    const s = hydrate(initialState(), dto(), [user('x'), msg(3)])
+    expect(s.transcript).toHaveLength(3)
+    expect(s.transcript.at(-1)).toEqual({ kind: 'final', turnIndex: 4, data: { kind: 'finalized', ...LAST } })
+    expect(latestFinalizedTurn(s.transcript)).toBe(4)
+  })
+
+  it('does not append a card when the transcript already has a finalized entry', () => {
+    const s = hydrate(initialState(), dto(), [user('x'), fin(2), user('y'), msg(3)])
+    expect(s.transcript).toEqual([user('x'), fin(2), user('y'), msg(3)])
+    expect(latestFinalizedTurn(s.transcript)).toBe(2)
+  })
+
+  // 送出當下存的對話流停在 user 條目：那一輪後端已回滾（或已定稿，由補上的卡涵蓋），原文經 draft 回到輸入框
+  it('drops a trailing user entry that no entry follows, but keeps one that a final entry follows', () => {
+    expect(hydrate(initialState(), dto(null), [user('a'), msg(3), user('b')]).transcript).toEqual([user('a'), msg(3)])
+    expect(hydrate(initialState(), dto(null), [user('a'), msg(3)]).transcript).toEqual([user('a'), msg(3)])
+  })
+
+  it('drops the dangling user entry before appending the synthetic card', () => {
+    expect(hydrate(initialState(), dto(), [user('a'), msg(3), user('b')]).transcript)
+      .toEqual([user('a'), msg(3), { kind: 'final', turnIndex: 4, data: { kind: 'finalized', ...LAST } }])
   })
 })
 
