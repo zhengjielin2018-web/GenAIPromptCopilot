@@ -11,22 +11,30 @@
     <div v-if="open" class="ml-[13px] mt-1 border-l border-rule pb-1 pl-3">
       <p v-if="entry.argsSummary" class="break-all font-mono text-[11px] text-muted">{{ entry.argsSummary }}</p>
       <p v-if="entry.summary" class="mt-1 text-ink">{{ entry.summary }}</p>
-      <ul v-if="entry.presets.length" class="mt-2 flex gap-2 overflow-x-auto pb-1">
-        <li v-for="p in entry.presets" :key="p.id">
-          <button type="button" class="block w-24 text-left" @click="s.openDrawer(p.id)">
-            <img v-if="p.imageUrl && !broken.has(p.id)" :src="p.imageUrl" :alt="p.title" class="h-24 w-24 rounded-[3px] object-cover" loading="lazy"
-                 referrerpolicy="no-referrer" @error="broken.add(p.id)">
-            <div v-else class="flex h-24 w-24 items-center justify-center rounded-[3px] border border-dashed border-rule text-muted">無圖</div>
-            <span class="mt-1 block truncate text-[11px] text-ink">{{ p.title }}</span>
-          </button>
-        </li>
-      </ul>
+      <template v-if="entry.presets.length">
+        <p class="mt-2 text-[11px] text-muted">圖片來自來源網站，著作權屬原作者，點圖看出處</p>
+        <ul class="mt-1 flex gap-2 overflow-x-auto pb-1">
+          <li v-for="p in entry.presets" :key="p.id">
+            <button type="button" class="block w-24 text-left" @click="s.openDrawer(p.id)">
+              <span v-if="p.imageUrl && !broken.has(p.id)" class="relative block h-24 w-24">
+                <img :src="p.imageUrl" :alt="p.title" class="h-24 w-24 rounded-[3px] object-cover" loading="lazy"
+                     referrerpolicy="no-referrer" @error="broken.add(p.id)">
+                <span v-if="sourceName(p.sourceRef)"
+                      class="absolute bottom-0.5 right-0.5 rounded-[2px] bg-ink/70 px-1 text-[9px] leading-4 text-paper">{{ sourceName(p.sourceRef) }}</span>
+              </span>
+              <div v-else class="flex h-24 w-24 items-center justify-center rounded-[3px] border border-dashed border-rule text-muted">無圖</div>
+              <span class="mt-1 block truncate text-[11px] text-ink">{{ p.title }}</span>
+            </button>
+          </li>
+        </ul>
+      </template>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import type { ToolEntry } from '../lib/reducer'
+import { sourceName } from '../lib/copy'
 const props = defineProps<{ entry: ToolEntry }>()
 const s = useSessionStore()
 const open = ref(false)

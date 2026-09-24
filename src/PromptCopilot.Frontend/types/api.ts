@@ -4,11 +4,12 @@ export type SessionStatus = 'Collecting' | 'Finalized'
 /** 後端 SseWriter 用 WhenWritingNull：值為 null 的欄位會整個省略，所以可為 null 的欄位在線上也可能不存在。 */
 export interface OptionItem { label: string; tags: string; presetId?: number | null }
 export interface AskItem { dimension: string; question: string; missingFacetIds: string[]; options: OptionItem[] }
-export interface PresetRef { id: number; title: string; imageUrl?: string | null }
+/** sourceRef：資料來源識別（`civitai:12345:0`），縮圖依前綴標來源名。2026-09-25 加的，之前存進 sessionStorage 的沒有。 */
+export interface PresetRef { id: number; title: string; imageUrl?: string | null; sourceRef?: string | null }
 
-/** 定稿 tag 的來源，伺服器定稿時比對 ledger 算的。rag：知識庫片段（presetIds 依片段被撈到的先後，presetTitle 取第一個）；
- *  llm：模型生成；base：基礎畫質詞／負向詞。presetTitle 為 null 時線上省略。 */
-export interface TagSource { tag: string; origin: 'rag' | 'llm' | 'base'; presetIds: number[]; presetTitle?: string | null }
+/** 定稿 tag 的來源，伺服器定稿時比對 ledger 算的。rag：知識庫片段（presetIds 依片段被撈到的先後，presetTitle 與 sourceRef 取第一個）；
+ *  llm：模型生成；base：基礎畫質詞／負向詞。presetTitle、sourceRef 為 null 時線上省略。 */
+export interface TagSource { tag: string; origin: 'rag' | 'llm' | 'base'; presetIds: number[]; presetTitle?: string | null; sourceRef?: string | null }
 
 /** positiveSources／negativeSources 是 2026-09-25 加的：之前存進 sessionStorage 的定稿卡沒有，畫面退回純文字。 */
 export interface FinalizedData {

@@ -12,6 +12,12 @@
         <img v-if="preset.imageUrl && !imgFailed" :src="preset.imageUrl" :alt="preset.title" referrerpolicy="no-referrer"
              class="mt-3 w-full rounded-[4px] object-cover" @error="imgFailed = true">
         <div v-else class="mt-3 flex h-40 items-center justify-center rounded-[4px] border border-dashed border-rule text-xs text-muted">沒有可顯示的圖片</div>
+        <!-- 圖與片段都屬於原作者：說明緊貼在圖下方，沒有圖也照樣顯示 -->
+        <p class="mt-2 rounded-[4px] border border-rule bg-paper px-3 py-2 text-xs leading-5">
+          {{ sourceNotice(preset.sourceRef).text }}
+          <a v-if="preset.sourceUrl" :href="preset.sourceUrl" target="_blank" rel="noopener noreferrer"
+             class="whitespace-nowrap underline underline-offset-2 hover:text-cyan">查看原頁 →</a>
+        </p>
         <h3 class="mt-4 text-lg font-bold leading-snug">{{ preset.title }}</h3>
         <p class="mt-0.5 text-xs text-muted">{{ preset.category }}</p>
         <p class="mt-2 text-sm leading-6">{{ preset.description }}</p>
@@ -29,12 +35,6 @@
             <span v-for="f in preset.facetIds" :key="f" class="rounded-[3px] border border-rule px-1.5 py-0.5 font-mono text-[11px] text-muted">{{ f }}</span>
           </div>
         </section>
-        <p class="mt-5 text-[11px] text-muted">
-          <template v-if="preset.sourceUrl && sourceName(preset.sourceRef)">
-            出處：<a :href="preset.sourceUrl" target="_blank" rel="noopener noreferrer" class="underline underline-offset-2 hover:text-ink">{{ sourceName(preset.sourceRef) }}</a>。圖片不轉存。
-          </template>
-          <template v-else>圖片來自來源網站，本服務不轉存。</template>
-        </p>
       </template>
     </aside>
   </transition>
@@ -42,7 +42,7 @@
 
 <script setup lang="ts">
 import type { PresetDetail } from '../types/api'
-import { sourceName } from '../lib/copy'
+import { sourceNotice } from '../lib/copy'
 const s = useSessionStore()
 const api = useApi()
 const preset = ref<PresetDetail | null>(null)

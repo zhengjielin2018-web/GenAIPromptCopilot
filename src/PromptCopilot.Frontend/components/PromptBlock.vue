@@ -8,7 +8,7 @@
       <ul class="mt-1.5 flex flex-wrap gap-1">
         <li v-for="(t, i) in sources" :key="i">
           <button v-if="t.origin === 'rag' && t.presetIds.length" type="button" :class="[CHIP, look(t), 'hover:bg-cyan hover:text-paper']"
-                  :title="`來自〈${t.presetTitle ?? `片段 #${t.presetIds[0]}`}〉`" @click="s.openDrawer(t.presetIds[0])">
+                  :title="ragTitle(t)" @click="s.openDrawer(t.presetIds[0])">
             {{ t.tag }}
           </button>
           <span v-else :class="[CHIP, look(t)]">{{ t.tag }}</span>
@@ -26,6 +26,7 @@
 
 <script setup lang="ts">
 import type { TagSource } from '../types/api'
+import { sourceName } from '../lib/copy'
 /** sources：定稿時伺服器標的逐 tag 來源。沒有（舊的定稿卡）就退回整段純文字。複製一律複製整段原文。 */
 const props = defineProps<{ label: string; text: string; sources?: TagSource[] }>()
 const s = useSessionStore()
@@ -48,6 +49,11 @@ const LEGEND = [
   { origin: 'llm', label: '模型生成' },
   { origin: 'base', label: '基礎詞' },
 ] as const
+/** rag chip 的提示：「來自〈標題〉（Civitai）」，認得出來源才加括號。 */
+function ragTitle(t: TagSource) {
+  const name = sourceName(t.sourceRef)
+  return `來自〈${t.presetTitle ?? `片段 #${t.presetIds[0]}`}〉${name ? `（${name}）` : ''}`
+}
 /** 後端多了新的 origin 時當成模型生成，不讓整張卡壞掉。 */
 const look = (t: TagSource) => `${SWATCH[t.origin] ?? SWATCH.llm} ${TEXT[t.origin] ?? TEXT.llm}`
 </script>
