@@ -124,7 +124,7 @@ prompt_version 都是 `8c10dcfe1f16`，跟子專案 3 驗收時能正常追問�
 - 預算用盡 → 強制定稿 → `Status = Finalized` → `ToolSetBuilder` 在 Finalized 狀態不給 `AskUser`（主規格 §4.3）→ 這個 session 永遠不再追問。
 - 強制定稿時模型還沒呼叫 `SetFacetStates`，所以使用者講過的維度也是 missing，tips 會把它們全列成「未指定」。
 
-**修正**（分支 `fix/batch-search-presets`，commit hash 待 merge 後補；設計見 [批次 SearchPresets 設計](superpowers/specs/2026-09-24-batch-search-presets-design.md)）：採原本列的方向 2 + 3，方向 1 當保險。
+**修正**（分支 `fix/batch-search-presets`，merge commit `abf8a6e`；設計見 [批次 SearchPresets 設計](superpowers/specs/2026-09-24-batch-search-presets-design.md)）：採原本列的方向 2 + 3，方向 1 當保險。
 
 - `SearchPresets` 改收 `queries: {dimension, query}[]`，一輪的檢索只花一次工具呼叫，embedding 走一次 batch；`system.md` 第 1 條與工具描述同步。
 - `MaxToolCallsPerTurn` 8 → 16。批次後第一輪預期 4–5 次呼叫，16 只是模型仍拆開呼叫時的餘裕。
@@ -156,7 +156,7 @@ prompt_version 都是 `8c10dcfe1f16`，跟子專案 3 驗收時能正常追問�
 - `scripts/pipeline/retrieval.py` 的同一條 SQL（`scripts/demo.py` 走它）
 - `HistoryRepository` 的 `SearchSimilarPrompts` 也是 HNSW 加 `subject_profile` 過濾，理論上有同樣風險，修的時候一起確認
 
-**修正**（分支 `fix/hnsw-iterative-scan`，commit hash 待 merge 後補）：`db/init/001_schema.sql` 在 `CREATE EXTENSION vector` 之後把資料庫層級設成 `hnsw.iterative_scan = strict_order`，用 `current_database()` 組 `ALTER DATABASE`，資料庫名跟著 `POSTGRES_DB` 走。過濾後不足 k 筆時 HNSW 會繼續往外搜，結果仍嚴格依距離排序。SQL 不用改，`PresetRepository`、`HistoryRepository` 與 `retrieval.py` 一起生效。沒改成精確掃描：候選池最大 6,752 筆，精確也可行，但會失去 HNSW 的展示意義。完整說明見[檢索設計 §12.1](superpowers/specs/2026-09-22-dimension-scoped-retrieval-design.md#121-hnsw-是先搜再過濾2026-09-24)。
+**修正**（分支 `fix/hnsw-iterative-scan`，merge commit `deaf9ae`）：`db/init/001_schema.sql` 在 `CREATE EXTENSION vector` 之後把資料庫層級設成 `hnsw.iterative_scan = strict_order`，用 `current_database()` 組 `ALTER DATABASE`，資料庫名跟著 `POSTGRES_DB` 走。過濾後不足 k 筆時 HNSW 會繼續往外搜，結果仍嚴格依距離排序。SQL 不用改，`PresetRepository`、`HistoryRepository` 與 `retrieval.py` 一起生效。沒改成精確掃描：候選池最大 6,752 筆，精確也可行，但會失去 HNSW 的展示意義。完整說明見[檢索設計 §12.1](superpowers/specs/2026-09-22-dimension-scoped-retrieval-design.md#121-hnsw-是先搜再過濾2026-09-24)。
 
 **驗收**（2026-09-24，開發機資料庫）：
 
