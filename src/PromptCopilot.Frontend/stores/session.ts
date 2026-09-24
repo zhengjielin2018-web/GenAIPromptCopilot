@@ -40,7 +40,11 @@ export const useSessionStore = defineStore('session', () => {
   const latestFinalizedTurn = computed<number | null>(() => latestFinalizedTurnOf(state.value.transcript))
 
   function persist() {
-    if (state.value.sessionId) savePersisted({ sessionId: state.value.sessionId, transcript: state.value.transcript })
+    const id = state.value.sessionId
+    if (!id) return
+    // 已存過的輪次跟著存：重載後定稿卡要維持「已存」，否則會再存一筆重複的進共享庫
+    const savedTurns = Object.entries(saveState.value).filter(([, v]) => v.status === 'saved').map(([k]) => Number(k))
+    savePersisted({ sessionId: id, transcript: state.value.transcript, savedTurns })
   }
 
   /** 開頁：載 catalog；有舊 session 就用 GET 拿權威狀態 + 本地 transcript 重建，404 就開新的。 */
@@ -51,7 +55,11 @@ export const useSessionStore = defineStore('session', () => {
       const saved = loadPersisted()
       if (saved) {
         const dto = await api.getSession(saved.sessionId)
-        if (dto) { state.value = hydrate(initialState(), dto, saved.transcript); return }
+        if (dto) {
+          state.value = hydrate(initialState(), dto, saved.transcript)
+          for (const t of saved.savedTurns ?? []) saveState.value[t] = { status: 'saved' }
+          return
+        }
         await newSession()
         notice.value = '上次的對話已過期，已開新對話。'
         return
@@ -146,6 +154,7 @@ export const useSessionStore = defineStore('session', () => {
     try {
       const r = await api.saveToShared(id, text)
       saveState.value[turnIndex] = r.ok ? { status: 'saved' } : { status: 'error', error: r.error }
+      if (r.ok) persist()
     } catch {
       saveState.value[turnIndex] = { status: 'error', error: BACKEND_DOWN }
     }

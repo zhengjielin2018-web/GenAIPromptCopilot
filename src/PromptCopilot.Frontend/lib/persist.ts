@@ -1,6 +1,7 @@
 import type { Entry } from './reducer'
 
-export interface Persisted { v: 1; sessionId: string; transcript: Entry[] }
+/** savedTurns：已存進共享庫的定稿輪次；draft：輪次進行中送出的原文。兩者是後加的，舊資料沒有，讀的一方當成 [] 與 ''。 */
+export interface Persisted { v: 1; sessionId: string; transcript: Entry[]; savedTurns?: number[]; draft?: string }
 export interface StorageLike { getItem(k: string): string | null; setItem(k: string, v: string): void; removeItem(k: string): void }
 
 const KEY = 'pc.session'
@@ -9,7 +10,7 @@ function defaultStorage(): StorageLike | null {
   try { return typeof sessionStorage === 'undefined' ? null : sessionStorage } catch { return null }
 }
 
-/** 只存顯示用的 transcript 與 sessionId。任何錯誤（隱私模式、被停用、壞資料）都當作沒有。 */
+/** 只存顯示用的 transcript、sessionId 與少量前端狀態。任何錯誤（隱私模式、被停用、壞資料）都當作沒有。 */
 export function loadPersisted(storage: StorageLike | null = defaultStorage()): Persisted | null {
   try {
     const raw = storage?.getItem(KEY)

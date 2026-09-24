@@ -18,6 +18,22 @@ describe('persist', () => {
     expect(loadPersisted(s)).toBeNull()
   })
 
+  // 已存進共享庫的輪次要跟著重載，否則同一張卡能再存一次；draft 讓輪次中重載時原文回到輸入框
+  it('round-trips savedTurns and draft', () => {
+    const s = memStorage()
+    savePersisted({ sessionId: 'abc', transcript: [], savedTurns: [3], draft: 'x' }, s)
+    expect(loadPersisted(s)).toEqual({ v: 1, sessionId: 'abc', transcript: [], savedTurns: [3], draft: 'x' })
+  })
+
+  it('still loads an entry stored before savedTurns and draft existed', () => {
+    const s = memStorage()
+    s.setItem('pc.session', JSON.stringify({ v: 1, sessionId: 'abc', transcript: [{ kind: 'user', text: '嗨' }] }))
+    const p = loadPersisted(s)
+    expect(p?.sessionId).toBe('abc')
+    expect(p?.savedTurns).toBeUndefined()
+    expect(p?.draft).toBeUndefined()
+  })
+
   it('returns null for garbage or wrong version', () => {
     const s = memStorage()
     s.setItem('pc.session', '{not json')
