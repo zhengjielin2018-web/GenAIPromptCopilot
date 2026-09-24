@@ -3,6 +3,17 @@
 
 CREATE EXTENSION IF NOT EXISTS vector;
 
+-- HNSW 是「先搜再過濾」：帶 WHERE facet_ids && … 的查詢，索引先取全表最近的 hnsw.ef_search（預設 40）筆，
+-- 之後才套 WHERE。候選池只佔全表一兩成時，近鄰常全落在池外，過濾完剩 0 筆（docs/known-issues.md 已修正 #2）。
+-- pgvector 0.8+ 的 iterative scan：過濾後不足 LIMIT 筆就繼續往外搜；strict_order 讓結果仍嚴格依距離排序。
+-- 設在資料庫層級，API 與 scripts/ 的每條連線都吃得到。資料庫名跟著 POSTGRES_DB 走，所以用 current_database()。
+-- 只對之後建立的連線生效；既有的開發庫要手動執行一次同樣的 ALTER DATABASE。
+DO $$
+BEGIN
+    EXECUTE format('ALTER DATABASE %I SET hnsw.iterative_scan = strict_order', current_database());
+END
+$$;
+
 -- 使用者沉澱 + 管線匯入的完整 prompt；RAG 1 來源
 CREATE TABLE shared_prompt_histories (
     id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
