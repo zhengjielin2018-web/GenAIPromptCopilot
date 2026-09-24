@@ -48,6 +48,7 @@
 1. `Blocked_Upstream` 只記 `reason`，而且這個值不可靠：`LlmFailureClassifier.BlockReasonOf` 在例外訊息含 "blocked" 或 "safety" 時一律回 `SAFETY`。「輸入被拒」（`promptFeedback.blockReason`）與「輸出被截」（`finishReason`）在 audit 裡長得一樣，也沒有 `safetyRatings` 的類別與機率。#4 因此無法確認。
 2. `Turn_Failed` 只記例外訊息的前段，沒有 Gemini 回應本文（#3 的 400 需要它）。
 3. 容器 log 沒有每輪一行的摘要，看 demo 時沒辦法從終端機判斷發生什麼事。
+4. `Tool_Invoked` 的 args 與 result 截到 200 字，查 2026-09-25 的服裝 tag 問題時無法從 audit 看出 clothing 查了什麼、撈到什麼，只能重跑推斷；至少 `SearchPresets` 與 `FinalizePrompt` 要存完整。
 
 **修正方向**：
 

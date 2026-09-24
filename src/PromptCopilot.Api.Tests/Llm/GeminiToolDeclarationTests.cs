@@ -54,7 +54,7 @@ public class GeminiToolDeclarationTests
     private static string Call(string name, string argsJson) =>
         """{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"NAME","args":ARGS}}]},"finishReason":"STOP","index":0}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}""".Replace("NAME", name).Replace("ARGS", argsJson);
 
-    private const string Text = """{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP","index":0}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}""";
+    private const string Text ="""{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP","index":0}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}""";
 
     [Fact]
     public async Task SearchPresets_declaration_and_binding_through_the_google_connector()
@@ -69,7 +69,7 @@ public class GeminiToolDeclarationTests
         AgentKernelFactory.AddFiltered(kernel, "Knowledge", new KnowledgePlugin(turn, catalog, embed, presets, new His()), ToolNames.Always);
 
         var bodies = new List<string>();
-        var reply = Call("Knowledge_SearchPresets", """{"queries":[{"dimension":"style","query":"寫實攝影"},{"dimension":"scene","query":"稻田"}]}""");
+        var reply = Call("Knowledge_SearchPresets", """{"queries":[{"dimension":"style","query":"寫實攝影"},{"facetId":"clothing.footwear","query":"拖鞋"}]}""");
         var chat = new GoogleAIGeminiChatCompletionService("gemini-x", "fake", GoogleAIVersion.V1_Beta,
             new HttpClient(new GeminiRoleFixHandler(new Canned(new Queue<string>(new[] { reply, Text }), bodies))));
 
@@ -89,14 +89,20 @@ public class GeminiToolDeclarationTests
 
         var items = queriesParam.GetProperty("items");
         Assert.Equal("object", items.GetProperty("type").GetString());
+        // query 必填；dimension 與 facetId 擇一，兩者都不能在 required 裡，否則 Gemini 會被迫每項都填 dimension。
+        // SK 1.80 + Google connector 對 string? 產 {"type":"string","nullable":true}（不是 ["string","null"]）。
         var required = items.GetProperty("required").EnumerateArray().Select(x => x.GetString()).ToArray();
-        Assert.Contains("dimension", required);
-        Assert.Contains("query", required);
-        Assert.Equal("string", items.GetProperty("properties").GetProperty("dimension").GetProperty("type").GetString());
-        Assert.Equal("string", items.GetProperty("properties").GetProperty("query").GetProperty("type").GetString());
+        Assert.Equal(new[] { "query" }, required);
+        var props = items.GetProperty("properties");
+        Assert.Equal("string", props.GetProperty("query").GetProperty("type").GetString());
+        foreach (var optional in new[] { "dimension", "facetId" })
+        {
+            Assert.Equal("string", props.GetProperty(optional).GetProperty("type").GetString());
+            Assert.True(props.GetProperty(optional).GetProperty("nullable").GetBoolean());
+        }
 
-        // (2) connector 把 Gemini 回的兩項 functionCall 綁到同一次 KnowledgePlugin 呼叫，embedding 一次 batch 帶兩個 query。
+        // (2) connector 把 Gemini 回的兩項 functionCall（一項只帶 facetId）綁到同一次 KnowledgePlugin 呼叫，embedding 一次 batch 帶兩個 query。
         var call = Assert.Single(embed.Calls);
-        Assert.Equal(new[] { "寫實攝影", "稻田" }, call);
+        Assert.Equal(new[] { "寫實攝影", "拖鞋" }, call);
     }
 }

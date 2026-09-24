@@ -41,7 +41,10 @@ public class SystemPromptBuilderTests
         Assert.Contains("使用者委託此項", prompt);
         Assert.Contains("AutoFill：true", prompt);
         Assert.Contains("mountain", prompt);
-        Assert.DoesNotContain("clothing.", prompt);      // landscape 不列人物穿著
+        // landscape 不列人物穿著。只看 facet 清單：流程說明的 SearchPresets 例子本來就寫了 clothing.footwear。
+        var listing = prompt[prompt.IndexOf("## Facet 清單", StringComparison.Ordinal)..prompt.IndexOf("## Session 事實", StringComparison.Ordinal)];
+        Assert.Contains("scene.season", listing);
+        Assert.DoesNotContain("clothing.", listing);
     }
 
     [Fact]
@@ -88,12 +91,13 @@ public class SystemPromptBuilderTests
         Assert.NotEqual(v1, b.Build(s, ToolNames.Always).Version);
     }
 
+    /// <summary>2026-09-25：一個維度一句複合描述撈不到單品；使用者講到的每個 facet 各一項（facetId＋原話）。</summary>
     [Fact]
-    public void Flow_rule_asks_for_one_batched_SearchPresets_call()
+    public void Flow_rule_asks_for_one_batched_SearchPresets_call_with_one_item_per_stated_facet()
     {
         var s = new Session("s");
         var (prompt, _) = Make().Build(s, ToolNames.Always);
-        Assert.Contains("用一次 `SearchPresets` 帶上所有適用的維度", prompt);
+        Assert.Contains("使用者講到的每個 facet 各一項，用 `facetId` 加上他描述那一項的原話", prompt);
         Assert.DoesNotContain("分兩次呼叫", prompt);
     }
 

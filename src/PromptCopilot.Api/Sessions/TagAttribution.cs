@@ -3,11 +3,16 @@ using System.Text.RegularExpressions;
 namespace PromptCopilot.Api.Sessions;
 
 /// <summary>定稿 tag 的來源。Origin：<c>rag</c>（命中 ledger 裡的片段）｜<c>llm</c>（模型自己寫的）｜<c>base</c>（基礎畫質詞／負向詞）。
-/// rag 的 PresetIds 依片段寫進 ledger 的先後，PresetTitle 取第一個；其餘兩種 PresetIds 空、PresetTitle 為 null。</summary>
+/// rag 的 PresetIds 整段相等的命中在前、字尾相符在後，各自依片段寫進 ledger 的先後、不重複，PresetTitle 取第一個；
+/// 其餘兩種 PresetIds 空、PresetTitle 為 null。</summary>
 public sealed record TagSource(string Tag, string Origin, IReadOnlyList<long> PresetIds, string? PresetTitle);
 
 /// <summary>定稿時由伺服器比對 ledger 標 tag 來源，不信模型自述（主規格 §9）。純函式、無 I/O。
-/// 只看 ledger：SearchSimilarPrompts 的結果不進 ledger（只供參考），不算來源。</summary>
+/// 只看 ledger：SearchSimilarPrompts 的結果不進 ledger（只供參考），不算來源。
+/// 正規化後算 rag 的條件：整段相等，或以空白為界的字尾相符（片段 <c>platform sandals</c> ↔ tag <c>sandals</c>、
+/// tag <c>short shorts</c> ↔ 片段 <c>shorts</c>）。片段多是更具體的複合 tag，模型寫的常是單品。
+/// 只比字尾、只在空白邊界，不做子字串：<c>top</c> 不會命中 <c>laptop</c>；但 <c>top</c> 會命中 <c>crop top</c>，
+/// 分不出泛指上衣還是那件 crop top——這是接受的代價。</summary>
 public static class TagAttribution
 {
     public const string Rag = "rag";
@@ -27,13 +32,16 @@ public static class TagAttribution
         var tags = Split(prompt);
         if (tags.Count == 0) return Array.Empty<TagSource>();
 
+        // 整段相等走字典；字尾相符逐一比對片段（一個 session 幾十筆，tag 數 × 片段數即可）。兩者都依 ledger 插入順序。
         var index = new Dictionary<string, List<LedgerEntry>>();
+        var snippets = new List<(string key, LedgerEntry entry)>();
         foreach (var e in ledger.Entries)
             foreach (var key in Split(negative ? e.NegativeSnippet : e.PromptSnippet).Select(Normalize))
             {
                 if (key.Length == 0) continue;
                 if (!index.TryGetValue(key, out var hits)) index[key] = hits = new List<LedgerEntry>();
                 if (!hits.Contains(e)) hits.Add(e);
+                snippets.Add((key, e));
             }
 
         var baseWords = negative ? BaseNegative : BasePositive;
@@ -41,10 +49,20 @@ public static class TagAttribution
         {
             var key = Normalize(tag);
             if (baseWords.Contains(key)) return new TagSource(tag, Base, Array.Empty<long>(), null);
-            if (index.TryGetValue(key, out var hits)) return new TagSource(tag, Rag, hits.Select(h => h.Id).ToArray(), hits[0].Title);
-            return new TagSource(tag, Llm, Array.Empty<long>(), null);
+            // 整段相等的命中排前面，其次字尾命中；同一筆 preset 只列一次。
+            var hits = index.TryGetValue(key, out var exact) ? new List<LedgerEntry>(exact) : new List<LedgerEntry>();
+            foreach (var (snippet, e) in snippets)
+                if ((EndsWithWord(snippet, key) || EndsWithWord(key, snippet)) && !hits.Contains(e)) hits.Add(e);
+            return hits.Count > 0
+                ? new TagSource(tag, Rag, hits.Select(h => h.Id).ToArray(), hits[0].Title)
+                : new TagSource(tag, Llm, Array.Empty<long>(), null);
         }).ToList();
     }
+
+    /// <summary>以空白為界的字尾：<paramref name="longer"/> 以「空白＋<paramref name="suffix"/>」結尾。兩邊都已正規化（單一空白）。</summary>
+    private static bool EndsWithWord(string longer, string suffix) =>
+        suffix.Length > 0 && longer.Length > suffix.Length
+        && longer.EndsWith(suffix, StringComparison.Ordinal) && longer[longer.Length - suffix.Length - 1] == ' ';
 
     /// <summary>以逗號分段、去頭尾空白、丟掉空段。顯示用的原文就是這裡的每一段。</summary>
     private static List<string> Split(string? text) =>
