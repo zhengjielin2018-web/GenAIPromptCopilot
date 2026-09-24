@@ -29,16 +29,43 @@ public class HistoryTrimmerTests
         var h = new ChatHistory();
         h.AddSystemMessage("sys"); h.AddUserMessage("u1");
         var from = h.Count;
-        h.Add(ToolResult("SearchPresets", """{"dimension":"style","hits":[{"id":1,"title":"a","positive":"long text"},{"id":2,"title":"b","positive":"x"}]}"""));
+        h.Add(ToolResult("SearchPresets", """{"results":[{"dimension":"style","query":"寫實","grounded":false,"poolSize":4455,"hits":[{"id":1,"title":"a","positive":"long text"},{"id":2,"title":"b","positive":"x"}]}]}"""));
         h.Add(Call("Discuss", new { message = "m", options = new[] { new { label = "A", tags = "photo realism", presetId = 1 } } }));
 
         HistoryTrimmer.CompressTurn(h, from);
 
         var result = h[from].Items.OfType<FunctionResultContent>().Single().Result!.ToString()!;
         Assert.Contains("\"title\":\"a\"", result); Assert.DoesNotContain("long text", result);
+        Assert.Contains("\"poolSize\":4455", result); Assert.DoesNotContain("\"query\"", result);
         var call = h[from + 1].Items.OfType<FunctionCallContent>().Single();
         var options = call.Arguments!["options"]!.ToString()!;
         Assert.Contains("\"label\":\"A\"", options); Assert.DoesNotContain("photo realism", options);
+    }
+
+    [Fact]
+    public void CompressTurn_keeps_error_items_and_drops_hit_bodies_per_result()
+    {
+        var h = new ChatHistory();
+        h.Add(ToolResult("SearchPresets", """{"results":[{"dimension":"hair","query":"x","error":"維度 hair 不存在"},{"dimension":"scene","query":"稻田","grounded":true,"poolSize":6752,"hits":[{"id":3,"title":"c","positive":"very long"}]}]}"""));
+
+        HistoryTrimmer.CompressTurn(h, 0);
+
+        var result = h[0].Items.OfType<FunctionResultContent>().Single().Result!.ToString()!;
+        Assert.Contains("\"error\":\"維度 hair 不存在\"", result);
+        Assert.Contains("\"title\":\"c\"", result);
+        Assert.DoesNotContain("very long", result);
+    }
+
+    [Fact]
+    public void CompressTurn_leaves_legacy_single_dimension_shape_untouched()
+    {
+        const string legacy = """{"dimension":"style","poolSize":4455,"hits":[{"id":1,"title":"a","positive":"long text"}]}""";
+        var h = new ChatHistory();
+        h.Add(ToolResult("SearchPresets", legacy));
+
+        HistoryTrimmer.CompressTurn(h, 0);
+
+        Assert.Equal(legacy, h[0].Items.OfType<FunctionResultContent>().Single().Result!.ToString());
     }
 
     [Fact]

@@ -443,6 +443,9 @@ public class AgenticOrchestratorTests
         .ThenAsync(async (hist, k) =>
         {
             Assert.Contains("定稿", hist.Last().Content!);
+            Assert.Contains("covered", hist.Last().Content!);
+            Assert.Contains("留白", hist.Last().Content!);
+            Assert.Equal(AuthorRole.System, hist.Last().Role);
             Assert.Single(k!.Plugins);                                 // 只剩 Dialog
             Assert.Single(k.Plugins["Dialog"]);                        // 只剩 FinalizePrompt
             return new[] { await Invoke(hist, k, "Dialog", "FinalizePrompt", new { positivePrompt = "1girl", negativePrompt = "lowres", tips = "t", intentSummary = "一個女生", facetStates = Array.Empty<object>() }) };

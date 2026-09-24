@@ -16,6 +16,11 @@ public sealed record AskItem(
     [property: JsonPropertyName("missingFacetIds")] IReadOnlyList<string> MissingFacetIds,
     [property: JsonPropertyName("options")] IReadOnlyList<OptionItem> Options);
 
+/// <summary>SearchPresets 的一個項目。同一維度可重複出現（使用者沒講的維度給兩個對比方向）。</summary>
+public sealed record SearchQuery(
+    [property: JsonPropertyName("dimension")] string Dimension,
+    [property: JsonPropertyName("query")] string Query);
+
 /// <summary>一輪的結果。終止型 tool 成功時由 plugin 設到 TurnContext；迴圈看到非 null 就停。</summary>
 public abstract record TurnOutcome;
 public sealed record AskOutcome(string Preamble, IReadOnlyList<AskItem> Asks) : TurnOutcome;

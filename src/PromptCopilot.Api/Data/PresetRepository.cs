@@ -27,7 +27,7 @@ public class PresetRepository(NpgsqlDataSource ds)
         FROM prompt_knowledge_presets WHERE id = @id
         """;
 
-    public async Task<IReadOnlyList<PresetHit>> SearchAsync(float[] query, IReadOnlyList<string> facetIds, int k, CancellationToken ct)
+    public virtual async Task<IReadOnlyList<PresetHit>> SearchAsync(float[] query, IReadOnlyList<string> facetIds, int k, CancellationToken ct)
     {
         await using var cmd = ds.CreateCommand(SearchSql);
         cmd.Parameters.AddWithValue("q", new Vector(query));
@@ -41,7 +41,7 @@ public class PresetRepository(NpgsqlDataSource ds)
         return list;
     }
 
-    public async Task<long> PoolSizeAsync(IReadOnlyList<string> facetIds, CancellationToken ct)
+    public virtual async Task<long> PoolSizeAsync(IReadOnlyList<string> facetIds, CancellationToken ct)
     {
         await using var cmd = ds.CreateCommand(PoolSql);
         cmd.Parameters.AddWithValue("facets", facetIds.ToArray());

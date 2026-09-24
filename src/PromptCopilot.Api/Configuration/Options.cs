@@ -27,7 +27,7 @@ public sealed class OrchestratorOptions
     public string Mode { get; set; } = "Agentic";
     public int MaxAskCount { get; set; } = 2;
     public int MaxDiscussStreak { get; set; } = 8;
-    public int MaxToolCallsPerTurn { get; set; } = 8;
+    public int MaxToolCallsPerTurn { get; set; } = 16;
     public int TurnTimeoutSeconds { get; set; } = 120;
     public int HistoryTurns { get; set; } = 10;
     public int OfferedOptionsLimit { get; set; } = 24;

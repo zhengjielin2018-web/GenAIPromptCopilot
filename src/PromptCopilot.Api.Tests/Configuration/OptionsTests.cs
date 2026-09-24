@@ -14,7 +14,7 @@ public class OptionsTests
         var o = new OrchestratorOptions();
         Assert.Equal(2, o.MaxAskCount);
         Assert.Equal(8, o.MaxDiscussStreak);
-        Assert.Equal(8, o.MaxToolCallsPerTurn);
+        Assert.Equal(16, o.MaxToolCallsPerTurn);
         Assert.Equal(120, o.TurnTimeoutSeconds);
         Assert.Equal(10, o.HistoryTurns);
         Assert.Equal(24, o.OfferedOptionsLimit);

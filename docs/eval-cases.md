@@ -28,6 +28,7 @@
 | 21 | 讓第二次 LLM 呼叫 500 兩次後成功（暫時把 `Llm:Model` 改成不存在的名字再改回） | 使用者無感，audit 無 `Turn_Failed` | — | ➖ 未跑：需要改 `Llm:Model` 注入故障，本次驗收不得變更 appsettings／user-secrets。 | — |
 | 22 | 連續失敗超過重試次數 | `error`，儀表板回到輪次開始，重送後正常，AskCount 只算一次 | — | ➖ 未跑：同 21，需要故障注入。 | — |
 | 23 | 觸發上游攔截的描述（少女＋泳裝） | `blocked` `Blocked_Upstream`，訊息保留，重送或改寫後正常 | 6ff34e1a7c9c | ➖ 未觸發：「少女穿泳裝在海邊」沒有被上游攔截，直接 `finalized`。依規定只試一次不重送，`Blocked_Upstream` 這條路徑本次沒有實證。 | 2026-09-23 |
+| 24 | 有細節但缺風格與鏡頭的人像描述：「一個老爺爺在稻田裡面喝茶，遠處是房子，太陽很大，老爺爺有著白色捲髮，穿著白色短衣」 | `final.kind = ask`；audit 無 `Tool_Budget_Exhausted`；`Turn_Completed.toolCalls` ≤ 5；只有一張 `SearchPresets` 工具卡，摘要列出每個維度的候選池筆數；儀表板場景／樣貌／穿著為 covered | | | |
 
 ## 2026-09-23 驗收跑的那一輪
 
@@ -81,7 +82,7 @@ fresh clone 在暫存目錄進行，只放 `.env`；開發用的 stack 先 `dock
 | :--- | :--- | :--- | :--- |
 | P1 | 上傳 Release `seed-v1` | 資產可匿名下載，URL 與 compose 預設一致 | ✅ 匿名 `curl` 跟隨轉址後 200，`Content-Length` 104,202,876，與本機檔案位元組數相同 |
 | P2 | fresh clone，只放 `.env`，`docker compose up -d --build` | seed 下載並匯入；api、frontend 依序起來；8080 可用 | ✅ 190 秒完成（含三個 image build）。seed 印「presets 19354」「histories 6294」「完成」。經 8080 打 `/`、深路徑、`/health`、`/api/config/facets`、`/api/presets/{id}` 皆 200 |
-| P3 | 瀏覽器跑 eval #1、#3、#6 | 同子專案 3 | ⏸ 延後：`docs/known-issues.md` 第 1 項會讓有細節的人像第一輪強制定稿，修正後再跑。改以 API 經 nginx 跑一輪「一個女生」驗證 SSE：11 個事件在 0.1–10.1 秒間逐筆到達（`SetProfile` 2.8s、兩次 `SearchPresets` 4.0–5.3s、`AskUser` 8.9s、`final ask` 10.1s），**沒有被緩衝** |
+| P3 | 瀏覽器跑 eval #1、#3、#6 | 同子專案 3 | ⏸ 延後：`docs/known-issues.md` 第 1 項會讓有細節的人像第一輪強制定稿，修正後再跑。改以 API 經 nginx 跑一輪「一個女生」驗證 SSE：11 個事件在 0.1–10.1 秒間逐筆到達（`SetProfile` 2.8s、兩次 `SearchPresets` 4.0–5.3s、`AskUser` 8.9s、`final ask` 10.1s），**沒有被緩衝** → known-issues #1 已在 `fix/batch-search-presets` 修正，merge 後解除延後。 |
 | P4 | 抽屜出處 | civitai 與 kisegae 各有連結 | ✅ API 層：kisegae preset 41544 的 `sourceUrl` = `https://github.com/hayde0096/Kisegaeningyou`；civitai 見形狀階段（`https://civitai.com/images/<id>`）。瀏覽器畫面隨 P3 一起看 |
 | P5 | 同一 volume 再 `up` | seed 跳過 | ✅「已有資料 19354 筆，跳過。」 |
 | P6 | 新 volume、`SEED_URL=` 空字串 | seed 跳過、api 照起、知識庫為空 | ✅「未設定 SEED_URL，跳過種子。」api healthy，presets 0 筆 |
