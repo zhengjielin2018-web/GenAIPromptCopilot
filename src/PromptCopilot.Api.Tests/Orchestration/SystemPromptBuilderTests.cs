@@ -87,4 +87,13 @@ public class SystemPromptBuilderTests
         s.ApplyProfile("portrait", Catalog);
         Assert.NotEqual(v1, b.Build(s, ToolNames.Always).Version);
     }
+
+    [Fact]
+    public void Flow_rule_asks_for_one_batched_SearchPresets_call()
+    {
+        var s = new Session("s");
+        var (prompt, _) = Make().Build(s, ToolNames.Always);
+        Assert.Contains("用一次 `SearchPresets` 帶上所有適用的維度", prompt);
+        Assert.DoesNotContain("分兩次呼叫", prompt);
+    }
 }
