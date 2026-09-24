@@ -35,5 +35,16 @@ services:
     ports:
       - "${API_PORT:-5000}:8080"
 
+  frontend:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.frontend
+    container_name: prompt-copilot-frontend
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "${FRONTEND_PORT:-8080}:80"
+
 volumes:
   pgdata:
