@@ -72,7 +72,8 @@ export function applyEvent(state: ChatState, ev: AgentEvent): ChatState {
     }
 
     case 'dimensions':
-      return { ...state, profile: ev.profile, facetStates: { ...ev.facetStates } }
+      // 線上省略 null（WhenWritingNull），缺鍵要補回 null，否則 state 裡會出現 undefined
+      return { ...state, profile: ev.profile ?? null, facetStates: { ...ev.facetStates } }
 
     case 'token': {
       const idx = findLastIndex(state.transcript, e => e.kind === 'final' && e.data.kind === 'message')

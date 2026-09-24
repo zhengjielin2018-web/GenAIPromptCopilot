@@ -59,6 +59,14 @@ describe('applyEvent', () => {
     expect(s.facetStates).toEqual({ 'style.genre': 'covered', 'scene.location': 'missing' })
   })
 
+  // SseWriter 用 WhenWritingNull：profile 為 null 時線上根本沒有這個鍵，要跟 store 一樣從原始 JSON 組事件
+  it('dimensions without a profile key on the wire sets profile to null, not undefined', () => {
+    const data = JSON.parse('{"facetStates":{}}')
+    const s = applyEvent({ ...started(), profile: 'portrait' }, { ...data, type: 'dimensions' } as AgentEvent)
+    expect(s.profile).toBeNull()
+    expect(s.facetStates).toEqual({})
+  })
+
   it('final ask pushes entry, bumps askCount, highlights dimensions, settles', () => {
     const s = applyEvent(started(), ask)
     expect(s.transcript.at(-1)).toMatchObject({ kind: 'final', turnIndex: 1, data: { kind: 'ask' } })

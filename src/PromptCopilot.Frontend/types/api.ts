@@ -4,7 +4,7 @@ export type SessionStatus = 'Collecting' | 'Finalized'
 /** 後端 SseWriter 用 WhenWritingNull：值為 null 的欄位會整個省略，所以可為 null 的欄位在線上也可能不存在。 */
 export interface OptionItem { label: string; tags: string; presetId?: number | null }
 export interface AskItem { dimension: string; question: string; missingFacetIds: string[]; options: OptionItem[] }
-export interface PresetRef { id: number; title: string; imageUrl: string | null }
+export interface PresetRef { id: number; title: string; imageUrl?: string | null }
 
 export interface FinalizedData { kind: 'finalized'; positive: string; negative: string; tips: string; intentSummary: string }
 export type FinalData =
@@ -17,7 +17,7 @@ export type AgentEvent =
   | { type: 'session'; sessionId: string; turnIndex: number; status: SessionStatus }
   | { type: 'tool_call'; callId: string; name: string; argsSummary: string }
   | { type: 'tool_result'; callId: string; name: string; summary: string; presets?: PresetRef[] }
-  | { type: 'dimensions'; profile: string | null; facetStates: Record<string, FacetState> }
+  | { type: 'dimensions'; profile?: string | null; facetStates: Record<string, FacetState> }
   | { type: 'token'; text: string }
   | ({ type: 'final' } & FinalData)
   | { type: 'blocked'; reason: string; message: string }
