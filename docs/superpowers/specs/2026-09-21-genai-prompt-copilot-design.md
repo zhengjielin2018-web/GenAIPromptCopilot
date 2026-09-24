@@ -694,7 +694,7 @@ scripts/
 
 | Tool | 策略 | SQL 概念 |
 | :--- | :--- | :--- |
-| `SearchPresets` | **分維度**：每次呼叫鎖定一個維度，用該維度專屬的查詢語句，GIN 過濾該維度 facet 後向量排序 | `WHERE facet_ids && $facetIdsOfDimension ORDER BY preset_embedding <=> $dimensionQueryVec LIMIT k` |
+| `SearchPresets` | **分維度**：一次呼叫帶多個維度的查詢，每項用該維度專屬的查詢語句，`facetIds` 依維度過濾後向量排序 | `WHERE facet_ids && $facetIdsOfDimension ORDER BY preset_embedding <=> $dimensionQueryVec LIMIT k` |
 | `SearchSimilarPrompts` | 向量 Top-K + profile 過濾 | `WHERE subject_profile = $1 ORDER BY intent_embedding <=> $2 LIMIT k` |
 
 **GIN 過濾本身不夠。** 實測（2026-09-22）：同樣過濾到 Style 候選池，用使用者整句描述的向量排序撈回無關片段（dist 0.354），用該維度專屬的查詢語句撈回正確風格（0.229–0.234）。單一整句向量是六維度的模糊平均，只會貼近最泛用的片段，且使用者沒提到的維度永遠撈不到。因此 agent 呼叫 `SearchPresets` 時：
