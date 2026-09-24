@@ -191,6 +191,25 @@ public class TagAttributionTests
         Assert.Equal("llm", Only(r, "sandals").Origin);        // 正向片段不算
     }
 
+    /// <summary>rag 的 SourceRef 跟 PresetTitle 取同一筆（第一個命中的片段）：整段相等排在字尾相符前面。前端 chip 提示帶來源名。</summary>
+    [Fact]
+    public void Rag_takes_the_source_ref_of_the_first_hit_snippet()
+    {
+        var l = new PresetLedger();
+        l.Record(new LedgerEntry { Id = 1, Title = "厚底涼鞋", PromptSnippet = "platform sandals", FacetIds = new[] { "clothing.footwear" }, SourceRef = "kisegae:1741156656403" },
+            new LedgerHit("clothing", 0.2, true));
+        l.Record(new LedgerEntry { Id = 2, Title = "涼鞋", PromptSnippet = "sandals, masterpiece", FacetIds = new[] { "clothing.footwear" }, SourceRef = "civitai:12345:0" },
+            new LedgerHit("clothing", 0.2, true));
+
+        var r = TagAttribution.Attribute("sandals, 1girl, masterpiece", l, negative: false);
+
+        var sandals = Only(r, "sandals");
+        Assert.Equal(new long[] { 2, 1 }, sandals.PresetIds);
+        Assert.Equal("civitai:12345:0", sandals.SourceRef);
+        Assert.Null(Only(r, "1girl").SourceRef);            // llm
+        Assert.Null(Only(r, "masterpiece").SourceRef);      // base，即使片段裡有
+    }
+
     [Fact]
     public void Base_words_still_win_over_a_suffix_hit()
     {

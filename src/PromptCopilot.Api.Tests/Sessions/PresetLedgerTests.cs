@@ -51,4 +51,14 @@ public class PresetLedgerTests
         Assert.Single(l.Get(1)!.Hits);
         Assert.Empty(l.Get(1)!.OfferedAs);
     }
+
+    /// <summary>輪次失敗還原 session 時用的是 Clone；來源識別不能在還原後掉。</summary>
+    [Fact]
+    public void Clone_keeps_the_source_ref()
+    {
+        var l = new PresetLedger();
+        l.Record(new LedgerEntry { Id = 2, Title = "t", PromptSnippet = "a", FacetIds = new[] { "style.genre" }, SourceRef = "civitai:12345:0" },
+            new LedgerHit("style", 0.2, true));
+        Assert.Equal("civitai:12345:0", l.Clone().Get(2)!.SourceRef);
+    }
 }

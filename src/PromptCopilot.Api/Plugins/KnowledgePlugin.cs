@@ -91,7 +91,7 @@ public sealed class KnowledgePlugin(TurnContext turn, FacetCatalog catalog, IEmb
             var rows = new List<object>();
             foreach (var h in hits)
             {
-                s.Ledger.Record(new LedgerEntry { Id = h.Id, Title = h.Title, PromptSnippet = h.PromptSnippet, NegativeSnippet = h.NegativeSnippet, FacetIds = h.FacetIds, ImageUrl = h.ImageUrl },
+                s.Ledger.Record(new LedgerEntry { Id = h.Id, Title = h.Title, PromptSnippet = h.PromptSnippet, NegativeSnippet = h.NegativeSnippet, FacetIds = h.FacetIds, ImageUrl = h.ImageUrl, SourceRef = h.SourceRef },
                     new LedgerHit(dimension, h.Dist, isGrounded));
                 rows.Add(new
                 {
@@ -100,7 +100,7 @@ public sealed class KnowledgePlugin(TurnContext turn, FacetCatalog catalog, IEmb
                     facets = h.FacetIds.ToDictionary(f => f, f => FacetStateParser.ToWire(s.FacetStates.GetValueOrDefault(f, FacetState.NotApplicable))),
                     positive = h.PromptSnippet, negative = h.NegativeSnippet ?? "(無)",
                 });
-                if (seen.Add(h.Id)) presetsOut.Add(new PresetRef(h.Id, h.Title, h.ImageUrl));
+                if (seen.Add(h.Id)) presetsOut.Add(new PresetRef(h.Id, h.Title, h.ImageUrl, h.SourceRef));
             }
             results[index] = new { dimension, facetId, query, grounded = isGrounded, poolSize = pool, hits = rows };
             var label = facetId is null ? catalog.DimensionLabel(dimension, s.Profile) : catalog.Facets[facetId].Label;

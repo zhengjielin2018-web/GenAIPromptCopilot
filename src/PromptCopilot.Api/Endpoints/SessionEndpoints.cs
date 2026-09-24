@@ -92,9 +92,9 @@ public static class SessionEndpoints
             | 事件 | 內容 |
             | :--- | :--- |
             | `session` | 一定是第一筆：第幾輪（`turnIndex`）、這輪開始時的狀態（`Collecting` 還在收集／`Finalized` 已定稿） |
-            | `tool_call`／`tool_result` | 模型呼叫的工具與結果，一輪可能好幾次。`tool_result.presets` 是檢索到的 preset，可拿 id 去 `GET /api/presets/{id}` |
+            | `tool_call`／`tool_result` | 模型呼叫的工具與結果，一輪可能好幾次。`tool_result.presets` 是檢索到的 preset（`{id, title, imageUrl, sourceRef}`；`sourceRef` 是資料來源識別，如 `civitai:12345:0`，圖片屬於原作者，顯示時要標出處），可拿 id 去 `GET /api/presets/{id}` |
             | `dimensions` | 題材（`profile`）與每個 facet 的狀態：`covered`／`missing`／`waived`（使用者說不指定）／`notApplicable`。輪中有變動就送，成功的一輪最後會再送一次完整的 |
-            | `final` | 這一輪的結果，看 `kind`：`ask` 追問（`preamble`、`asks`）、`message` 討論或回答問題（`message`、`options`）、`finalized` 定稿（`positive`、`negative`、`tips`、`intentSummary`：一句繁中需求描述，可拿來預填 `save-to-shared` 的 `intent`；`positiveSources`／`negativeSources`：逐 tag 的來源 `{tag, origin, presetIds, presetTitle}`，`origin` 是 `rag` 知識庫片段／`llm` 模型生成／`base` 基礎詞，由伺服器比對 ledger 標註）、`save_consent_requested` 使用者要求儲存（見 `save-to-shared`） |
+            | `final` | 這一輪的結果，看 `kind`：`ask` 追問（`preamble`、`asks`）、`message` 討論或回答問題（`message`、`options`）、`finalized` 定稿（`positive`、`negative`、`tips`、`intentSummary`：一句繁中需求描述，可拿來預填 `save-to-shared` 的 `intent`；`positiveSources`／`negativeSources`：逐 tag 的來源 `{tag, origin, presetIds, presetTitle, sourceRef}`，`origin` 是 `rag` 知識庫片段／`llm` 模型生成／`base` 基礎詞，由伺服器比對 ledger 標註）、`save_consent_requested` 使用者要求儲存（見 `save-to-shared`） |
             | `blocked` | 被攔下，`reason`：`Blocked_NSFW`、`Blocked_Celebrity`（輸入端，不會呼叫模型）、`Blocked_Output`（模型輸出被攔）、`Blocked_Upstream`（Gemini 拒絕生成）。session 狀態不變 |
             | `error` | 這一輪失敗，`code`：`timeout`、`protocol_violation`、`turn_failed`。session 已還原到送出前，可以直接重送同一句 |
 

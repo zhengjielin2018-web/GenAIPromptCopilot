@@ -11,12 +11,14 @@ public sealed class LedgerEntry
     public string? NegativeSnippet { get; init; }
     public required IReadOnlyList<string> FacetIds { get; init; }
     public string? ImageUrl { get; init; }
+    /// <summary>資料來源識別（<c>civitai:…</c>／<c>kisegae:…</c>）；定稿 tag 來源帶給前端標出處。</summary>
+    public string? SourceRef { get; init; }
     public List<LedgerHit> Hits { get; } = new();
     public List<OfferedRef> OfferedAs { get; } = new();
 
     public LedgerEntry Clone()
     {
-        var c = new LedgerEntry { Id = Id, Title = Title, PromptSnippet = PromptSnippet, NegativeSnippet = NegativeSnippet, FacetIds = FacetIds, ImageUrl = ImageUrl };
+        var c = new LedgerEntry { Id = Id, Title = Title, PromptSnippet = PromptSnippet, NegativeSnippet = NegativeSnippet, FacetIds = FacetIds, ImageUrl = ImageUrl, SourceRef = SourceRef };
         c.Hits.AddRange(Hits); c.OfferedAs.AddRange(OfferedAs);
         return c;
     }

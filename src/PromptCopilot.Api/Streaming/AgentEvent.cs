@@ -10,7 +10,8 @@ public abstract record AgentEvent([property: JsonPropertyOrder(-1)] string Type)
 
 public sealed record SessionEvent(string SessionId, int TurnIndex, string Status) : AgentEvent("session");
 public sealed record ToolCallEvent(string CallId, string Name, string ArgsSummary) : AgentEvent("tool_call");
-public sealed record PresetRef(long Id, string Title, string? ImageUrl);
+/// <summary>SourceRef：資料來源識別，前端縮圖依前綴標來源名（圖片屬於原作者，見 docs/資料來源.md「署名機制」）。</summary>
+public sealed record PresetRef(long Id, string Title, string? ImageUrl, string? SourceRef = null);
 public sealed record ToolResultEvent(string CallId, string Name, string Summary, IReadOnlyList<PresetRef>? Presets) : AgentEvent("tool_result");
 public sealed record DimensionsEvent(string? Profile, IReadOnlyDictionary<string, string> FacetStates) : AgentEvent("dimensions");
 public sealed record FinalEvent(
