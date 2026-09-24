@@ -64,7 +64,8 @@ public class ContractsTests
         Assert.Equal(2, parsed.Length);
         Assert.Equal("style", parsed[0].Dimension);
         Assert.Equal("稻田", parsed[1].Query);
-        Assert.Equal("""{"dimension":"style","query":"寫實攝影"}""", JsonSerializer.Serialize(parsed[0]));
+        // 序列化用 ASCII 句子：預設 encoder 會把非 ASCII 轉成 \uXXXX，這裡只驗欄位名是 camelCase
+        Assert.Equal("""{"dimension":"style","query":"photo"}""", JsonSerializer.Serialize(new SearchQuery("style", "photo")));
     }
 }
 ```
@@ -179,13 +180,13 @@ public class KnowledgePluginTests
         new(id, title, "Cat", new[] { facet }, $"tags for {title}", null, null, dist);
 
     private static (KnowledgePlugin plugin, TurnContext turn, Session s, FakeEmbeddings embed, FakePresets presets, ChannelReader<AgentEvent> events)
-        Make(bool profile = true, params string[] coveredFacets)
+        Make(string[]? covered = null, bool profile = true)
     {
         var s = new Session("s");
         if (profile)
         {
             s.ApplyProfile("portrait", Catalog);
-            s.ApplyFacetStates(coveredFacets.ToDictionary(f => f, _ => FacetState.Covered), Catalog);
+            s.ApplyFacetStates((covered ?? Array.Empty<string>()).ToDictionary(f => f, _ => FacetState.Covered), Catalog);
         }
         var ch = Channel.CreateUnbounded<AgentEvent>();
         var turn = new TurnContext(s, 1, GuardResult.Ok(false), ToolNames.Always, ch.Writer) { CurrentCallId = "c1" };
@@ -232,7 +233,7 @@ public class KnowledgePluginTests
     [Fact]
     public async Task Batch_embeds_once_and_counts_each_dimension_pool_once()
     {
-        var (p, _, _, embed, presets, _) = Make(coveredFacets: "scene.location");
+        var (p, _, _, embed, presets, _) = Make(covered: new[] { "scene.location" });
         presets.Pools["style.genre"] = 4455; presets.Pools["scene.location"] = 6752;
         presets.Hits["style.genre"] = new[] { Hit(1, "寫實", "style.genre", 0.2) };
         presets.Hits["scene.location"] = new[] { Hit(2, "稻田", "scene.location", 0.15) };
@@ -260,7 +261,7 @@ public class KnowledgePluginTests
     [Fact]
     public async Task K_follows_grounded_per_dimension()
     {
-        var (p, _, _, _, presets, _) = Make(coveredFacets: "scene.location");
+        var (p, _, _, _, presets, _) = Make(covered: new[] { "scene.location" });
         await p.SearchPresetsAsync(Q(("scene", "稻田"), ("style", "寫實")), default);
         Assert.Equal(KnowledgePlugin.KCovered, presets.Searches.Single(x => x.firstFacet == "scene.location").k);
         Assert.Equal(KnowledgePlugin.KMissing, presets.Searches.Single(x => x.firstFacet == "style.genre").k);
@@ -316,7 +317,7 @@ public class KnowledgePluginTests
     [Fact]
     public async Task Same_preset_from_two_dimensions_is_deduped_in_event_but_recorded_twice_in_ledger()
     {
-        var (p, _, s, _, presets, _) = Make(coveredFacets: "scene.location");
+        var (p, _, s, _, presets, _) = Make(covered: new[] { "scene.location" });
         presets.Hits["style.genre"] = new[] { Hit(9, "x", "style.genre", 0.3) };
         presets.Hits["scene.location"] = new[] { Hit(9, "x", "scene.location", 0.1) };
 
