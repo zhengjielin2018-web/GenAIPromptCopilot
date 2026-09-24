@@ -102,7 +102,7 @@ LLM：**`gemini-3.5-flash-lite`**（子專案 1 執行時實測定案。注意�
 | `SessionPlugin.SetFacetStates` | `updates: FacetStateEntry[]` | 可重複；第一輪先標使用者已描述的 facet 為 covered，再檢索；也用於 `waived` 與委託 note |
 | `DialogPlugin.AskUser` | `preamble: string, asks: { dimension, question, missingFacetIds, options }[], facetStates: FacetStateEntry[]` | **終止型**；`asks` 1–3 則，每則 `options` 2–4 個 |
 | `DialogPlugin.Discuss` | `message: string, facetStates: FacetStateEntry[], options: { label, tags, presetId? }[]? = null` | **終止型**；`options` 0–4 個參考方向，不帶 `missingFacetIds` |
-| `DialogPlugin.FinalizePrompt` | `positivePrompt: string, negativePrompt: string, tips: string, intentSummary: string, facetStates: FacetStateEntry[]` | **終止型** |
+| `DialogPlugin.FinalizePrompt` | `positivePrompt: string, negativePrompt: string, tips: string, intentSummary: string, facetStates: FacetStateEntry[]` | **終止型**；`AskUser` 還在清單上而仍有缺時擋回（定稿閘門，§4.6） |
 | `DialogPlugin.RequestSaveConsent` | 無 | **終止型**；不碰 DB，只觸發前端確認卡片 |
 
 `FacetState = covered | missing | waived | notApplicable`。
@@ -291,7 +291,7 @@ LedgerEntry {
 
 **攔截一律走 `Terminate` + outcome，不丟例外。** SK 的 auto-invoke 迴圈會把 filter 丟出的例外當成連線層失敗往上冒，重試層看不懂；改成在 `TurnContext` 上留下 `BlockedOutcome`、把 `context.Result` 換成一句錯誤字串，再由 orchestrator 在迴圈外判定要回滾還是繼續。
 
-**擋回檢查在 plugin 裡，不在 filter 裡。** `Profile == null`、`asks` 清洗後為空、`Finalized` 下變更 facet 這三件事都是「這個 tool 的參數不合格」，plugin 直接回結構化錯誤字串、不設 outcome，迴圈自然繼續、也自然計入 tool 預算。filter 不需要知道每個 tool 的參數語意。
+**擋回檢查在 plugin 裡，不在 filter 裡。** `Profile == null`、`asks` 清洗後為空、`Finalized` 下變更 facet、定稿閘門（§4.6）這四件事都是「這個 tool 的參數不合格」，plugin 直接回結構化錯誤字串、不設 outcome，迴圈自然繼續、也自然計入 tool 預算。filter 不需要知道每個 tool 的參數語意。
 
 **`Finalized` 之下 `Discuss` 不得變更 facet 狀態。** 定稿後使用者說「風格改成動漫」，LLM 可能 `Discuss` 回「好的」並帶著改過的 `facetStates`，但沒有 `FinalizePrompt`——儀表板變了、定稿卡沒變。任何 facet 變動都意味著 prompt 該重組。程式碼保證：`Status == Finalized` 且 `Discuss.facetStates` 與**本輪開始時**的狀態不同 → 回結構化錯誤「facet 狀態有變更，請改用 `FinalizePrompt`」，計入 tool 預算。比的是本輪開始時而不是現值：`SetFacetStates` 每輪都在清單裡，先用它改掉再用 `Discuss` 回報同一組值，比現值就永遠相等，這道閘門等於不存在。
 
@@ -305,6 +305,7 @@ LedgerEntry {
 | `Profile` 為 null 時呼叫 `AskUser` / `FinalizePrompt` | `TerminalToolFilter` 不終止，改回傳結構化錯誤「請先呼叫 SetProfile」給 LLM，讓它補呼叫後再繼續；計入 tool 預算。`Discuss` 不受此限（§4.3） |
 | `Finalized` 下 `Discuss` 帶了與 session 現值不同的 `facetStates` | 不終止，回結構化錯誤「facet 狀態有變更，請改用 `FinalizePrompt`」；計入 tool 預算（§4.5） |
 | `AskUser.asks` 經 §4.2 清洗後為空 | 不終止，回結構化錯誤要 LLM 重呼叫；計入 tool 預算 |
+| `FinalizePrompt` 時 `AskUser` 仍在清單上，且套用這次的 `facetStates` 後仍有 `missing`、又沒有委託 note 的 facet（定稿閘門） | 不終止、不定稿，回結構化錯誤要求先 `AskUser`（一次最多 3 個維度），列出缺的 facet id；計入 tool 預算。預算耗盡後的強制定稿（下一列）不受此限（`TurnContext.ForcedFinalize`）。`FinalizePrompt` 永遠在清單上，拿不掉，所以在呼叫時擋 |
 | Tool 預算耗盡 | `Terminate` 後再跑一次強制定稿：只掛 `FinalizePrompt`，附「請立即以現有資訊定稿」提示 |
 | LLM 呼叫失敗（傳輸／空回應／內容攔截） | 依下方三層規則內部重試；重試耗盡才算本輪失敗 |
 | 單輪逾時（預設 120s） | `CancellationToken` 取消；退避等待吃同一個 token，不會出現「逾時了還在退避」 |
@@ -997,6 +998,7 @@ Azure 部署排除。
 | `Finalized` 後 `Discuss` 限不限次 | 不限 | 護欄的目的是確保交出東西，交了就功成身退 |
 | `AskUser` 多維度 | 一次最多 3 則 | 3 × 2 = 6 覆蓋六維度全缺的最壞情況；一張卡 12 個 chip 分三區不至於糊掉 |
 | 追問政策 | 還有任何 facet 是 missing 的維度都要問（waived 與有委託 note 的 facet 不算），只講一部分的維度也問剩下的 facet；一次問滿 3 個 | 原本「能省就省」導致追問偏少（eval #18、使用者 2026-09-25 實測）；使用者選擇「盡量追問」，接受完整描述也可能先被追問（eval #2）；額度 2×3 剛好能問完人像 6 維 |
+| 定稿閘門 | 有缺就不准定稿，直到追問額度用完（`AskUser` 離開清單）；委託 note 的 facet 不算缺；強制定稿放行 | system.md 的追問政策模型不遵守（2026-09-25 實測：`AskUser` 還在清單上、31 個 facet 有 20 個 missing，模型直接 `FinalizePrompt`）；沿用 §4.3「違規的選項不給選」 |
 | `OutputSafetyFilter` 範圍 | 全檢（定稿 + 討論 + 追問的文字與選項） | §6.2 原文的理由對 `options` 一字不差地成立；合規是對外賣點，出口不一致難講 |
 | `presetId` 不在 ledger | 降級為 null，不移除 | `presetId` 本來就可為 null；輸出過濾兜住自由發明的內容 |
 | `AutoFill` 可逆 | **不做** | 有了 `Discuss` 之後問題自己解掉：`Discuss` 不看 `AutoFill`，使用者透過討論把某項變成 `covered` 或 `waived`，那一項就不在 `AutoFill` 補齊的範圍內。`waived` 本來就是為「即使委託也不補」存在的 |

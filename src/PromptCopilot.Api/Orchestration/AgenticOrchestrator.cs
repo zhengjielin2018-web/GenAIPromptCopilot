@@ -226,6 +226,7 @@ public sealed class AgenticOrchestrator(
     private async Task ForcedFinalizeAsync(TurnContext turn, CancellationToken ct)
     {
         turn.Outcome = null;
+        turn.ForcedFinalize = true;          // 定稿閘門放行：只剩 FinalizePrompt，擋下去這一輪就沒有出口
         var kernel = kernelFactory(turn, new HashSet<string> { ToolNames.FinalizePrompt }, false);
         turn.Session.ChatHistory.AddSystemMessage("tool 呼叫預算已用盡。請立即以現有資訊呼叫 FinalizePrompt 定稿，不要再檢索。facetStates 依使用者原話標記：使用者講過的 facet 標 covered，真的沒講的才是 missing，其餘 missing 的 facet 留白。");
         await CallAsync(turn, kernel, ct);
