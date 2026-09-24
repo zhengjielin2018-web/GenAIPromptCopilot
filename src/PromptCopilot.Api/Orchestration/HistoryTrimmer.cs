@@ -39,9 +39,16 @@ public static class HistoryTrimmer
             {
                 case ToolNames.SearchPresets:
                 {
-                    if (JsonNode.Parse(json) is not JsonObject root || root["hits"] is not JsonArray hits) return null;
-                    var slim = new JsonArray(hits.OfType<JsonObject>().Select(x => (JsonNode)new JsonObject { ["id"] = x["id"]?.DeepClone(), ["title"] = x["title"]?.DeepClone() }).ToArray());
-                    return new JsonObject { ["dimension"] = root["dimension"]?.DeepClone(), ["poolSize"] = root["poolSize"]?.DeepClone(), ["hits"] = slim }.ToJsonString(Json);
+                    if (JsonNode.Parse(json) is not JsonObject root || root["results"] is not JsonArray results) return null;
+                    var slim = new JsonArray(results.OfType<JsonObject>().Select(r =>
+                    {
+                        if (r["error"] is not null)
+                            return (JsonNode)new JsonObject { ["dimension"] = r["dimension"]?.DeepClone(), ["error"] = r["error"]!.DeepClone() };
+                        var hits = r["hits"] as JsonArray ?? new JsonArray();
+                        var ids = new JsonArray(hits.OfType<JsonObject>().Select(x => (JsonNode)new JsonObject { ["id"] = x["id"]?.DeepClone(), ["title"] = x["title"]?.DeepClone() }).ToArray());
+                        return new JsonObject { ["dimension"] = r["dimension"]?.DeepClone(), ["poolSize"] = r["poolSize"]?.DeepClone(), ["hits"] = ids };
+                    }).ToArray());
+                    return new JsonObject { ["results"] = slim }.ToJsonString(Json);
                 }
                 case ToolNames.SearchSimilarPrompts:
                 {
