@@ -102,7 +102,7 @@ LLM：**`gemini-3.5-flash-lite`**（子專案 1 執行時實測定案。注意�
 | `SessionPlugin.SetFacetStates` | `updates: FacetStateEntry[]` | 可重複；第一輪先標使用者已描述的 facet 為 covered，再檢索；也用於 `waived` 與委託 note |
 | `DialogPlugin.AskUser` | `preamble: string, asks: { dimension, question, missingFacetIds, options }[], facetStates: FacetStateEntry[]` | **終止型**；`asks` 1–3 則，每則 `options` 2–4 個 |
 | `DialogPlugin.Discuss` | `message: string, facetStates: FacetStateEntry[], options: { label, tags, presetId? }[]? = null` | **終止型**；`options` 0–4 個參考方向，不帶 `missingFacetIds` |
-| `DialogPlugin.FinalizePrompt` | `positivePrompt: string, negativePrompt: string, tips: string, intentSummary: string, facetStates: FacetStateEntry[]` | **終止型** |
+| `DialogPlugin.FinalizePrompt` | `positivePrompt: string, negativePrompt: string, tips: string, intentSummary: string, facetStates: FacetStateEntry[]` | **終止型**；`AskUser` 還在清單上而仍有缺時擋回（定稿閘門，§4.6） |
 | `DialogPlugin.RequestSaveConsent` | 無 | **終止型**；不碰 DB，只觸發前端確認卡片 |
 
 `FacetState = covered | missing | waived | notApplicable`。
@@ -291,7 +291,7 @@ LedgerEntry {
 
 **攔截一律走 `Terminate` + outcome，不丟例外。** SK 的 auto-invoke 迴圈會把 filter 丟出的例外當成連線層失敗往上冒，重試層看不懂；改成在 `TurnContext` 上留下 `BlockedOutcome`、把 `context.Result` 換成一句錯誤字串，再由 orchestrator 在迴圈外判定要回滾還是繼續。
 
-**擋回檢查在 plugin 裡，不在 filter 裡。** `Profile == null`、`asks` 清洗後為空、`Finalized` 下變更 facet 這三件事都是「這個 tool 的參數不合格」，plugin 直接回結構化錯誤字串、不設 outcome，迴圈自然繼續、也自然計入 tool 預算。filter 不需要知道每個 tool 的參數語意。
+**擋回檢查在 plugin 裡，不在 filter 裡。** `Profile == null`、`asks` 清洗後為空、`Finalized` 下變更 facet、定稿閘門（§4.6）這四件事都是「這個 tool 的參數不合格」，plugin 直接回結構化錯誤字串、不設 outcome，迴圈自然繼續、也自然計入 tool 預算。filter 不需要知道每個 tool 的參數語意。
 
 **`Finalized` 之下 `Discuss` 不得變更 facet 狀態。** 定稿後使用者說「風格改成動漫」，LLM 可能 `Discuss` 回「好的」並帶著改過的 `facetStates`，但沒有 `FinalizePrompt`——儀表板變了、定稿卡沒變。任何 facet 變動都意味著 prompt 該重組。程式碼保證：`Status == Finalized` 且 `Discuss.facetStates` 與**本輪開始時**的狀態不同 → 回結構化錯誤「facet 狀態有變更，請改用 `FinalizePrompt`」，計入 tool 預算。比的是本輪開始時而不是現值：`SetFacetStates` 每輪都在清單裡，先用它改掉再用 `Discuss` 回報同一組值，比現值就永遠相等，這道閘門等於不存在。
 
@@ -305,6 +305,7 @@ LedgerEntry {
 | `Profile` 為 null 時呼叫 `AskUser` / `FinalizePrompt` | `TerminalToolFilter` 不終止，改回傳結構化錯誤「請先呼叫 SetProfile」給 LLM，讓它補呼叫後再繼續；計入 tool 預算。`Discuss` 不受此限（§4.3） |
 | `Finalized` 下 `Discuss` 帶了與 session 現值不同的 `facetStates` | 不終止，回結構化錯誤「facet 狀態有變更，請改用 `FinalizePrompt`」；計入 tool 預算（§4.5） |
 | `AskUser.asks` 經 §4.2 清洗後為空 | 不終止，回結構化錯誤要 LLM 重呼叫；計入 tool 預算 |
+| `FinalizePrompt` 時 `AskUser` 仍在清單上，且套用這次的 `facetStates` 後仍有 `missing`、又沒有委託 note 的 facet（定稿閘門） | 不終止、不定稿，回結構化錯誤要求先 `AskUser`（一次最多 3 個維度），列出缺的 facet id；計入 tool 預算。預算耗盡後的強制定稿（下一列）不受此限（`TurnContext.ForcedFinalize`）。`FinalizePrompt` 永遠在清單上，拿不掉，所以在呼叫時擋 |
 | Tool 預算耗盡 | `Terminate` 後再跑一次強制定稿：只掛 `FinalizePrompt`，附「請立即以現有資訊定稿」提示 |
 | LLM 呼叫失敗（傳輸／空回應／內容攔截） | 依下方三層規則內部重試；重試耗盡才算本輪失敗 |
 | 單輪逾時（預設 120s） | `CancellationToken` 取消；退避等待吃同一個 token，不會出現「逾時了還在退避」 |
@@ -654,7 +655,7 @@ CREATE TABLE audit_logs (
 CREATE INDEX idx_audit_session ON audit_logs (session_id, created_at);
 ```
 
-`event_type` 值：`Blocked_NSFW`（denylist 命中時 `payload` 記 `{ term }`——命中的詞只進這裡，不回給使用者）、`Blocked_Celebrity`、`Blocked_Output`、`Blocked_Upstream`（上游模型拒絕產出，§6.2；與 `Blocked_NSFW` 分開記，`payload` 記 `{ reason, stage, attempts? }`）、`Tool_Invoked`、`Tool_Budget_Exhausted`、`Protocol_Violation`、`Turn_Failed`（一輪失敗一筆，`payload` 記 `{ stage, errorClass, message, attempts? }`，§4.6）、`Saved_To_Shared`（`/save-to-shared` 寫入成功）、`Turn_Completed`（含 token 與延遲，`payload` 另記 `outcome`、`toolCalls`、`rejections`、`askedFacetIds?`、`waivedFacetIds`，§5.1）。
+`event_type` 值：`Blocked_NSFW`（denylist 命中時 `payload` 記 `{ term }`——命中的詞只進這裡，不回給使用者）、`Blocked_Celebrity`、`Blocked_Output`、`Blocked_Upstream`（上游模型拒絕產出，§6.2；與 `Blocked_NSFW` 分開記，`payload` 記 `{ reason, stage, attempts? }`）、`Tool_Invoked`、`Tool_Budget_Exhausted`、`Protocol_Violation`、`Turn_Failed`（一輪失敗一筆，`payload` 記 `{ stage, errorClass, message, attempts? }`，§4.6）、`Saved_To_Shared`（`/save-to-shared` 寫入成功）、`Turn_Completed`（含 token 與延遲，`payload` 另記 `outcome`、`toolCalls`、`rejections`、`askedFacetIds?`、`waivedFacetIds`，§5.1；定稿那一輪另記 `tagOrigins: { rag, llm, base }`，positive 各來源的 tag 數，§9）。
 
 `attempts` 只有在例外是由重試層（§4.6）包出來、知道自己實際打了幾次時才寫；不知道就不寫，不硬塞 0。
 
@@ -706,6 +707,7 @@ scripts/
 - `tags && $2` 決定不做：OR 上 tags 會把候選池撐到維度外，與分維度前提衝突。
 - **跨維度去重：歸屬規則為「grounded 優先、距離次之」，且在定稿時才算，不在檢索時算。** 一筆 preset 的 `facet_ids` 可能橫跨數維（實測 859 筆裡 134 筆、15.6%），會在多個候選池出現，agent 可能從兩個維度分別拿到兩份結果、兩個不同的 `grounded` 值。規則：若有任何 grounded 維度撈到它，歸給這些維度中距離最小的那個；完全沒有才退回全體最小距離。**不能單純比距離**——歸屬決定借用資格，而 `grounded` 是「這個維度使用者講了沒」的屬性，不是片段的屬性；單純比距離會讓一個 grounded 維度正當撈到的片段，因為某個 missing 維度**推想出來**的查詢剛好更近，就被降級成「僅供建議」而失去借用資格。
 - **落地方式：session ledger。** `SearchPresets` 每個項目照實回傳自己維度的結果，不做跨維度去重。session 內維護 `presetId → [(dimension, dist, grounded)]`，每次呼叫累加；歸屬與借用資格到定稿驗證時才套上面的規則。這本 ledger 本來就非有不可——借用來源的驗證（借的 tag 必須真的在片段裡、且真的在提示詞裡，不信 LLM 自述）查的是同一本帳。附帶好處：agent 只呼叫部分維度時自然成立，而且能回報「這片段你在某維度看過了」。
+- **定稿 tag 來源標示（2026-09-25 實作）。** C# 端不要求模型自述借用，改由伺服器在定稿時以 ledger 片段比對 tag 來源（`Sessions/TagAttribution.cs`，純函式）：positive／negative 以逗號拆段，比對前小寫、底線視同空白、連續空白壓成一個、剝掉外層成對括號與 `:數字` 權重；negative 只比 `NegativeSnippet`。基礎詞（§5.5：`masterpiece, best quality, highly detailed`／`lowres, bad anatomy, worst quality`）標 `base` 且優先，命中 ledger 片段標 `rag`（`presetIds` 依寫進 ledger 的先後、`presetTitle` 取第一筆），其餘 `llm`。結果存進 `LastFinal`，隨 `final` 事件回傳 `positiveSources`／`negativeSources`（§10.2），`GET /api/sessions/{id}` 的 `lastFinal` 也帶；前端以 chip 標示，`rag` 可點開 preset 抽屜。`SearchSimilarPrompts` 的結果不進 ledger（只供參考），不算來源。這一步只**標**來源，不判借用資格：片段可不可以借入仍由 prompt 規則與 `grounded` 管。
 - **`grounded` 由伺服器算，不是 LLM 傳進來的參數。** agent 傳 `facetIds`，伺服器映射到維度後查 `Session.FacetStates`（§4.4）自行判定。與 Python `grounded_dimensions()` 不問 LLM 同一個原則：少一個可被捏造的欄位。
 - **候選池大小要跟著 tool result 一起回。** `池 2 → 2` 這種「這維度過濾後有多少候選、其中命中幾筆」的資訊，是分維度檢索最有價值的副產品：它讓知識庫覆蓋缺口（例如 vehicle 的 pose 只有 2 筆）在使用當下就看得見，不必事後查資料庫才發現。tool result 除了相似度分級，也要帶上 GIN 過濾後的候選池筆數，否則子專案 2 會失去這個可見度。
 
@@ -722,7 +724,7 @@ scripts/
 | 方法 | 路徑 | 說明 |
 | :--- | :--- | :--- |
 | `POST` | `/api/sessions` | 建立 session → `{ sessionId }` |
-| `GET` | `/api/sessions/{id}` | session 目前的權威狀態（status、profile、facetStates、askCount／askLimit、lastFinal）；前端重載重建用；不拿 session 鎖；`404` 表示不存在或已過期 |
+| `GET` | `/api/sessions/{id}` | session 目前的權威狀態（status、profile、facetStates、askCount／askLimit、lastFinal，含 tag 來源）；前端重載重建用；不拿 session 鎖；`404` 表示不存在或已過期 |
 | `POST` | `/api/sessions/{id}/messages` | body `{ text }`；回 `text/event-stream`；同一 session 已有一輪在跑 → `409` |
 | `POST` | `/api/sessions/{id}/save-to-shared` | body `{ intent }`；需 `Finalized`，否則 `409`；寫 `shared_prompt_histories` 並向量化；**唯一的寫入路徑** |
 | `GET` | `/api/config/facets` | 回 `facets.yaml` 內容供前端渲染 |
@@ -753,11 +755,11 @@ scripts/
 ```text
 { kind: "ask",       preamble, asks: [{ dimension, question, missingFacetIds, options }] }
 { kind: "message",   message, options? }
-{ kind: "finalized", positive, negative, tips, intentSummary }
+{ kind: "finalized", positive, negative, tips, intentSummary, positiveSources, negativeSources }
 { kind: "save_consent_requested" }
 ```
 
-`options` 的每筆是 `{ label, tags, presetId? }`（§4.2）。`dimensions` 事件不變，`Discuss` 一樣會發（帶 `facetStates`）。
+`options` 的每筆是 `{ label, tags, presetId? }`（§4.2）。`positiveSources`／`negativeSources` 的每筆是 `{ tag, origin, presetIds, presetTitle? }`，依 tag 在提示詞裡的順序；`origin` 為 `rag`（知識庫片段）／`llm`（模型生成）／`base`（基礎詞），由伺服器比對 ledger 算出（§9）。`dimensions` 事件不變，`Discuss` 一樣會發（帶 `facetStates`）。
 
 `Discuss.message` 不會有打字機效果：它是 tool call 的參數，一次到位。這跟 `AskUser` / `FinalizePrompt` 現況一致，不是新問題；前端不要對 `message` 期待 `token` 事件。
 
@@ -773,7 +775,7 @@ scripts/
 
 - 左側主區：對話流。tool call 以輕量行內卡片呈現（「🔍 查詢知識庫：鏡頭 · 景別 → 找到 5 筆」），完成後自動摺疊，可點開。
 - 右側 sticky 側欄：六維度儀表板。
-- 定稿卡片出現在對話流內（不用 modal），含正／負向 prompt、複製按鈕、生成建議、「儲存至共享知識庫」按鈕。
+- 定稿卡片出現在對話流內（不用 modal），含正／負向 prompt、複製按鈕、生成建議、「儲存至共享知識庫」按鈕。prompt 逐 tag 以 chip 標示來源（知識庫片段／模型生成／基礎詞，§9），知識庫片段的 chip 可點開 preset 抽屜；複製仍是整段原文。
 - preset 預覽抽屜從右側滑出，覆蓋儀表板；顯示 `image_url`、snippet、tags。
 - `kind: "ask"` 渲染成一張**多維度追問卡**：`preamble` 在最上，每則 ask 一區（維度標題 + `question` + 一排 `options` chip），該維度在儀表板高亮。
 - `kind: "message"` 渲染成一般對話氣泡；`options` 若有，渲染成比追問 chip 更輕的「參考方向」列表，儀表板**不**高亮。
@@ -997,6 +999,8 @@ Azure 部署排除。
 | `Finalized` 後 `Discuss` 限不限次 | 不限 | 護欄的目的是確保交出東西，交了就功成身退 |
 | `AskUser` 多維度 | 一次最多 3 則 | 3 × 2 = 6 覆蓋六維度全缺的最壞情況；一張卡 12 個 chip 分三區不至於糊掉 |
 | 追問政策 | 還有任何 facet 是 missing 的維度都要問（waived 與有委託 note 的 facet 不算），只講一部分的維度也問剩下的 facet；一次問滿 3 個 | 原本「能省就省」導致追問偏少（eval #18、使用者 2026-09-25 實測）；使用者選擇「盡量追問」，接受完整描述也可能先被追問（eval #2）；額度 2×3 剛好能問完人像 6 維 |
+| tag 來源 | 伺服器定稿時比對 ledger 標 `rag`／`llm`／`base`，不信模型自述 | 同 §9 借用來源驗證的原則：少一個可被捏造的欄位；ledger 本來就是那一本帳 |
+| 定稿閘門 | 有缺就不准定稿，直到追問額度用完（`AskUser` 離開清單）；委託 note 的 facet 不算缺；強制定稿放行 | system.md 的追問政策模型不遵守（2026-09-25 實測：`AskUser` 還在清單上、31 個 facet 有 20 個 missing，模型直接 `FinalizePrompt`）；沿用 §4.3「違規的選項不給選」 |
 | `OutputSafetyFilter` 範圍 | 全檢（定稿 + 討論 + 追問的文字與選項） | §6.2 原文的理由對 `options` 一字不差地成立；合規是對外賣點，出口不一致難講 |
 | `presetId` 不在 ledger | 降級為 null，不移除 | `presetId` 本來就可為 null；輸出過濾兜住自由發明的內容 |
 | `AutoFill` 可逆 | **不做** | 有了 `Discuss` 之後問題自己解掉：`Discuss` 不看 `AutoFill`，使用者透過討論把某項變成 `covered` 或 `waived`，那一項就不在 `AutoFill` 補齊的範圍內。`waived` 本來就是為「即使委託也不補」存在的 |

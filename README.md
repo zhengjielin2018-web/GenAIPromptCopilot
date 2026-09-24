@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/zhengjielin2018-web/GenAIPromptCopilot/actions/workflows/ci.yml/badge.svg)](https://github.com/zhengjielin2018-web/GenAIPromptCopilot/actions/workflows/ci.yml)
 
-用繁體中文描述想要的畫面，系統以六個維度判斷資訊夠不夠、主動追問缺的細節、從知識庫推薦可用片段，最後產出 SD／SDXL tag 風格的英文正／負向提示詞。求職作品集專案：每個技術點都有看得見的實證，功能深度其次。
+用繁體中文描述想要的畫面，系統以六個維度判斷資訊夠不夠、主動追問缺的細節、從知識庫推薦可用片段，最後產出 SD／SDXL tag 風格的英文正／負向提示詞，逐個 tag 標示來源（知識庫片段或模型生成）。求職作品集專案：每個技術點都有看得見的實證，功能深度其次。
 
 ![對話流與六維度儀表板](docs/images/chat.png)
 

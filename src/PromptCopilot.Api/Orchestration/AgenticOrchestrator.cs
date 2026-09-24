@@ -141,7 +141,8 @@ public sealed class AgenticOrchestrator(
             await TryAuditAsync(new AuditEntry(session.Id, turnIndex, "Turn_Completed", version, text,
                 Payload(("outcome", turn.Outcome.GetType().Name), ("toolCalls", turn.ToolCalls), ("rejections", turn.Rejections),
                     ("askedFacetIds", turn.Outcome is AskOutcome ask ? ask.Asks.SelectMany(a => a.MissingFacetIds).Distinct().ToArray() : null),
-                    ("waivedFacetIds", session.FacetStates.Where(kv => kv.Value == FacetState.Waived).Select(kv => kv.Key).ToArray())),
+                    ("waivedFacetIds", session.FacetStates.Where(kv => kv.Value == FacetState.Waived).Select(kv => kv.Key).ToArray()),
+                    ("tagOrigins", turn.Outcome is FinalizedOutcome fin ? TagOrigins(fin.Final.PositiveSources) : null)),
                 LatencyMs: (int)sw.ElapsedMilliseconds));
         }
         catch (OutputBlockedException e)
@@ -191,6 +192,18 @@ public sealed class AgenticOrchestrator(
     private static string Payload(params (string Key, object? Value)[] fields) =>
         JsonSerializer.Serialize(fields.Where(f => f.Value is not null).ToDictionary(f => f.Key, f => f.Value), Json);
 
+    /// <summary>positive 各來源的 tag 數；三者加總等於 positive 的 tag 數（eval #25）。</summary>
+    private static object TagOrigins(IReadOnlyList<TagSource>? sources)
+    {
+        var s = sources ?? Array.Empty<TagSource>();
+        return new
+        {
+            rag = s.Count(x => x.Origin == TagAttribution.Rag),
+            llm = s.Count(x => x.Origin == TagAttribution.Llm),
+            @base = s.Count(x => x.Origin == TagAttribution.Base),
+        };
+    }
+
     /// <summary>只有重試層包出來的兩種例外知道自己打了幾次。</summary>
     private static object? AttemptsOf(Exception e) => e switch
     {
@@ -226,6 +239,7 @@ public sealed class AgenticOrchestrator(
     private async Task ForcedFinalizeAsync(TurnContext turn, CancellationToken ct)
     {
         turn.Outcome = null;
+        turn.ForcedFinalize = true;          // 定稿閘門放行：只剩 FinalizePrompt，擋下去這一輪就沒有出口
         var kernel = kernelFactory(turn, new HashSet<string> { ToolNames.FinalizePrompt }, false);
         turn.Session.ChatHistory.AddSystemMessage("tool 呼叫預算已用盡。請立即以現有資訊呼叫 FinalizePrompt 定稿，不要再檢索。facetStates 依使用者原話標記：使用者講過的 facet 標 covered，真的沒講的才是 missing，其餘 missing 的 facet 留白。");
         await CallAsync(turn, kernel, ct);
@@ -241,7 +255,8 @@ public sealed class AgenticOrchestrator(
     {
         AskOutcome a => new FinalEvent("ask", Preamble: a.Preamble, Asks: a.Asks),
         MessageOutcome m => new FinalEvent("message", Message: m.Message, Options: m.Options),
-        FinalizedOutcome f => new FinalEvent("finalized", Positive: f.Final.Positive, Negative: f.Final.Negative, Tips: f.Final.Tips, IntentSummary: f.Final.IntentSummary),
+        FinalizedOutcome f => new FinalEvent("finalized", Positive: f.Final.Positive, Negative: f.Final.Negative, Tips: f.Final.Tips, IntentSummary: f.Final.IntentSummary,
+            PositiveSources: f.Final.PositiveSources ?? Array.Empty<TagSource>(), NegativeSources: f.Final.NegativeSources ?? Array.Empty<TagSource>()),
         SaveConsentOutcome => new FinalEvent("save_consent_requested"),
         _ => throw new InvalidOperationException($"無法轉成 final 事件：{o.GetType().Name}"),
     };

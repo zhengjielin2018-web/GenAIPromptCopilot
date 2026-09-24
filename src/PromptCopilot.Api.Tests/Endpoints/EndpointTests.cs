@@ -82,7 +82,9 @@ public class EndpointTests : IClassFixture<EndpointTests.Factory>
         var store = _factory.Services.GetRequiredService<SessionStore>();
         var s = store.Create();
         s.ApplyProfile("portrait", _factory.Services.GetRequiredService<PromptCopilot.Api.Configuration.FacetCatalog>());
-        s.RecordFinalize(new FinalPrompt("1girl", "lowres", "tips", "一個女生"));
+        s.RecordFinalize(new FinalPrompt("1girl", "lowres", "tips", "一個女生",
+            PositiveSources: new[] { new TagSource("1girl", "rag", new long[] { 1 }, "霓虹雨夜街頭") },
+            NegativeSources: new[] { new TagSource("lowres", "base", Array.Empty<long>(), null) }));
         return s;
     }
 
@@ -157,6 +159,12 @@ public class EndpointTests : IClassFixture<EndpointTests.Factory>
         var f = doc.GetProperty("lastFinal");
         Assert.Equal("1girl", f.GetProperty("positive").GetString());
         Assert.Equal("一個女生", f.GetProperty("intentSummary").GetString());
+        var tag = f.GetProperty("positiveSources")[0];
+        Assert.Equal("1girl", tag.GetProperty("tag").GetString());
+        Assert.Equal("rag", tag.GetProperty("origin").GetString());
+        Assert.Equal(1, tag.GetProperty("presetIds")[0].GetInt64());
+        Assert.Equal("霓虹雨夜街頭", tag.GetProperty("presetTitle").GetString());
+        Assert.Equal("base", f.GetProperty("negativeSources")[0].GetProperty("origin").GetString());
     }
 
     [Fact]

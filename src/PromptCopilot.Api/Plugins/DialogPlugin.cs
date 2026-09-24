@@ -68,7 +68,13 @@ public sealed class DialogPlugin(TurnContext turn, FacetCatalog catalog, Orchest
         if (string.IsNullOrWhiteSpace(positivePrompt)) return "錯誤：positivePrompt 不可為空";
         if (string.IsNullOrWhiteSpace(intentSummary)) return "錯誤：intentSummary 不可為空";
         SessionPlugin.Apply(turn, catalog, facetStates);
-        S.RecordFinalize(new FinalPrompt(positivePrompt.Trim(), negativePrompt.Trim(), tips.Trim(), intentSummary.Trim()));
+        if (UnaskedMissing() is { Count: > 0 } missing)
+            return $"錯誤：還有 {missing.Count} 個 facet 缺少而且追問額度未用完，請先呼叫 AskUser 追問（一次最多 {options.MaxAsksPerCall} 個維度）：{string.Join(",", missing)}";
+        // tag 來源由伺服器比對 ledger 標，不要求模型自述（主規格 §9）
+        var positive = positivePrompt.Trim();
+        var negative = negativePrompt.Trim();
+        S.RecordFinalize(new FinalPrompt(positive, negative, tips.Trim(), intentSummary.Trim(),
+            TagAttribution.Attribute(positive, S.Ledger, negative: false), TagAttribution.Attribute(negative, S.Ledger, negative: true)));
         turn.Outcome = new FinalizedOutcome(S.LastFinal!);
         return "ok";
     }
@@ -80,6 +86,14 @@ public sealed class DialogPlugin(TurnContext turn, FacetCatalog catalog, Orchest
         if (S.Status != SessionStatus.Finalized) return "錯誤：尚未定稿，無法儲存";
         turn.Outcome = new SaveConsentOutcome();
         return "ok";
+    }
+
+    /// <summary>定稿閘門（主規格 §4.6）：AskUser 還在清單上（Collecting、額度沒用完、沒說隨便）而且不是預算用盡的
+    /// 強制定稿時，仍為 missing 又沒有委託 note 的 facet。system.md 的追問政策模型不遵守，改成違規的選項不給選（§4.3）。</summary>
+    private List<string>? UnaskedMissing()
+    {
+        if (!turn.Tools.Contains(ToolNames.AskUser) || turn.ForcedFinalize) return null;
+        return S.FacetStates.Where(kv => kv.Value == FacetState.Missing && !S.FacetNotes.ContainsKey(kv.Key)).Select(kv => kv.Key).ToList();
     }
 
     private bool StatesDiffer(IEnumerable<FacetStateEntry> incoming)
