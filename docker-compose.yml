@@ -17,6 +17,24 @@ services:
       timeout: 3s
       retries: 12
 
+  seed:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.seed
+    container_name: prompt-copilot-seed
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PGHOST: db
+      PGPORT: 5432
+      PGUSER: ${POSTGRES_USER:-postgres}
+      PGPASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      PGDATABASE: ${POSTGRES_DB:-prompt_copilot}
+      # 「-」不是「:-」：.env 沒這行 → 預設 Release 資產；有這行且為空 → 跳過種子
+      SEED_URL: ${SEED_URL-https://github.com/zhengjielin2018-web/GenAIPromptCopilot/releases/download/seed-v1/prompt_copilot_seed_v1.dump}
+    restart: "no"
+
   api:
     build:
       context: .
@@ -25,6 +43,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      seed:
+        condition: service_completed_successfully
     environment:
       ASPNETCORE_ENVIRONMENT: Production
       # 同一把 key 給對話與 embedding（GeminiEmbeddingClient 也讀 Llm:ApiKey）。
