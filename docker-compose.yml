@@ -34,7 +34,7 @@ services:
       PGPASSWORD: ${POSTGRES_PASSWORD:-postgres}
       PGDATABASE: ${POSTGRES_DB:-prompt_copilot}
       # 「-」不是「:-」：.env 沒這行 → 預設 Release 資產；有這行且為空 → 跳過種子
-      SEED_URL: ${SEED_URL-https://github.com/zhengjielin2018-web/GenAIPromptCopilot/releases/download/seed-v1/prompt_copilot_seed_v1.dump}
+      SEED_URL: ${SEED_URL-https://github.com/zhengjielin2018-web/GenAIPromptCopilot/releases/download/seed-v2/prompt_copilot_seed_v2.dump}
     restart: "no"
 
   api:
