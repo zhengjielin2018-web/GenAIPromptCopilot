@@ -66,13 +66,14 @@ export function applyEvent(state: ChatState, ev: AgentEvent): ChatState {
   switch (ev.type) {
     case 'session': {
       const next = { ...state, sessionId: ev.sessionId, turnIndex: ev.turnIndex, status: ev.status, highlighted: [] }
-      // 採用輪：泡泡先放暫代字，這裡換成伺服器組的那句（只換這一輪還在等的那則）
+      // 採用輪：泡泡先放暫代字，這裡換成伺服器組的那句（只換這一輪還在等的那則）。
+      // pending.text 一起換，這一輪後面失敗時，失敗條目與重試帶回的才是這句
       if (!ev.text || !state.pending) return next
       const idx = findLastIndex(state.transcript, e => e.kind === 'user')
       if (idx < 0) return next
       const transcript = state.transcript.slice()
       transcript[idx] = { kind: 'user', text: ev.text }
-      return { ...next, transcript }
+      return { ...next, transcript, pending: { ...state.pending, text: ev.text } }
     }
 
     case 'tool_call': {

@@ -154,6 +154,25 @@ describe('applyEvent', () => {
     let s = beginTurn({ ...initialState(), sessionId: 's1' }, '採用〈油畫〉…')
     s = applyEvent(s, { type: 'session', sessionId: 's1', turnIndex: 2, status: 'Finalized', text: '採用〈油畫〉（知識庫 #7）：藝術流派照它的（oil painting）。' })
     expect(s.transcript.at(-1)).toEqual({ kind: 'user', text: '採用〈油畫〉（知識庫 #7）：藝術流派照它的（oil painting）。' })
+    // pending.text 也要跟著換：這一輪後面失敗時，失敗條目與重試帶的是伺服器那句，不是暫代字
+    expect(s.pending?.text).toBe('採用〈油畫〉（知識庫 #7）：藝術流派照它的（oil painting）。')
+    const failed = applyEvent(s, { type: 'error', code: 'turn_failed', message: 'x' })
+    expect(failed.transcript.at(-1)).toMatchObject({ kind: 'failure', originalText: '採用〈油畫〉（知識庫 #7）：藝術流派照它的（oil painting）。' })
+  })
+
+  // 只換這一輪還在等的那則：前幾輪的泡泡不動；沒有進行中的輪次時整個對話流不動
+  it('session with text changes only the pending turn bubble, and nothing when idle', () => {
+    let s = beginTurn({ ...initialState(), sessionId: 's1' }, 'a')
+    s = endTurn(applyEvent(applyEvent(s, session(1)), ask))
+    s = beginTurn(s, 'b')
+    s = applyEvent(s, { type: 'session', sessionId: 's1', turnIndex: 2, status: 'Collecting', text: 'B' })
+    expect(s.transcript.map(e => e.kind)).toEqual(['user', 'final', 'user'])
+    expect(s.transcript[0]).toEqual({ kind: 'user', text: 'a' })
+    expect(s.transcript[2]).toEqual({ kind: 'user', text: 'B' })
+    const idle = endTurn(applyEvent(s, ask))
+    expect(idle.pending).toBeNull()
+    const after = applyEvent(idle, { type: 'session', sessionId: 's1', turnIndex: 3, status: 'Collecting', text: 'C' })
+    expect(after.transcript).toEqual(idle.transcript)
   })
 
   it('session without text leaves the user entry alone', () => {
