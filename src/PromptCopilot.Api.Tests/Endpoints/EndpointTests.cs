@@ -98,6 +98,44 @@ public class EndpointTests : IClassFixture<EndpointTests.Factory>
     }
 
     [Fact]
+    public async Task Create_session_without_body_defaults_retrieval_on()
+    {
+        var r = await _client.PostAsync("/api/sessions", null);
+        Assert.Equal(HttpStatusCode.Created, r.StatusCode);
+        Assert.Equal("on", (await r.Content.ReadFromJsonAsync<Dictionary<string, string>>())!["retrieval"]);
+    }
+
+    /// <summary>manual-tests/chat.py 帶 content-type: application/json 但沒有 body，要當成沒帶。</summary>
+    [Fact]
+    public async Task Create_session_with_empty_json_body_defaults_on()
+    {
+        var content = new StringContent("", System.Text.Encoding.UTF8, "application/json");
+        var r = await _client.PostAsync("/api/sessions", content);
+        Assert.Equal(HttpStatusCode.Created, r.StatusCode);
+        Assert.Equal("on", (await r.Content.ReadFromJsonAsync<Dictionary<string, string>>())!["retrieval"]);
+    }
+
+    [Fact]
+    public async Task Create_session_with_retrieval_off_is_reported_on_create_and_get()
+    {
+        var r = await _client.PostAsJsonAsync("/api/sessions", new { retrieval = "OFF" });
+        Assert.Equal(HttpStatusCode.Created, r.StatusCode);
+        var body = await r.Content.ReadFromJsonAsync<Dictionary<string, string>>();
+        Assert.Equal("off", body!["retrieval"]);
+        var doc = await _client.GetFromJsonAsync<System.Text.Json.JsonElement>($"/api/sessions/{body["sessionId"]}");
+        Assert.Equal("off", doc.GetProperty("retrieval").GetString());
+        Assert.False(_factory.Services.GetRequiredService<SessionStore>().TryGet(body["sessionId"])!.RetrievalEnabled);
+    }
+
+    [Fact]
+    public async Task Create_session_rejects_unknown_retrieval_value()
+    {
+        var r = await _client.PostAsJsonAsync("/api/sessions", new { retrieval = "maybe" });
+        Assert.Equal(HttpStatusCode.BadRequest, r.StatusCode);
+        Assert.Contains("on 或 off", (await r.Content.ReadFromJsonAsync<Dictionary<string, string>>())!["error"]);
+    }
+
+    [Fact]
     public async Task Messages_streams_sse_for_known_session_and_404_for_unknown()
     {
         var id = (await (await _client.PostAsync("/api/sessions", null)).Content.ReadFromJsonAsync<Dictionary<string, string>>())!["sessionId"];
@@ -146,6 +184,7 @@ public class EndpointTests : IClassFixture<EndpointTests.Factory>
         Assert.Equal(2, doc.GetProperty("askLimit").GetInt32());
         Assert.Equal(0, doc.GetProperty("facetStates").EnumerateObject().Count());
         Assert.Equal(System.Text.Json.JsonValueKind.Null, doc.GetProperty("lastFinal").ValueKind);
+        Assert.Equal("on", doc.GetProperty("retrieval").GetString());
     }
 
     [Fact]
@@ -221,7 +260,7 @@ public class EndpointTests : IClassFixture<EndpointTests.Factory>
     /// <summary>Swagger 上寫的回應碼要等於端點真的會回的。沒標就只剩框架預設的 200：
     /// 開 session 其實回 201，400／404／409 也全部看不到，照文件寫的客戶端會漏接。</summary>
     [Theory]
-    [InlineData("/api/sessions", "post", "201")]
+    [InlineData("/api/sessions", "post", "201,400")]
     [InlineData("/api/sessions/{id}", "get", "200,404")]
     [InlineData("/api/sessions/{id}/messages", "post", "200,400,404,409")]
     [InlineData("/api/sessions/{id}/save-to-shared", "post", "200,400,404,409")]

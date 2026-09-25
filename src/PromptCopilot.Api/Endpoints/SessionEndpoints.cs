@@ -10,13 +10,14 @@ namespace PromptCopilot.Api.Endpoints;
 
 public sealed record MessageRequest(string Text);
 public sealed record SaveRequest(string Intent);
-public sealed record SessionCreated(string SessionId);
+public sealed record CreateSessionRequest(string? Retrieval);
+public sealed record SessionCreated(string SessionId, string Retrieval);
 public sealed record SavedToShared(Guid Id);
 public sealed record ErrorBody(string Error);
 public sealed record FinalDto(string Positive, string Negative, string Tips, string IntentSummary,
     IReadOnlyList<TagSource> PositiveSources, IReadOnlyList<TagSource> NegativeSources);
 public sealed record SessionSnapshotDto(string SessionId, string Status, string? Profile, int TurnIndex, int AskCount, int AskLimit,
-    IReadOnlyDictionary<string, string> FacetStates, FinalDto? LastFinal);
+    IReadOnlyDictionary<string, string> FacetStates, FinalDto? LastFinal, string Retrieval);
 
 public static class SessionEndpoints
 {
@@ -24,18 +25,24 @@ public static class SessionEndpoints
     {
         var g = app.MapGroup("/api/sessions").WithTags("Sessions");
 
-        g.MapPost("/", (SessionStore store) =>
+        // body 可省略：minimal API 的 nullable body 參數在沒有 body 或 body 為空時是 null。
+        g.MapPost("/", (CreateSessionRequest? req, SessionStore store) =>
         {
-            var s = store.Create();
-            return Results.Created($"/api/sessions/{s.Id}", new SessionCreated(s.Id));
+            bool? enabled = req?.Retrieval?.Trim().ToLowerInvariant() switch { null or "" or "on" => true, "off" => false, _ => null };
+            if (enabled is null) return Results.BadRequest(new ErrorBody("retrieval 只能是 on 或 off"));
+            var s = store.Create(enabled.Value);
+            return Results.Created($"/api/sessions/{s.Id}", new SessionCreated(s.Id, s.RetrievalMode));
         })
         .WithSummary("開一段新對話")
         .WithDescription("""
-            不用帶 body。回 `201` 與 `{"sessionId": "..."}`，之後的呼叫都帶這個 id。
+            body 可省略：`{"retrieval": "on" | "off"}`，預設 `on`。`off` 的對話不查知識庫（模型拿不到 `SearchPresets` 與 `SearchSimilarPrompts`），是量測用的對照組；建立後不能改。其他值回 `400`。
+
+            回 `201` 與 `{"sessionId": "...", "retrieval": "on" | "off"}`，之後的呼叫都帶這個 id。
 
             session 只存在記憶體：API 重啟就消失；閒置超過 `Orchestrator:SessionSlidingExpirationMinutes`（預設 120 分鐘）也會過期，之後再用這個 id 會得到 404。
             """)
-        .Produces<SessionCreated>(StatusCodes.Status201Created);
+        .Produces<SessionCreated>(StatusCodes.Status201Created)
+        .Produces<ErrorBody>(StatusCodes.Status400BadRequest);
 
         g.MapGet("/{id}", (string id, SessionStore store, OrchestratorOptions options) =>
         {
@@ -46,11 +53,11 @@ public static class SessionEndpoints
                 ? new FinalDto(f.Positive, f.Negative, f.Tips, f.IntentSummary, f.PositiveSources ?? Array.Empty<TagSource>(), f.NegativeSources ?? Array.Empty<TagSource>())
                 : null;
             return Results.Ok(new SessionSnapshotDto(s.Id, s.Status.ToString(), s.Profile, s.TurnIndex, s.AskCount, options.MaxAskCount,
-                s.FacetStates.ToDictionary(kv => kv.Key, kv => FacetStateParser.ToWire(kv.Value)), final));
+                s.FacetStates.ToDictionary(kv => kv.Key, kv => FacetStateParser.ToWire(kv.Value)), final, s.RetrievalMode));
         })
         .WithSummary("讀 session 目前的狀態")
         .WithDescription("""
-            給前端整頁重載後重建畫面用：狀態（`Collecting`／`Finalized`）、題材、每個 facet 的狀態、追問已用幾次（`askCount`／`askLimit`）、最後一次定稿（未定稿為 `null`；欄位同 `final` 事件的 `finalized`，含 tag 來源）。
+            給前端整頁重載後重建畫面用：狀態（`Collecting`／`Finalized`）、題材、每個 facet 的狀態、追問已用幾次（`askCount`／`askLimit`）、最後一次定稿（未定稿為 `null`；欄位同 `final` 事件的 `finalized`，含 tag 來源）、這段對話是否使用知識庫（`retrieval`）。
 
             不含對話紀錄：對話流由前端自己保存。唯讀，除了重置閒置過期的計時之外不改任何狀態。
 
