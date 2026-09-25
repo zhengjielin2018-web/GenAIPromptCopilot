@@ -80,20 +80,41 @@ ALTER TABLE prompt_knowledge_presets ADD COLUMN IF NOT EXISTS facet_tags JSONB;
 - `PresetDetail` 與 `PresetHit` 不動；新增 `RecommendAsync(float[] query, IReadOnlyList<string> dimensionFacets, IReadOnlyList<(string facetId, IReadOnlyList<string> anchors)> anchors, int take, CancellationToken)`。`anchors` 是該維度每個 covered facet 對應的錨 tag（已 `Normalize`）；空清單就不加錨條件：
 
 ```sql
+-- 組合條件 <set>（兩種形式共用）
+facet_ids && @facets                                   -- GIN 粗篩
+  AND facet_tags IS NOT NULL
+  AND preset_embedding IS NOT NULL
+  AND (SELECT count(*) FROM jsonb_each(facet_tags) AS ft(facet_id, tags)
+       WHERE ft.facet_id = ANY(@facets) AND jsonb_array_length(ft.tags) > 0) >= 2
+
+-- 沒錨：HNSW 依向量取前 N
 SELECT id, title, facet_ids, facet_tags, image_url, source_ref, preset_embedding <=> @q AS dist
 FROM prompt_knowledge_presets
-WHERE facet_ids && @facets
-  AND facet_tags IS NOT NULL
-  AND cardinality(ARRAY(SELECT unnest(facet_ids) INTERSECT SELECT unnest(@facets))) >= 2
-  -- 錨（有 anchors 時才加）：任一 covered facet 底下有 tag 整段相等或字尾相符
-  AND EXISTS (
-    SELECT 1 FROM jsonb_each(facet_tags) AS ft(facet_id, tags), jsonb_array_elements_text(ft.tags) AS t(tag)
-    WHERE ft.facet_id = ANY(@anchorFacets)
-      AND (lower(t.tag) = ANY(@anchorTags) OR lower(t.tag) LIKE ANY(@anchorSuffixes))
-  )
+WHERE <set>
+ORDER BY dist
+LIMIT @take
+
+-- 有錨：先整批過濾（MATERIALIZED），再排序
+WITH c AS MATERIALIZED (
+  SELECT id, title, facet_ids, facet_tags, image_url, source_ref, preset_embedding
+  FROM prompt_knowledge_presets
+  WHERE <set>
+    -- 任一指定 facet 底下有 tag 整段相等或字尾相符
+    AND EXISTS (
+      SELECT 1 FROM jsonb_each(facet_tags) AS ft(facet_id, tags), jsonb_array_elements_text(ft.tags) AS t(tag)
+      WHERE ft.facet_id = ANY(@anchorFacets)
+        AND (replace(lower(t.tag), '_', ' ') = ANY(@anchorTags) OR replace(lower(t.tag), '_', ' ') LIKE ANY(@anchorSuffixes))
+    )
+)
+SELECT id, title, facet_ids, facet_tags, image_url, source_ref, preset_embedding <=> @q AS dist
+FROM c
 ORDER BY dist
 LIMIT @take
 ```
+
+組合條件數的是 `facet_tags` 裡「屬於這個維度、而且陣列不是空的」鍵，不是 `facet_ids` 的交集。原因是回填會對歸不進任何 facet 的列寫 `{}`，也可能留下空陣列；這種 facet 採用時拿不到 tag，組合在這個維度就要有 2 個以上採得到東西的 facet。
+
+有錨時要用 `MATERIALIZED`。不這樣寫的話，規劃器會走 HNSW iterative scan，把錨當 Filter 邊掃邊丟；掃到 `hnsw.max_scan_tuples`（預設 20,000，全表已近兩萬筆）就停。罕見的錨（例如涼鞋只有 20 筆，穿著有 2,357 筆）會在表變大後被默默漏掉，但錨的結果必須精確。先把命中的列整批撈出來再排序，走的是 `facet_ids` 的 GIN 索引加排序，跟掃描上限無關。沒錨的池子大，HNSW 取向量前 N 正是要的，維持原路。
 
 `@anchorTags` 是全部錨 tag，`@anchorSuffixes` 是每個錨前面加 `'% '`（字尾相符，與 `TagAttribution.EndsWithWord` 同義）。`@anchorFacets` 是有錨的 facet；facet 與 tag 的配對放寬成「該維度任一 covered facet 命中任一錨」，錨本來就是該維度的詞，跨 facet 誤中的機率低，SQL 也簡單得多。
 

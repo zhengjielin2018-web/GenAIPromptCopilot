@@ -33,26 +33,44 @@ public class PresetRepository(NpgsqlDataSource ds)
         SELECT id, title, category, description, tags, facet_ids, prompt_snippet, negative_snippet, image_url, source_ref, facet_tags::text
         FROM prompt_knowledge_presets WHERE id = @id
         """;
-    // 設計 §4.4：GIN 過濾該維度、至少涵蓋維度裡 2 個 facet（一個 facet 是單品不是組合）、只取已回填的列；
-    // 有錨時先過濾再排序（涼鞋 20 筆、穿著 2,357 筆，先取向量前 N 再過濾會漏掉大半）。
-    private const string RecommendSql = """
+    // 設計 §4.4：facet_ids && 是 GIN 粗篩；組合要有該維度 2 個以上「採得到 tag」的 facet（一個 facet 是單品不是組合）。
+    // 算 facet_tags 裡非空的鍵而不是 facet_ids：回填對歸不進 facet 的列寫 {}，也可能留空陣列，那些 facet 採用時拿不到東西。
+    private const string SetFilter = """
+        facet_ids && @facets
+          AND facet_tags IS NOT NULL
+          AND preset_embedding IS NOT NULL
+          AND (SELECT count(*) FROM jsonb_each(facet_tags) AS ft(facet_id, tags)
+               WHERE ft.facet_id = ANY(@facets) AND jsonb_array_length(ft.tags) > 0) >= 2
+        """;
+    // 沒錨：池子大，HNSW 依向量取前 N 正是要的。
+    private const string RecommendSql = $"""
         SELECT id, title, facet_ids, facet_tags::text, image_url, source_ref, preset_embedding <=> @q AS dist
         FROM prompt_knowledge_presets
-        WHERE facet_ids && @facets
-          AND facet_tags IS NOT NULL
-          AND cardinality(ARRAY(SELECT unnest(facet_ids) INTERSECT SELECT unnest(@facets))) >= 2
+        WHERE {SetFilter}
+        ORDER BY dist
+        LIMIT @take
         """;
-    // 錨：該維度任一 covered facet 底下有 tag 整段相等或以空白為界的字尾相符（與 TagAttribution.EndsWithWord 同義）。
+    // 有錨：先把符合的列整批撈出來再排序。MATERIALIZED 擋住規劃器把 ORDER BY／LIMIT 推進 HNSW：
+    // iterative scan 掃到 hnsw.max_scan_tuples（預設 20,000，全表已近兩萬筆）就停，罕見的錨（涼鞋 20 筆）會被默默漏掉，錨的結果必須精確。
+    // 錨本身：任一指定 facet 底下有 tag 整段相等或以空白為界的字尾相符（與 TagAttribution.EndsWithWord 同義）；
     // 資料庫的 tag 可能帶底線，錨已正規化成空白，所以比對前 replace。
-    private const string AnchorClause = """
-          AND EXISTS (
-            SELECT 1
-            FROM jsonb_each(facet_tags) AS ft(facet_id, tags), jsonb_array_elements_text(ft.tags) AS t(tag)
-            WHERE ft.facet_id = ANY(@anchorFacets)
-              AND (replace(lower(t.tag), '_', ' ') = ANY(@anchorTags) OR replace(lower(t.tag), '_', ' ') LIKE ANY(@anchorSuffixes))
-          )
+    private const string AnchoredRecommendSql = $"""
+        WITH c AS MATERIALIZED (
+          SELECT id, title, facet_ids, facet_tags, image_url, source_ref, preset_embedding
+          FROM prompt_knowledge_presets
+          WHERE {SetFilter}
+            AND EXISTS (
+              SELECT 1
+              FROM jsonb_each(facet_tags) AS ft(facet_id, tags), jsonb_array_elements_text(ft.tags) AS t(tag)
+              WHERE ft.facet_id = ANY(@anchorFacets)
+                AND (replace(lower(t.tag), '_', ' ') = ANY(@anchorTags) OR replace(lower(t.tag), '_', ' ') LIKE ANY(@anchorSuffixes))
+            )
+        )
+        SELECT id, title, facet_ids, facet_tags::text, image_url, source_ref, preset_embedding <=> @q AS dist
+        FROM c
+        ORDER BY dist
+        LIMIT @take
         """;
-    private const string RecommendTail = "\n        ORDER BY dist\n        LIMIT @take";
 
     public virtual async Task<IReadOnlyList<PresetHit>> SearchAsync(float[] query, IReadOnlyList<string> facetIds, int k, CancellationToken ct)
     {
@@ -80,7 +98,7 @@ public class PresetRepository(NpgsqlDataSource ds)
         IReadOnlyList<string> anchorFacets, IReadOnlyList<string> anchorTags, int take, CancellationToken ct)
     {
         var anchored = anchorFacets.Count > 0 && anchorTags.Count > 0;
-        await using var cmd = ds.CreateCommand(RecommendSql + (anchored ? AnchorClause : "") + RecommendTail);
+        await using var cmd = ds.CreateCommand(anchored ? AnchoredRecommendSql : RecommendSql);
         cmd.Parameters.AddWithValue("q", new Vector(query));
         cmd.Parameters.AddWithValue("facets", dimensionFacets.ToArray());
         cmd.Parameters.AddWithValue("take", take);

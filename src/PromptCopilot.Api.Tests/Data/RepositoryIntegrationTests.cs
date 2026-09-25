@@ -19,8 +19,8 @@ public class RepositoryIntegrationTests(ITestOutputHelper output) : IAsyncLifeti
         await using var cmd = _ds.CreateCommand("""
             INSERT INTO prompt_knowledge_presets (source_ref, title, category, description, tags, facet_ids, prompt_snippet, negative_snippet, preset_embedding, facet_tags)
             VALUES (@r, '測試片段', 'Style', 'd', ARRAY['x'], ARRAY['style.genre'], 'photo realism', NULL, @e, NULL),
-                   (@r2, '測試穿搭', 'Clothing', 'd', ARRAY['x'], ARRAY['clothing.upper','clothing.footwear'], 'white shirt, platform sandals', NULL, @e,
-                    '{"clothing.upper":["white shirt"],"clothing.footwear":["platform sandals"]}'::jsonb)
+                   (@r2, '測試穿搭', 'Clothing', 'd', ARRAY['x'], ARRAY['clothing.upper','clothing.lower','clothing.footwear'], 'white shirt, platform sandals', NULL, @e,
+                    '{"clothing.upper":["white shirt"],"clothing.lower":[],"clothing.footwear":["platform sandals"]}'::jsonb)
             """);
         cmd.Parameters.AddWithValue("r", Ref);
         cmd.Parameters.AddWithValue("r2", Ref2);
@@ -72,6 +72,9 @@ public class RepositoryIntegrationTests(ITestOutputHelper output) : IAsyncLifeti
         // 單一 facet 的片段不是「組合」，而且它沒有 facet_tags
         Assert.DoesNotContain(await repo.RecommendAsync(Unit(0), new[] { "style.genre", "style.palette" }, Array.Empty<string>(), Array.Empty<string>(), 3, default),
             h => h.Title == "測試片段");
+        // 算的是「採得到 tag 的 facet」：測試穿搭的 facet_ids 有 upper 與 lower，但 lower 的陣列是空的，這個維度只剩 1 個
+        Assert.DoesNotContain(await repo.RecommendAsync(Unit(0), new[] { "clothing.upper", "clothing.lower" }, Array.Empty<string>(), Array.Empty<string>(), 3, default),
+            h => h.Title == "測試穿搭");
     }
 
     [IntegrationFact]
@@ -85,6 +88,34 @@ public class RepositoryIntegrationTests(ITestOutputHelper output) : IAsyncLifeti
         Assert.Contains(await Q("clothing.footwear", "platform sandals"), h => h.Title == "測試穿搭");   // 整段相等
         Assert.DoesNotContain(await Q("clothing.footwear", "boots"), h => h.Title == "測試穿搭");
         Assert.DoesNotContain(await Q("clothing.upper", "sandals"), h => h.Title == "測試穿搭");          // 錨只看指定的 facet
+    }
+
+    /// <summary>有錨的結果要精確：HNSW iterative scan 掃到 hnsw.max_scan_tuples 就停，罕見的錨在大表裡會被默默漏掉。
+    /// 把上限壓到 1、組合移到離查詢很遠的 Unit(1)，走 HNSW 的話撈不到。</summary>
+    [IntegrationFact]
+    public async Task Recommend_anchored_is_exact_regardless_of_the_hnsw_scan_cap()
+    {
+        await using (var move = _ds.CreateCommand("UPDATE prompt_knowledge_presets SET preset_embedding = @e WHERE source_ref = @r2"))
+        {
+            move.Parameters.AddWithValue("e", new Pgvector.Vector(Unit(1)));
+            move.Parameters.AddWithValue("r2", Ref2);
+            Assert.Equal(1, await move.ExecuteNonQueryAsync());
+        }
+        var b = new NpgsqlDataSourceBuilder(new NpgsqlConnectionStringBuilder(TestEnv.Db) { Options = "-c hnsw.max_scan_tuples=1" }.ConnectionString);
+        b.UseVector();
+        await using var capped = b.Build();
+        // 上限沒套上的話這條測試什麼也沒證明
+        await using (var conn = await capped.OpenConnectionAsync())
+        {
+            await using (var load = new NpgsqlCommand("SELECT '[1]'::vector IS NOT NULL", conn)) await load.ExecuteScalarAsync();
+            await using var show = new NpgsqlCommand("SHOW hnsw.max_scan_tuples", conn);
+            Assert.Equal("1", (string?)await show.ExecuteScalarAsync());
+        }
+
+        var hits = await new PresetRepository(capped).RecommendAsync(Unit(0), new[] { "clothing.upper", "clothing.footwear" },
+            new[] { "clothing.footwear" }, new[] { "sandals" }, 3, default);
+
+        Assert.Contains(hits, h => h.Title == "測試穿搭");
     }
 
     [IntegrationFact]
