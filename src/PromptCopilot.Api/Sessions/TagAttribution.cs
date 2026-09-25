@@ -29,6 +29,9 @@ public static class TagAttribution
     private static readonly HashSet<string> BasePositive = Keys("masterpiece, best quality, highly detailed");
     private static readonly HashSet<string> BaseNegative = Keys("lowres, bad anatomy, worst quality");
 
+    /// <summary>已正規化的 tag 是不是正向基礎詞。推薦用它把基礎詞排出定稿錨：每次定稿都有、不屬於任何 facet。</summary>
+    public static bool IsBase(string normalizedTag) => BasePositive.Contains(normalizedTag);
+
     public static IReadOnlyList<TagSource> Attribute(string prompt, PresetLedger ledger, bool negative, IReadOnlyList<Adoption>? adoptions = null)
     {
         var tags = Split(prompt);

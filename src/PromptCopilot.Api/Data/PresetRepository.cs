@@ -54,9 +54,10 @@ public class PresetRepository(NpgsqlDataSource ds)
     // iterative scan 掃到 hnsw.max_scan_tuples（預設 20,000，全表已近兩萬筆）就停，罕見的錨（涼鞋 20 筆）會被默默漏掉，錨的結果必須精確。
     // 錨本身：任一指定 facet 底下有 tag 整段相等或以空白為界的字尾相符（與 TagAttribution.EndsWithWord 同義）；
     // 資料庫的 tag 可能帶底線，錨已正規化成空白，所以比對前 replace。
+    // 距離在 CTE 裡就算好：物化的暫存只帶一個 float，不帶 768 維向量。
     private const string AnchoredRecommendSql = $"""
         WITH c AS MATERIALIZED (
-          SELECT id, title, facet_ids, facet_tags, image_url, source_ref, preset_embedding
+          SELECT id, title, facet_ids, facet_tags, image_url, source_ref, preset_embedding <=> @q AS dist
           FROM prompt_knowledge_presets
           WHERE {SetFilter}
             AND EXISTS (
@@ -66,7 +67,7 @@ public class PresetRepository(NpgsqlDataSource ds)
                 AND (replace(lower(t.tag), '_', ' ') = ANY(@anchorTags) OR replace(lower(t.tag), '_', ' ') LIKE ANY(@anchorSuffixes))
             )
         )
-        SELECT id, title, facet_ids, facet_tags::text, image_url, source_ref, preset_embedding <=> @q AS dist
+        SELECT id, title, facet_ids, facet_tags::text, image_url, source_ref, dist
         FROM c
         ORDER BY dist
         LIMIT @take

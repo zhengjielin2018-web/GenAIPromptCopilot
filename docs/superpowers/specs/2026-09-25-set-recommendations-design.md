@@ -94,9 +94,9 @@ WHERE <set>
 ORDER BY dist
 LIMIT @take
 
--- 有錨：先整批過濾（MATERIALIZED），再排序
+-- 有錨：先整批過濾（MATERIALIZED），再排序；距離在 CTE 裡算，暫存不帶 768 維向量
 WITH c AS MATERIALIZED (
-  SELECT id, title, facet_ids, facet_tags, image_url, source_ref, preset_embedding
+  SELECT id, title, facet_ids, facet_tags, image_url, source_ref, preset_embedding <=> @q AS dist
   FROM prompt_knowledge_presets
   WHERE <set>
     -- 任一指定 facet 底下有 tag 整段相等或字尾相符
@@ -106,7 +106,7 @@ WITH c AS MATERIALIZED (
         AND (replace(lower(t.tag), '_', ' ') = ANY(@anchorTags) OR replace(lower(t.tag), '_', ' ') LIKE ANY(@anchorSuffixes))
     )
 )
-SELECT id, title, facet_ids, facet_tags, image_url, source_ref, preset_embedding <=> @q AS dist
+SELECT id, title, facet_ids, facet_tags, image_url, source_ref, dist
 FROM c
 ORDER BY dist
 LIMIT @take
@@ -136,7 +136,7 @@ LIMIT @take
 ### 5.3 每個維度的查詢
 
 1. **查詢向量**：本 session 所有使用者訊息原文（不含伺服器組的採用句）依序串接、取最後 500 字，用 `RetrievalQuery` 任務嵌入。一輪只嵌入一次，各維度共用。
-2. **錨**：該維度每個 **covered** facet 的錨 tag ＝ `session.FacetTags[facetId]` 拆出的 tag（5.5）；`FinalizedOutcome` 時再加上本次定稿 `positive` 拆出的 tag（歸到該維度所有 covered facet）。拆與正規化用 `TagAttribution.Split`＋`Normalize`（這兩個與 `EndsWithWord` 原本是 private，改 public，規則只有一份）。沒有 covered facet、或 covered facet 都沒有 tag 的維度，錨為空。
+2. **錨**：該維度每個 **covered** facet 的錨 tag ＝ `session.FacetTags[facetId]` 拆出的 tag（5.5）；`FinalizedOutcome` 時再加上本次定稿 `positive` 拆出的 tag（歸到該維度所有 covered facet；基礎畫質詞以 `TagAttribution.IsBase` 排除，它們每次定稿都有、不屬於任何 facet）。拆與正規化用 `TagAttribution.Split`＋`Normalize`（這兩個與 `EndsWithWord` 原本是 private，改 public，規則只有一份）。沒有 covered facet、或 covered facet 都沒有 tag 的維度，錨為空。
 3. **候選**：`RecommendAsync(vec, facets, covered, anchors, take)`，`take` 是 `Orchestrator:RecommendationTake`（預設 3）。有錨且回 ≥ 2 筆：`anchored=true`，`anchorTags` 是候選 covered facet 底下實際命中的錨（C# 照 SQL 的規則算：資料庫 tag 等於錨，或以「空白＋錨」結尾；不算反方向，列出來的就是過濾用到的錨。例外：C# 對資料庫 tag 用完整的 `Normalize`，`facet_tags` 保留權重或括號時可能多列一個 SQL 沒比中的錨，見 `docs/known-issues.md` §9）。有錨但回 < 2 筆：兩個錨清單都傳空再查一次，`anchored=false`。沒錨：直接查一次，`anchored=false`。
 4. 追問與定稿走同一條邏輯，差別只在定稿多了 positive 的 tag 當錨。
 5. 候選少於 1 筆的維度不列。

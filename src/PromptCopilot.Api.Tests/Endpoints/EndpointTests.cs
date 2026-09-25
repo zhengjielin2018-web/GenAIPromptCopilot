@@ -205,6 +205,23 @@ public class EndpointTests : IClassFixture<EndpointTests.Factory>
         Assert.Contains("echo: 採用〈霓虹雨夜街頭〉", body);
     }
 
+    /// <summary>設計 §6.1：有 adopt 時 text 忽略。模型與 audit 看到的只能是伺服器組的句子，不能夾帶使用者自己塞的字。</summary>
+    [Fact]
+    public async Task Adopt_with_text_runs_the_adoption_and_ignores_the_text()
+    {
+        var s = PortraitSession();
+        var r = await _client.PostAsJsonAsync($"/api/sessions/{s.Id}/messages",
+            new { text = "別理我這句", adopt = new { presetId = 1, dimension = "scene", take = new[] { "scene.location" } } });
+        Assert.Equal(HttpStatusCode.OK, r.StatusCode);
+        var body = await r.Content.ReadAsStringAsync();
+        var data = SessionFrameData(body);
+        using var frame = System.Text.Json.JsonDocument.Parse(data[data.IndexOf('{')..]);
+        Assert.StartsWith("採用〈", frame.RootElement.GetProperty("text").GetString());
+        var echo = body.Split('\n').Single(l => l.Contains("echo: "));
+        Assert.StartsWith("採用〈", echo[(echo.IndexOf("echo: ", StringComparison.Ordinal) + "echo: ".Length)..]);
+        Assert.DoesNotContain("別理我這句", echo);
+    }
+
     [Theory]
     [InlineData("""{"adopt":{"presetId":99,"dimension":"scene","take":["scene.location"]}}""", HttpStatusCode.BadRequest, "找不到")]
     [InlineData("""{"adopt":{"presetId":2,"dimension":"scene","take":["scene.location"]}}""", HttpStatusCode.BadRequest, "尚未拆分")]

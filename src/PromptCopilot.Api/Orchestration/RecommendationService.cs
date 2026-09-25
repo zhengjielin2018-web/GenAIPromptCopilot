@@ -38,8 +38,9 @@ public sealed class RecommendationService(FacetCatalog catalog, IEmbeddingClient
         var query = QueryText(s.ChatHistory);
         if (query.Length == 0) return null;
         var vec = (await embed.EmbedAsync(new[] { query }, GeminiEmbeddingClient.RetrievalQuery, ct))[0];
+        // 基礎畫質詞不當錨：每次定稿都有，只會把推薦拉向剛好也寫了 masterpiece 的片段
         var finalTags = outcome is FinalizedOutcome f
-            ? TagAttribution.Split(f.Final.Positive).Select(TagAttribution.Normalize).Where(t => t.Length > 0).ToList()
+            ? TagAttribution.Split(f.Final.Positive).Select(TagAttribution.Normalize).Where(t => t.Length > 0 && !TagAttribution.IsBase(t)).ToList()
             : new List<string>();
 
         var result = new List<RecommendedDimension>();
@@ -81,7 +82,7 @@ public sealed class RecommendationService(FacetCatalog catalog, IEmbeddingClient
         return joined.Length <= QueryChars ? joined : joined[^QueryChars..];
     }
 
-    /// <summary>該維度 covered facet 的錨：模型給的 FacetTags，定稿時再加 positive 的全部 tag。全部正規化、去重、保序。</summary>
+    /// <summary>該維度 covered facet 的錨：模型給的 FacetTags，定稿時再加 positive 的 tag（基礎詞已由呼叫端排除）。全部正規化、去重、保序。</summary>
     public static IReadOnlyList<string> AnchorTags(Session s, IReadOnlyList<string> covered, IReadOnlyList<string> finalTags)
     {
         if (covered.Count == 0) return Array.Empty<string>();

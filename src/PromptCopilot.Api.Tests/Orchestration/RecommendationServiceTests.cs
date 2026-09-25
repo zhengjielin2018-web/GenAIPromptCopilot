@@ -91,9 +91,9 @@ public class RecommendationServiceTests
     public async Task Finalized_adds_positive_tags_to_the_anchors_of_dimensions_with_covered_facets()
     {
         var (svc, s, _, presets) = Make(("clothing.footwear", "sandals"));
-        await svc.BuildAsync(s, Finalized("masterpiece, 1girl, sandals, white socks"), 1, default);
+        await svc.BuildAsync(s, Finalized("masterpiece, (best quality:1.2), 1girl, sandals, white socks"), 1, default);
         var clothing = presets.Calls.First(c => c.firstFacet == "clothing.head");
-        Assert.Equal(new[] { "sandals", "masterpiece", "1girl", "white socks" }, clothing.anchorTags);
+        Assert.Equal(new[] { "sandals", "1girl", "white socks" }, clothing.anchorTags);          // 基礎畫質詞（含加權寫法）不當錨
         Assert.Empty(presets.Calls.First(c => c.firstFacet == "style.genre").anchorTags);       // style 沒有 covered
     }
 
