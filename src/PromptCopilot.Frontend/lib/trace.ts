@@ -5,24 +5,19 @@ export interface Contribution { presetId: number; title: string; sourceRef: stri
 export interface ContributionSummary { counts: { rag: number; llm: number; base: number }; byPreset: Contribution[] }
 
 /** 定稿卡的「檢索貢獻」：只靠伺服器標的 tag 來源。counts 只算正向（與 audit 的 tagOrigins 一致）；
- *  一個 tag 對到多個 preset 時每個都列；負向 tag 加 - 前綴列在同一組。
- *  TagSource 的 presetTitle／sourceRef 是 presetIds[0] 那筆片段的（後端「取第一個」），所以只有 i === 0 的提及才可信：
- *  它設定 title、補上還沒有的 sourceRef；其他提及只在建組時借標題當備用，sourceRef 留 null。 */
+ *  負向 tag 加 - 前綴列在同一組。
+ *  一個 tag 只歸給 presetIds[0]：後端把整段相等的片段排在前面，presetTitle／sourceRef 也是它的，chip 點開的也是它。
+ *  後面的 presetIds 是字尾相符的其他片段，知識庫裡同名片段常有好幾筆，全列會把同一個標題重複很多次、讀不出誰貢獻了什麼。 */
 export function contributions(positive: TagSource[], negative: TagSource[]): ContributionSummary {
   const counts = { rag: 0, llm: 0, base: 0 }
   for (const t of positive) counts[t.origin] += 1
   const groups = new Map<number, Contribution>()
   const add = (t: TagSource, label: string) => {
-    if (t.origin !== 'rag') return
-    t.presetIds.forEach((id, i) => {
-      const g = groups.get(id) ?? { presetId: id, title: t.presetTitle ?? String(id), sourceRef: null, tags: [] }
-      if (i === 0) {
-        if (t.presetTitle) g.title = t.presetTitle
-        g.sourceRef = g.sourceRef ?? t.sourceRef ?? null
-      }
-      g.tags.push(label)
-      groups.set(id, g)
-    })
+    if (t.origin !== 'rag' || t.presetIds.length === 0) return
+    const id = t.presetIds[0]
+    const g = groups.get(id) ?? { presetId: id, title: t.presetTitle ?? String(id), sourceRef: t.sourceRef ?? null, tags: [] }
+    g.tags.push(label)
+    groups.set(id, g)
   }
   for (const t of positive) add(t, t.tag)
   for (const t of negative) add(t, `-${t.tag}`)

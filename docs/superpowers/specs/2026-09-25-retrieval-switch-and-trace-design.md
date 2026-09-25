@@ -161,7 +161,7 @@ export function contributions(positive: TagSource[], negative: TagSource[]): Con
 ```
 
 - `counts` 只算正向（與 audit 的 `tagOrigins` 一致）。
-- `byPreset` 依 presetId 分組，一個 tag 對到多個 presetId 時每個都列；負向 tag 加 `-` 前綴列在同一組。依 tag 數多的在前。
+- `byPreset` 依 presetId 分組，一個 tag 只歸給 `presetIds[0]`（整段相等的排在前面，也是 chip 點開的那筆；2026-09-25 實測後改的：原本每個 presetId 都列，知識庫裡同名片段常有好幾筆，同一標題會重複列很多次）；負向 tag 加 `-` 前綴列在同一組。依 tag 數多的在前。
 - 畫面：一行 `rag N・llm N・base N`，接著每個片段一列 `標題 → tag, tag, tag`，標題點了開抽屜；`byPreset` 空時顯示計數與一句「這次定稿沒有借用知識庫片段。」
 
 ### 4.7 Dashboard：本次對話檢索摘要

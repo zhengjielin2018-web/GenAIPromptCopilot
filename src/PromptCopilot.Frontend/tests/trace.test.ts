@@ -15,21 +15,22 @@ const NEG: TagSource[] = [
 ]
 
 describe('contributions', () => {
-  it('counts positive origins only and groups tags by preset, most tags first', () => {
+  it('counts positive origins only and groups each tag under its first preset, most tags first', () => {
     const c = contributions(POS, NEG)
     expect(c.counts).toEqual({ rag: 2, llm: 1, base: 1 })
     expect(c.byPreset).toEqual([
-      { presetId: 3, title: '夏日涼鞋', sourceRef: null, tags: ['neon lights', 'sandals'] },
       { presetId: 9, title: '霓虹雨夜', sourceRef: 'civitai:1:0', tags: ['neon lights', '-blurry'] },
+      { presetId: 3, title: '夏日涼鞋', sourceRef: null, tags: ['sandals'] },
     ])
   })
 
-  it('takes title and sourceRef from a source whose first presetId is that preset; a secondary mention only borrows the title', () => {
-    const c = contributions([{ tag: 'a', origin: 'rag', presetIds: [5, 6], presetTitle: 'five', sourceRef: 'civitai:5:0' }], [])
-    expect(c.byPreset).toEqual([
-      { presetId: 5, title: 'five', sourceRef: 'civitai:5:0', tags: ['a'] },
-      { presetId: 6, title: 'five', sourceRef: null, tags: ['a'] },
-    ])
+  // 知識庫裡同一組來源常有好幾筆同名片段，一個 tag 會對到全部；只歸給第一筆（chip 點開的那筆），否則同一標題會重複列很多次
+  it('ignores presetIds after the first, so same-title presets do not repeat', () => {
+    const c = contributions([
+      { tag: 'a', origin: 'rag', presetIds: [5, 6, 7], presetTitle: 'five', sourceRef: 'civitai:5:0' },
+      { tag: 'b', origin: 'rag', presetIds: [5, 8], presetTitle: 'five' },
+    ], [])
+    expect(c.byPreset).toEqual([{ presetId: 5, title: 'five', sourceRef: 'civitai:5:0', tags: ['a', 'b'] }])
   })
 
   it('handles empty sources', () => {
