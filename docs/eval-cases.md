@@ -129,3 +129,16 @@ API 層是用 SSE 直接打分支 `feat/set-recommendations` 的 API（本機 50
 
 - `facet_tags` 以 `scripts/backfill_facet_tags.py` 回填開發庫。第一輪留下 863 筆 `{}`、other 23.4%：模型常把該筆以「 | 」串起的整行 tag 當成一個 tag 回傳，對不上原字而整筆被丟掉。修正後（tag 改以 JSON 陣列送出、合併回來的 key 拆開比對）用 `--redo-empty` 重送這 863 筆，現在 19,354 筆 NULL 0、`{}` 33 筆（抽查是 tag 確實不屬於該筆提供的 facet），other 約 20.5%。第一輪裡部分 tag 被合併回傳而落進 other 的列不是 `{}`，`--redo-empty` 不會重送；要找回得整表重跑（約 970 次呼叫），這次沒做。
 - seed-v2：dump 已在本機匯出（104.8 MB，`facet_tags` 在內）。⏸ 等 release：Release `seed-v2` 還沒建，`docker-compose.yml` 的 `SEED_URL` 維持 seed-v1，新 volume 起 stack 的那一步也還沒跑。
+
+## 2026-09-25 測試用審查開關（待跑）
+
+`.env` 設 `SAFETY_ALLOW_DISABLE=true` 後 `docker compose up -d --build api`。沒設時 T1 以外的案例都跑不了。
+
+| # | 操作 | 應該看到 | 結果 |
+| :--- | :--- | :--- | :--- |
+| T1 | 不設 `SAFETY_ALLOW_DISABLE`，開前端 | 頂列沒有「程式端審查」開關；`GET /api/config/safety` 回 `canDisable: false`；直接打 `messages` 帶 `"safety":"off"` 回 403 | ⏳ |
+| T2 | 設了之後開前端 | 頂列多「程式端審查」開關，預設開著 | ⏳ |
+| T3 | 開關開著，送「穿著改成比基尼泳裝」 | 跟以前一樣可能被 `Blocked_NSFW` 擋 | ⏳ |
+| T4 | 關掉開關（整組轉洋紅、出現「已關閉（測試用）」），重送同一句 | 不被我們擋（Gemini 自己仍可能 `Blocked_Upstream`）；audit `Turn_Completed` 的 payload 有 `"safety":"off"` | ⏳ |
+| T5 | 開關關著，採用一套含 `see-through` 的穿著組合（如 #41745） | 定稿，不出現 `Blocked_Output`（`Blocked_Upstream` 仍可能） | ⏳ |
+| T6 | 重新整理 | 開關回到開著 | ⏳ |

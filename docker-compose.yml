@@ -52,6 +52,8 @@ services:
       # 同一把 key 給對話與 embedding（GeminiEmbeddingClient 也讀 Llm:ApiKey）。
       # 不用 :? 強制：compose 會插值整份檔案，那樣連只起 db 都會失敗。
       Llm__ApiKey: ${GEMINI_API_KEY:-}
+      # 測試用：true 時前端出現「程式端審查」開關，可以逐則關掉我們自己的審查（Gemini 的攔截不受影響）
+      Safety__AllowDisable: ${SAFETY_ALLOW_DISABLE:-false}
       # GSS 關掉：aspnet image 沒有 libgssapi_krb5，Npgsql 預設會先試 GSS 加密並在 log 印一行 Error（不影響連線）
       Database__ConnectionString: Host=db;Port=5432;Database=${POSTGRES_DB:-prompt_copilot};Username=${POSTGRES_USER:-postgres};Password=${POSTGRES_PASSWORD:-postgres};GSS Encryption Mode=Disable
     ports:
