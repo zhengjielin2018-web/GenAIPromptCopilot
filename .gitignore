@@ -31,3 +31,7 @@ Thumbs.db
 
 # 擴增前的語料備份（本機保險，不入版控）
 .backup-pre-expansion/
+
+# 工具的本機工作區（worktree、SDD 進度）
+.claude/worktrees/
+.superpowers/
