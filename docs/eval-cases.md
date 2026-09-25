@@ -111,15 +111,20 @@ fresh clone 在暫存目錄進行，只放 `.env`；開發用的 stack 先 `dock
 | R7 | 開「使用知識庫」再開新對話，跑到定稿，看 audit `Turn_Completed` | payload 有 `"retrieval":"on"`；R5 那段的是 `"off"`，且 `tagOrigins.rag` 為 0 | ⏳ |
 | R8 | 在 R5 的 off 對話裡開「顯示檢索細節」 | 定稿卡「檢索貢獻」顯示 rag 0 與「這次定稿沒有借用知識庫片段。」；儀表板沒有「本次對話檢索摘要」區塊 | ⏳ |
 
-## 2026-09-25 整套組合推薦與採用（待跑）
+## 2026-09-25 整套組合推薦與採用（API 層已跑，瀏覽器待跑）
 
 設計：`docs/superpowers/specs/2026-09-25-set-recommendations-design.md`。瀏覽器驗收，需要 API、知識庫，且 `facet_tags` 已回填（`scripts/backfill_facet_tags.py` 或 seed-v2）。
 
 | # | 操作 | 應該看到 | 結果 |
 | :--- | :--- | :--- | :--- |
-| S1 | 新對話，送「一個少女穿涼鞋」 | 儀表板鞋履 chip 的 title 含模型給的英文 tag（如 `sandals`）；追問卡底下「參考組合」只有被問的維度；穿著那列副標「含你講的 sandals」（`anchored=true`）、3 張縮圖有來源標籤；縮圖點開抽屜 | ⏳ |
-| S2 | 回「直接給我」定稿 | 定稿卡底下每個適用維度都有一列參考組合；穿著列 `anchored=true`；沒錨的維度副標「最接近你描述的組合」 | ⏳ |
-| S3 | 在穿著列按一套的「採用」：上半身切「照它的」、鞋履維持「留我的」、確定 | 對照表：missing 的列預設「照它的」、covered 的預設「留我的」、這套沒有的列停用；確定後使用者泡泡先是「採用〈標題〉…」再變成伺服器組的整句；新定稿卡上半身 tag 是洋紅色 `adopted` chip（點開抽屜）、鞋履仍是原詞；「檢索貢獻」多「採用」那列；audit `Turn_Completed` 有 `adoption.filled` 含 `clothing.upper`、`tagOrigins.adopted ≥ 1` | ⏳ |
-| S4 | `retrieval: off` 的新對話跑到定稿；再用 curl 對它送 `{"adopt":{"presetId":1,"dimension":"clothing","take":["clothing.upper"]}}` | 沒有任何「參考組合」區塊；curl 回 `409` | ⏳ |
-| S5 | 在 S3 的對話重新整理 | 兩張定稿卡與參考組合都回來；只有最新一張的「採用」可按，舊的停用並提示；`adopted` chip 仍在 | ⏳ |
-| S6 | 跑 `python scripts/adoption_report.py --since <今天>` | 定稿輪採用率 ≥ 1 次、各維度採用次數有 clothing | ⏳ |
+| S1 | 新對話，送「一個少女穿涼鞋」 | 儀表板鞋履 chip 的 title 含模型給的英文 tag（如 `sandals`）；追問卡底下「參考組合」只有被問的維度；人物穿著那列副標「含你講的 sandals」（`anchored=true`）、2–3 張縮圖有來源標籤；縮圖點開抽屜 | ✅ API 層：`dimensions.facetTags` 有 `clothing.footwear: "sandals"`；`final ask` 問風格／場景／鏡頭，隨後的 `recommendations` 恰好是這三維、各 3 套都有縮圖與 `sourceRef`。模型沒問穿著，這輪沒有穿著列（錨在 S2 驗）。畫面（chip title、副標、抽屜）未看 |
+| S2 | 回「直接給我」定稿 | 定稿卡底下每個適用維度都有一列參考組合；穿著列 `anchored=true`；沒錨的維度副標「最接近你描述的組合」 | ✅ API 層：`final finalized` 後 `recommendations` 含六個人像維度各 3 套；人物穿著 `anchored=true`、`anchorTags=["sandals"]`，三套的鞋履都含 `sandals`；人物樣貌錨上 `1girl`，其餘四維 `anchored=false` |
+| S3 | 在穿著列按一套的「採用」：上半身切「照它的」、鞋履維持「留我的」、確定 | 對照表：missing 的列預設「照它的」、covered 的預設「留我的」、這套沒有的列停用；確定後使用者泡泡先是「採用〈標題〉…」再變成伺服器組的整句；新定稿卡上半身 tag 是洋紅色 `adopted` chip（點開抽屜）、鞋履仍是原詞；先開「顯示檢索細節」，「檢索貢獻」多「採用」那列；audit `Turn_Completed` 的 `adoption.filled` 或 `replaced` 含 `clothing.upper`（看採用前的狀態）、`tagOrigins.adopted ≥ 1` | ⏸ 需要瀏覽器（對照表預設、泡泡、洋紅 chip、檢索貢獻）。API 層 ✅：採用 #41593、`take` 上半身 → `session.text`「採用〈休閒短版綁帶裝〉（知識庫 #41593）：上半身照它的（white front-tie top, unzipped）；…保留我的。」；新定稿這兩個 tag 是 `adopted`，`sandals` 仍是 rag；audit `adoption.filled=["clothing.upper"]`、`tagOrigins.adopted=2` |
+| S4 | `retrieval: off` 的新對話跑到定稿；再用 curl 對它送 `{"adopt":{"presetId":1,"dimension":"clothing","take":["clothing.upper"]}}` | 沒有任何「參考組合」區塊；curl 回 `409` | ✅ `retrieval: off` 一輪就定稿，事件裡沒有 `recommendations`，tag 來源只有 llm／base（audit `tagOrigins.rag=0`）；對它送 adopt 回 `409`「這段對話沒有知識庫，沒有組合可以採用」 |
+| S5 | 在 S3 的對話重新整理 | 兩張定稿卡與參考組合都回來；只有最新一張的「採用」可按，舊的停用並提示；`adopted` chip 仍在 | ⏸ 需要瀏覽器 |
+| S6 | 跑 `python scripts/adoption_report.py --since <今天>` | 定稿輪採用率分子 ≥ 1、各維度採用次數有 clothing | ✅ `--since 2026-09-25`：定稿輪採用率 1/2、追問輪 0/1；各維度採用次數 clothing 1；採用時有錨 1/1；未對到推薦輪的採用 0 |
+
+API 層是用 SSE 直接打分支 `feat/set-recommendations` 的 API（本機 5010 埠），沒開前端。session：S1–S3 `5c422dd6…`（prompt_version 依序 7329f17c68b4、0424e1916433、f1c04de38f36），S4 `ec15eb6e…`（82e0ed128450）。全程沒有 `Turn_Failed`、`Protocol_Violation`。
+
+- `facet_tags` 以 `scripts/backfill_facet_tags.py` 回填開發庫：19,354 筆全部非 NULL，其中 863 筆是 `{}`；other 佔 23.4%（91,681 個 tag 裡 21,412 個），逐筆重送 3 批、跳過 0 筆。抽查 `{}`：多半是模型把該筆以「 | 」串起的整行 tag 當成一個 tag 回傳，對不上原字而全被丟掉（863 筆裡 772 筆有多個 tag）；other 超出預期的 5–20% 也有一部分出自這裡，待處理。
+- seed-v2：dump 已在本機匯出（104.8 MB，`facet_tags` 在內）。⏸ 等 release：Release `seed-v2` 還沒建，`docker-compose.yml` 的 `SEED_URL` 維持 seed-v1，新 volume 起 stack 的那一步也還沒跑。
