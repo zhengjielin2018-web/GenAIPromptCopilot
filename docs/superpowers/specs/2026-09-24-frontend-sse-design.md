@@ -167,7 +167,7 @@ drawer: presetId | null
 | `ToolCallCard` | 行內卡片：「🔍 查詢知識庫：鏡頭 → 池 2147 → 3 筆」。`tool_result` 到之前顯示進行中；完成後摺疊成一行，點開看 `summary` 與 preset 縮圖列，縮圖可開抽屜；「顯示檢索細節」開啟且有 `detail` 時改列每個查詢項目（標籤｜查詢句｜池 → 命中），項目可展開命中清單（標題可開抽屜、分級、距離、可借入／僅供建議） |
 | `AskCard` | `kind: ask`：`preamble` 在上，每則 ask 一區（維度標題、`question`、一排 chip）。該維度在儀表板高亮，直到下一輪 `session` 事件為止 |
 | `MessageBubble` | `kind: message`：氣泡 + 輕量「參考方向」列表（有 `presetId` 的可開抽屜）；儀表板不高亮 |
-| `FinalCard` | `kind: finalized`：正／負向 prompt 各自有複製鈕、`tips`、「儲存至共享知識庫」。按下展開確認區：預填 `intentSummary` 的輸入框 + 「確認儲存」；成功後按鈕變「已儲存」並失效；`save-to-shared` 回 `409`／`400` 時把後端的 `error` 字串顯示在確認區內，按鈕可再按；「顯示檢索細節」開啟且卡片帶 sources 時多一區「檢索貢獻」：rag／llm／base 計數與片段 → tag 清單（舊卡沒有 sources 不顯示，畫 0 會誤導） |
+| `FinalCard` | `kind: finalized`：正／負向 prompt 各自有複製鈕、`tips`、「儲存至共享知識庫」。按下展開確認區：預填 `intentSummary` 的輸入框 + 「確認儲存」；成功後按鈕變「已儲存」並失效；`save-to-shared` 回 `409`／`400` 時把後端的 `error` 字串顯示在確認區內，按鈕可再按；「顯示檢索細節」開啟且卡片帶 sources 時多一區「檢索貢獻」：rag／adopted（2026-09-25）／llm／base 計數與片段 → tag 清單（舊卡沒有 sources 不顯示，畫 0 會誤導） |
 | `SaveConsentNotice` | `kind: save_consent_requested`：一筆短條目，同時把**最近一張** `FinalCard` 的確認區展開並捲過去 |
 | `FailureNotice` | `error`／`blocked`：原因用 `reason`／`code` 對到繁中文案、訊息用後端的 `message`；「重試」把 `originalText` 填回輸入框並聚焦，不自動送 |
 | `Composer` | 輸入框 + 送出；輪次進行中鎖住送出（避免 `409`）；chip 在此累積 |
@@ -186,10 +186,11 @@ drawer: presetId | null
 
 **定稿 tag chip 與圖例（2026-09-25 補，上表 `FinalCard` 的偏差）**：後端定稿時比對 ledger 標每個 tag 的來源（主規格 §9），`final` 事件與 `GET` 的 `lastFinal` 多帶 `positiveSources`／`negativeSources`，每筆 `{ tag, origin, presetIds, presetTitle? }`。`PromptBlock` 有 sources 時把 `<pre>` 換成一排 chip（`flex flex-wrap gap-1`），沒有（這之前存進 `sessionStorage` 的舊卡）維持整段純文字：
 
-- `rag`（知識庫片段）：`border-cyan bg-cyan-wash`，是按鈕，`title`「來自〈presetTitle〉」，點了開 preset 抽屜（`presetIds[0]`），hover 反白成 `bg-cyan text-paper`。青沿用「焦點、進行中」那個強調色，也是卡片上唯一可點的 chip。
+- `rag`（知識庫片段）：`border-cyan bg-cyan-wash`，是按鈕，`title`「來自〈presetTitle〉」，點了開 preset 抽屜（`presetIds[0]`），hover 反白成 `bg-cyan text-paper`。青沿用「焦點、進行中」那個強調色，也是卡片上唯一可點的 chip（2026-09-25 起 `adopted` 也可點）。
+- `adopted`（採用的組合，2026-09-25）：`border-magenta bg-magenta-wash`，是按鈕，`title`「採用〈presetTitle〉帶進來的」，點了開 preset 抽屜，hover 反白成 `bg-magenta text-paper`。見 `2026-09-25-set-recommendations-design.md` §7.3。
 - `llm`（模型生成）：`border-rule bg-surface`，一般邊框。
 - `base`（基礎詞）：`border-rule/60 bg-paper text-muted`，淡化。
-- chip 列下方一行圖例「■ 知識庫片段 ■ 模型生成 ■ 基礎詞」，小方塊用同一組邊框與底色。
+- chip 列下方一行圖例「■ 知識庫片段 ■ 採用的組合 ■ 模型生成 ■ 基礎詞」（採用的組合 2026-09-25 加），小方塊用同一組邊框與底色。
 - 複製鈕仍複製整段原文 `text`，不是把 chip 串回去。
 - reducer 不用改：`final` 事件與 `hydrate` 本來就整包展開進 `FinalizedData`，新欄位跟著走；型別在 `types/api.ts` 加上，`tests/reducer.test.ts` 釘住兩條路徑都保留它。
 

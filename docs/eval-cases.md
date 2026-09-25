@@ -29,7 +29,7 @@
 | 22 | 連續失敗超過重試次數 | `error`，儀表板回到輪次開始，重送後正常，AskCount 只算一次 | — | ➖ 未跑：同 21，需要故障注入。 | — |
 | 23 | 觸發上游攔截的描述（少女＋泳裝） | `blocked` `Blocked_Upstream`，訊息保留，重送或改寫後正常 | 6ff34e1a7c9c | ➖ 未觸發：「少女穿泳裝在海邊」沒有被上游攔截，直接 `finalized`。依規定只試一次不重送，`Blocked_Upstream` 這條路徑本次沒有實證。 | 2026-09-23 |
 | 24 | 有細節但缺風格與鏡頭的人像描述：「一個老爺爺在稻田裡面喝茶，遠處是房子，太陽很大，老爺爺有著白色捲髮，穿著白色短衣」 | `final.kind = ask`；audit 無 `Tool_Budget_Exhausted`；`Turn_Completed.toolCalls` ≤ 5；只有一張 `SearchPresets` 工具卡，摘要列出每個維度的候選池筆數；儀表板場景／樣貌／穿著為 covered | | （追問政策反轉後待重測） | |
-| 25 | 任一定稿 | 定稿卡的 tag 有三種樣式（知識庫片段／模型生成／基礎詞）；點 rag chip 開抽屜顯示該片段；`Turn_Completed.tagOrigins` 三個計數加總等於 positive 的 tag 數 | | | |
+| 25 | 任一定稿 | 定稿卡的 tag 分四種樣式（知識庫片段／採用的組合／模型生成／基礎詞；採用的組合只在採用推薦之後出現，見 S3）；點 rag 或 adopted chip 開抽屜顯示該片段；`Turn_Completed.tagOrigins` 四個計數（`rag`／`adopted`／`llm`／`base`）加總等於 positive 的 tag 數 | | | |
 | 26 | 一個銀髮少女站在雨夜的霓虹街頭，她穿著泳裝上衣與短褲與拖鞋 | 第一輪 `SearchPresets` 對 clothing 是三個 facet 項目（upper、lower、footwear）而非一句；定稿卡 `shorts`／`sandals` 類 tag 為 rag | | | |
 | 27 | 任一有縮圖的 `SearchPresets` 工具卡 | 縮圖角落有來源標籤，列上方有一行說明；點開抽屜，圖片下方有說明框與「查看原頁」連結 | | | |
 
@@ -110,3 +110,16 @@ fresh clone 在暫存目錄進行，只放 `.env`；開發用的 stack 先 `dock
 | R6 | 在 R5 的對話重新整理 | 對話流回來，「使用知識庫」開關仍是關、沒有「新對話後生效」 | ⏳ |
 | R7 | 開「使用知識庫」再開新對話，跑到定稿，看 audit `Turn_Completed` | payload 有 `"retrieval":"on"`；R5 那段的是 `"off"`，且 `tagOrigins.rag` 為 0 | ⏳ |
 | R8 | 在 R5 的 off 對話裡開「顯示檢索細節」 | 定稿卡「檢索貢獻」顯示 rag 0 與「這次定稿沒有借用知識庫片段。」；儀表板沒有「本次對話檢索摘要」區塊 | ⏳ |
+
+## 2026-09-25 整套組合推薦與採用（待跑）
+
+設計：`docs/superpowers/specs/2026-09-25-set-recommendations-design.md`。瀏覽器驗收，需要 API、知識庫，且 `facet_tags` 已回填（`scripts/backfill_facet_tags.py` 或 seed-v2）。
+
+| # | 操作 | 應該看到 | 結果 |
+| :--- | :--- | :--- | :--- |
+| S1 | 新對話，送「一個少女穿涼鞋」 | 儀表板鞋履 chip 的 title 含模型給的英文 tag（如 `sandals`）；追問卡底下「參考組合」只有被問的維度；穿著那列副標「含你講的 sandals」（`anchored=true`）、3 張縮圖有來源標籤；縮圖點開抽屜 | ⏳ |
+| S2 | 回「直接給我」定稿 | 定稿卡底下每個適用維度都有一列參考組合；穿著列 `anchored=true`；沒錨的維度副標「最接近你描述的組合」 | ⏳ |
+| S3 | 在穿著列按一套的「採用」：上半身切「照它的」、鞋履維持「留我的」、確定 | 對照表：missing 的列預設「照它的」、covered 的預設「留我的」、這套沒有的列停用；確定後使用者泡泡先是「採用〈標題〉…」再變成伺服器組的整句；新定稿卡上半身 tag 是洋紅色 `adopted` chip（點開抽屜）、鞋履仍是原詞；「檢索貢獻」多「採用」那列；audit `Turn_Completed` 有 `adoption.filled` 含 `clothing.upper`、`tagOrigins.adopted ≥ 1` | ⏳ |
+| S4 | `retrieval: off` 的新對話跑到定稿；再用 curl 對它送 `{"adopt":{"presetId":1,"dimension":"clothing","take":["clothing.upper"]}}` | 沒有任何「參考組合」區塊；curl 回 `409` | ⏳ |
+| S5 | 在 S3 的對話重新整理 | 兩張定稿卡與參考組合都回來；只有最新一張的「採用」可按，舊的停用並提示；`adopted` chip 仍在 | ⏳ |
+| S6 | 跑 `python scripts/adoption_report.py --since <今天>` | 定稿輪採用率 ≥ 1 次、各維度採用次數有 clothing | ⏳ |

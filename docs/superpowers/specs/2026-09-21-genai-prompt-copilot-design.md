@@ -318,7 +318,7 @@ LedgerEntry {
 **一輪是一個交易。** 多輪對話下一個 session 可能累積十幾輪的狀態，任何一種失敗都不能把它毀掉：
 
 ```text
-RunTurnAsync(session, text, ct):
+RunTurnAsync(session, input, ct):  // input = TurnInput(text, adoption?, adoptedPreset?)，§4.10
   snapshot = session.Snapshot()     // AskCount, DiscussStreak, Status, Profile, AutoFill,
                                     // FacetStates, PresetLedger, ChatHistory.Count
   try:
@@ -399,9 +399,11 @@ RunTurnAsync(session, text, ct):
 
 ```csharp
 interface IPromptOrchestrator {
-    IAsyncEnumerable<AgentEvent> RunTurnAsync(Session s, string userMessage, CancellationToken ct);
+    IAsyncEnumerable<AgentEvent> RunTurnAsync(Session s, TurnInput input, CancellationToken ct);
 }
 ```
+
+`TurnInput(Text, Adoption?, AdoptedPreset?)`（2026-09-25）：一般訊息只有 `Text`；採用推薦組合的那一輪另帶要記帳的 `Adoption` 與片段（`2026-09-25-set-recommendations-design.md` §6）。
 
 兩個實作：`AgenticOrchestrator`（本設計）與 `StateMachineOrchestrator`（後端決定 ASK/DISCUSS/FINALIZE，LLM 只做分析、檢索與產文）。組態 `Orchestrator:Mode` 切換。API 契約與前端不變。
 
@@ -657,7 +659,7 @@ CREATE TABLE audit_logs (
 CREATE INDEX idx_audit_session ON audit_logs (session_id, created_at);
 ```
 
-`event_type` 值：`Blocked_NSFW`（denylist 命中時 `payload` 記 `{ term }`——命中的詞只進這裡，不回給使用者）、`Blocked_Celebrity`、`Blocked_Output`、`Blocked_Upstream`（上游模型拒絕產出，§6.2；與 `Blocked_NSFW` 分開記，`payload` 記 `{ reason, stage, attempts? }`）、`Tool_Invoked`、`Tool_Budget_Exhausted`、`Protocol_Violation`、`Turn_Failed`（一輪失敗一筆，`payload` 記 `{ stage, errorClass, message, attempts? }`，§4.6）、`Saved_To_Shared`（`/save-to-shared` 寫入成功）、`Turn_Completed`（含 token 與延遲，`payload` 另記 `outcome`、`toolCalls`、`rejections`、`askedFacetIds?`、`waivedFacetIds`、`retrieval`（`on`／`off`），§5.1；定稿那一輪另記 `tagOrigins: { rag, adopted, llm, base }`，positive 各來源的 tag 數，§9）。
+`event_type` 值：`Blocked_NSFW`（denylist 命中時 `payload` 記 `{ term }`——命中的詞只進這裡，不回給使用者）、`Blocked_Celebrity`、`Blocked_Output`、`Blocked_Upstream`（上游模型拒絕產出，§6.2；與 `Blocked_NSFW` 分開記，`payload` 記 `{ reason, stage, attempts? }`）、`Tool_Invoked`、`Tool_Budget_Exhausted`、`Protocol_Violation`、`Turn_Failed`（一輪失敗一筆，`payload` 記 `{ stage, errorClass, message, attempts? }`，§4.6）、`Saved_To_Shared`（`/save-to-shared` 寫入成功）、`Turn_Completed`（含 token 與延遲，`payload` 另記 `outcome`、`toolCalls`、`rejections`、`askedFacetIds?`、`waivedFacetIds`、`retrieval`（`on`／`off`），§5.1；定稿那一輪另記 `tagOrigins: { rag, adopted, llm, base }`，positive 各來源的 tag 數，§9；2026-09-25 起另記 `recommendations: { dimensions: [{ dimension, anchored, presetIds }] }`（該輪有發推薦事件）與 `adoption: { presetId, dimension, take, filled, replaced }`（該輪是採用輪），見 `2026-09-25-set-recommendations-design.md` §8）、`Recommendation_Failed`（2026-09-25，整套組合推薦失敗，`payload` 記 `{ stage: "recommend", errorClass }`，逾時為 `Timeout`；推薦是附加的，該輪照常成立）。
 
 `attempts` 只有在例外是由重試層（§4.6）包出來、知道自己實際打了幾次時才寫；不知道就不寫，不硬塞 0。
 
@@ -762,7 +764,7 @@ scripts/
 { kind: "save_consent_requested" }
 ```
 
-`options` 的每筆是 `{ label, tags, presetId? }`（§4.2）。`positiveSources`／`negativeSources` 的每筆是 `{ tag, origin, presetIds, presetTitle?, sourceRef? }`，依 tag 在提示詞裡的順序；`origin` 為 `rag`（知識庫片段）／`adopted`（採用的組合帶進來的，2026-09-25）／`llm`（模型生成）／`base`（基礎詞），由伺服器比對 ledger 算出（§9）；`sourceRef`（2026-09-25 起）跟 `presetTitle` 取同一筆命中片段，`rag` 與 `adopted` 有。`dimensions` 事件不變，`Discuss` 一樣會發（帶 `facetStates`）。
+`options` 的每筆是 `{ label, tags, presetId? }`（§4.2）。`positiveSources`／`negativeSources` 的每筆是 `{ tag, origin, presetIds, presetTitle?, sourceRef? }`，依 tag 在提示詞裡的順序；`origin` 為 `rag`（知識庫片段）／`adopted`（採用的組合帶進來的，2026-09-25）／`llm`（模型生成）／`base`（基礎詞），由伺服器比對 ledger 算出（§9），其中 `adopted` 比對的是 `Session.Adoptions`（`2026-09-25-set-recommendations-design.md` §6.5）；`sourceRef`（2026-09-25 起）跟 `presetTitle` 取同一筆命中片段，`rag` 與 `adopted` 有。`dimensions` 事件不變，`Discuss` 一樣會發（帶 `facetStates`）。
 
 `Discuss.message` 不會有打字機效果：它是 tool call 的參數，一次到位。這跟 `AskUser` / `FinalizePrompt` 現況一致，不是新問題；前端不要對 `message` 期待 `token` 事件。
 
@@ -876,7 +878,7 @@ Chat history：
 
 ### 12.3 人工 Eval — `docs/eval-cases.md`
 
-固定輸入（目前 23 條），每次改 system prompt 後手動跑並記錄結果與 `prompt_version`：
+固定輸入（目前 24 條），每次改 system prompt 後手動跑並記錄結果與 `prompt_version`：
 
 1. 極簡人像（「一個女生」）→ 應追問
 2. 完整人像 → 應直接定稿
@@ -901,6 +903,7 @@ Chat history：
 21. 以 fake connector 讓第二次 LLM 呼叫 500 兩次後成功 → 使用者無感，audit 無 `Turn_Failed`
 22. 讓它連續失敗超過重試次數 → `error` 事件、儀表板回到輪次開始、按「重試」後正常完成、`AskCount` 只算一次
 23. 送出會觸發上游攔截的描述 → `blocked` 事件、訊息保留、按「重試」原文回到輸入框、改寫後送出正常完成
+24. 整套組合推薦與採用 → `docs/eval-cases.md` S1–S6（2026-09-25）
 
 ### 12.4 TDD 適用範圍
 
@@ -1002,7 +1005,7 @@ Azure 部署排除。
 | `Finalized` 後 `Discuss` 限不限次 | 不限 | 護欄的目的是確保交出東西，交了就功成身退 |
 | `AskUser` 多維度 | 一次最多 3 則 | 3 × 2 = 6 覆蓋六維度全缺的最壞情況；一張卡 12 個 chip 分三區不至於糊掉 |
 | 追問政策 | 還有任何 facet 是 missing 的維度都要問（waived 與有委託 note 的 facet 不算），只講一部分的維度也問剩下的 facet；一次問滿 3 個 | 原本「能省就省」導致追問偏少（eval #18、使用者 2026-09-25 實測）；使用者選擇「盡量追問」，接受完整描述也可能先被追問（eval #2）；額度 2×3 剛好能問完人像 6 維 |
-| tag 來源 | 伺服器定稿時比對 ledger 標 `rag`／`llm`／`base`，不信模型自述 | 同 §9 借用來源驗證的原則：少一個可被捏造的欄位；ledger 本來就是那一本帳 |
+| tag 來源 | 伺服器定稿時比對 ledger 標 `rag`／`llm`／`base`（2026-09-25 起加 `adopted`，比對 `Session.Adoptions`），不信模型自述 | 同 §9 借用來源驗證的原則：少一個可被捏造的欄位；ledger 本來就是那一本帳 |
 | tag 來源字尾相符 | 片段或 tag 以對方為字尾即算 rag | 片段多為更具體的複合 tag（`platform sandals`）；只在空白邊界比字尾，不做子字串（§9） |
 | 定稿閘門 | 有缺就不准定稿，直到追問額度用完（`AskUser` 離開清單）；委託 note 的 facet 不算缺；強制定稿放行 | system.md 的追問政策模型不遵守（2026-09-25 實測：`AskUser` 還在清單上、31 個 facet 有 20 個 missing，模型直接 `FinalizePrompt`）；沿用 §4.3「違規的選項不給選」 |
 | `OutputSafetyFilter` 範圍 | 全檢（定稿 + 討論 + 追問的文字與選項） | §6.2 原文的理由對 `options` 一字不差地成立；合規是對外賣點，出口不一致難講 |

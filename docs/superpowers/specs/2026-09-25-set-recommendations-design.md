@@ -77,7 +77,7 @@ ALTER TABLE prompt_knowledge_presets ADD COLUMN IF NOT EXISTS facet_tags JSONB;
 
 ### 4.4 `PresetRepository`
 
-- `PresetDetail` 與 `PresetHit` 不動；新增 `RecommendAsync(float[] query, IReadOnlyList<string> dimensionFacets, IReadOnlyList<(string facetId, IReadOnlyList<string> anchors)> anchors, int take, CancellationToken)`。`anchors` 是該維度每個 covered facet 對應的錨 tag（已 `Normalize`）；空清單就不加錨條件：
+- `PresetHit` 與 `SearchAsync` 不動（`PresetDetail` 見本節最後一點）；新增 `RecommendAsync(float[] query, IReadOnlyList<string> dimensionFacets, IReadOnlyList<string> anchorFacets, IReadOnlyList<string> anchorTags, int take, CancellationToken)`。`anchorFacets` 是該維度的 covered facet，`anchorTags` 是它們的錨 tag（已 `Normalize`、去重，5.3）；兩個清單任一為空就不加錨條件，走下面「沒錨」那條：
 
 ```sql
 -- 組合條件 <set>（兩種形式共用）
@@ -116,7 +116,7 @@ LIMIT @take
 
 有錨時要用 `MATERIALIZED`。不這樣寫的話，規劃器會走 HNSW iterative scan，把錨當 Filter 邊掃邊丟；掃到 `hnsw.max_scan_tuples`（預設 20,000，全表已近兩萬筆）就停。罕見的錨（例如涼鞋只有 20 筆，穿著有 2,357 筆）會在表變大後被默默漏掉，但錨的結果必須精確。先把命中的列整批撈出來再排序，走的是 `facet_ids` 的 GIN 索引加排序，跟掃描上限無關。沒錨的池子大，HNSW 取向量前 N 正是要的，維持原路。
 
-`@anchorTags` 是全部錨 tag，`@anchorSuffixes` 是每個錨前面加 `'% '`（字尾相符，與 `TagAttribution.EndsWithWord` 同義）。`@anchorFacets` 是有錨的 facet；facet 與 tag 的配對放寬成「該維度任一 covered facet 命中任一錨」，錨本來就是該維度的詞，跨 facet 誤中的機率低，SQL 也簡單得多。
+`@anchorTags` 是全部錨 tag，`@anchorSuffixes` 是每個錨跳脫 LIKE 的 `\`、`%`、`_` 之後前面加 `'% '`（字尾相符，與 `TagAttribution.EndsWithWord` 同義）。`@anchorFacets` 是該維度全部 covered facet（定稿時 positive 的 tag 歸到每個 covered facet，所以不只有 `FacetTags` 的那幾個）；facet 與 tag 的配對放寬成「該維度任一 covered facet 命中任一錨」，錨本來就是該維度的詞，跨 facet 誤中的機率低，SQL 也簡單得多。資料庫這一側只做小寫與底線換空白，不剝權重與括號（`docs/known-issues.md` §9）。
 
 回 `PresetCandidate(Id, Title, FacetIds, FacetTags: IReadOnlyDictionary<string, IReadOnlyList<string>>, ImageUrl, SourceRef, Dist)`。
 
@@ -126,7 +126,7 @@ LIMIT @take
 
 ### 5.1 觸發
 
-`AgenticOrchestrator` 在 `apply` 階段之後、`Turn_Completed` audit 之前：本輪 `Outcome` 是 `AskOutcome` 或 `FinalizedOutcome`，且 `session.RetrievalEnabled`，就呼叫 `RecommendationService.BuildAsync(session, outcome, ct)`，結果非空就 `writer.TryWrite(new RecommendationsEvent(...))`。推薦失敗（DB／embedding 例外）只記 log 與 audit `Recommendation_Failed`，不影響本輪結果——推薦是附加的。
+`AgenticOrchestrator` 在 `apply` 階段之後、`Turn_Completed` audit 之前：本輪 `Outcome` 是 `AskOutcome` 或 `FinalizedOutcome`，且 `session.RetrievalEnabled`，就呼叫 `RecommendationService.BuildAsync(session, outcome, turnIndex, ct)`，結果非空就 `writer.TryWrite(new RecommendationsEvent(...))`。推薦失敗（DB／embedding 例外，或超過推薦自己的逾時 `Orchestrator:RecommendationTimeoutSeconds`，預設 20 秒）只記 log 與 audit `Recommendation_Failed`，不影響本輪結果——推薦是附加的。
 
 ### 5.2 哪些維度
 
@@ -136,8 +136,8 @@ LIMIT @take
 ### 5.3 每個維度的查詢
 
 1. **查詢向量**：本 session 所有使用者訊息原文（不含伺服器組的採用句）依序串接、取最後 500 字，用 `RetrievalQuery` 任務嵌入。一輪只嵌入一次，各維度共用。
-2. **錨**：該維度每個 **covered** facet 的錨 tag ＝ `session.FacetTags[facetId]` 拆出的 tag（5.5）；`FinalizedOutcome` 時再加上本次定稿 `positive` 拆出的 tag（歸到該維度所有 covered facet）。拆與正規化用 `TagAttribution.Split`＋`Normalize`（這兩個與 `EndsWithWord` 現在是 private，改 internal，規則只有一份）。沒有 covered facet、或 covered facet 都沒有 tag 的維度，錨為空。
-3. **候選**：`RecommendAsync(vec, facets, anchors, take: 3)`。有錨且回 ≥ 2 筆：`anchored=true`，`anchorTags` 是候選 `facet_tags` 裡實際命中的錨 tag（去重，C# 用同一條字尾規則算）。有錨但回 < 2 筆：再查一次 `anchors` 為空的版本取前 3，`anchored=false`。沒錨：直接查一次，`anchored=false`。
+2. **錨**：該維度每個 **covered** facet 的錨 tag ＝ `session.FacetTags[facetId]` 拆出的 tag（5.5）；`FinalizedOutcome` 時再加上本次定稿 `positive` 拆出的 tag（歸到該維度所有 covered facet）。拆與正規化用 `TagAttribution.Split`＋`Normalize`（這兩個與 `EndsWithWord` 原本是 private，改 public，規則只有一份）。沒有 covered facet、或 covered facet 都沒有 tag 的維度，錨為空。
+3. **候選**：`RecommendAsync(vec, facets, covered, anchors, take)`，`take` 是 `Orchestrator:RecommendationTake`（預設 3）。有錨且回 ≥ 2 筆：`anchored=true`，`anchorTags` 是候選 covered facet 底下實際命中的錨（C# 照 SQL 的規則算：資料庫 tag 等於錨，或以「空白＋錨」結尾；不算反方向，列出來的就是過濾用到的錨。例外：C# 對資料庫 tag 用完整的 `Normalize`，`facet_tags` 保留權重或括號時可能多列一個 SQL 沒比中的錨，見 `docs/known-issues.md` §9）。有錨但回 < 2 筆：兩個錨清單都傳空再查一次，`anchored=false`。沒錨：直接查一次，`anchored=false`。
 4. 追問與定稿走同一條邏輯，差別只在定稿多了 positive 的 tag 當錨。
 5. 候選少於 1 筆的維度不列。
 
@@ -198,7 +198,7 @@ public sealed record Adoption(int TurnIndex, long PresetId, string Dimension,
 
 `system.md`「## 流程」加第 6 條：
 
-> 6. 使用者訊息以「採用〈」開頭時，那是他從推薦的組合裡挑了一套：「照它的」facet 寫入括號內的 tag（原字，不改寫）、狀態設 `covered`、note 記「採用知識庫 #編號」；「保留我的」facet 維持原狀。然後直接 `FinalizePrompt`，不要追問。
+> 6. 使用者訊息以「採用〈」開頭時，那是他從推薦的組合裡挑了一套：「照它的」facet 寫入括號內的 tag（原字，不改寫）、狀態設 `covered`、`tags` 填同樣的字、note 記「採用知識庫 #編號」；「保留我的」facet 維持原狀。然後直接 `FinalizePrompt`，不要追問。
 
 本案的 prompt 改動只有這一條加上 5.5 的半句。`SystemPromptBuilderTests` 各加一條驗證存在。
 
@@ -229,7 +229,7 @@ public sealed record Adoption(int TurnIndex, long PresetId, string Dimension,
 
 ### 7.4 持久化
 
-`recommendations` 事件與其他事件一樣存 transcript；`adopt` 送出當下 persist 的 `draft` 存伺服器組的那句（重載時回到輸入框的行為與一般訊息一致）。
+`recommendations` 事件與其他事件一樣存 transcript；`adopt` 送出當下 persist 的 `draft` 存空字串：採用沒有使用者原文可以放回輸入框，輪次中重載時輸入框是空的，要再按一次「採用」（一般訊息則是原文回到輸入框）。
 
 ## 8. audit 與量測
 
@@ -281,7 +281,7 @@ public sealed record Adoption(int TurnIndex, long PresetId, string Dimension,
 
 ### 10.4 手動驗收
 
-`docs/eval-cases.md` 加 S1–S4：
+`docs/eval-cases.md` 加 S1–S6（S5 重載、S6 `adoption_report.py` 見該檔）：
 
 - S1：「一個少女穿涼鞋」→ 儀表板鞋履 facet 顯示模型給的 `sandals`；追問卡下有穿著維度的推薦、`anchored=true`、副標含 `sandals`。
 - S2：直接定稿後定稿卡下每個維度都有推薦；穿著維度 `anchored=true` 且副標含 `sandals`。
@@ -291,6 +291,6 @@ public sealed record Adoption(int TurnIndex, long PresetId, string Dimension,
 ## 11. 文件同步
 
 - `docs/單輪流程說明.md`：加「推薦與採用」一節（與程式同一個 commit）。
-- 主規格 `2026-09-21-genai-prompt-copilot-design.md`：§5 tag 來源加 `adopted`；§9 ledger 加採用時寫入；§12.3 指到 S1–S4。
+- 主規格 `2026-09-21-genai-prompt-copilot-design.md`：§5 tag 來源加 `adopted`；§9 ledger 加採用時寫入；§12.3 指到 S1–S6。
 - `README.md`：功能列表加一行。
 - `docs/known-issues.md`：加「錨的同義詞抓不到（等 facet 向量案）」與「錨靠模型翻譯，翻錯就退回無錨」兩條已知限制。
