@@ -7,8 +7,8 @@
     <template v-if="sources?.length">
       <ul class="mt-1.5 flex flex-wrap gap-1">
         <li v-for="(t, i) in sources" :key="i">
-          <button v-if="t.origin === 'rag' && t.presetIds.length" type="button" :class="[CHIP, look(t), 'hover:bg-cyan hover:text-paper']"
-                  :title="ragTitle(t)" @click="s.openDrawer(t.presetIds[0])">
+          <button v-if="clickable(t)" type="button" :class="[CHIP, look(t), t.origin === 'adopted' ? 'hover:bg-magenta hover:text-paper' : 'hover:bg-cyan hover:text-paper']"
+                  :title="chipTitle(t)" @click="s.openDrawer(t.presetIds[0])">
             {{ t.tag }}
           </button>
           <span v-else :class="[CHIP, look(t)]">{{ t.tag }}</span>
@@ -37,23 +37,27 @@ async function copy() {
 }
 
 const CHIP = 'inline-block rounded-[3px] border px-1.5 py-px font-mono text-[12px] leading-5 transition-colors'
-/** 三種來源的邊框與底色，圖例的小方塊用同一組。rag 用專案的強調色青（焦點、進行中），而且只有它可以點。 */
+/** 四種來源的邊框與底色，圖例的小方塊用同一組。rag 用強調色青、adopted 用洋紅；只有這兩種指向 preset、可以點。 */
 const SWATCH: Record<TagSource['origin'], string> = {
   rag: 'border-cyan bg-cyan-wash',
+  adopted: 'border-magenta bg-magenta-wash',
   llm: 'border-rule bg-surface',
   base: 'border-rule/60 bg-paper',
-  adopted: '',
 }
-const TEXT: Record<TagSource['origin'], string> = { rag: 'text-ink', llm: 'text-ink', base: 'text-muted', adopted: '' }
+const TEXT: Record<TagSource['origin'], string> = { rag: 'text-ink', adopted: 'text-ink', llm: 'text-ink', base: 'text-muted' }
 const LEGEND = [
   { origin: 'rag', label: '知識庫片段' },
+  { origin: 'adopted', label: '採用的組合' },
   { origin: 'llm', label: '模型生成' },
   { origin: 'base', label: '基礎詞' },
 ] as const
-/** rag chip 的提示：「來自〈標題〉（Civitai）」，認得出來源才加括號。 */
-function ragTitle(t: TagSource) {
+/** 可點的 chip：rag 與 adopted 都指向一筆 preset。 */
+const clickable = (t: TagSource) => (t.origin === 'rag' || t.origin === 'adopted') && t.presetIds.length > 0
+/** chip 的提示：「來自〈標題〉（Civitai）」／「採用〈標題〉帶進來的」，認得出來源才加括號。 */
+function chipTitle(t: TagSource) {
   const name = sourceName(t.sourceRef)
-  return `來自〈${t.presetTitle ?? `片段 #${t.presetIds[0]}`}〉${name ? `（${name}）` : ''}`
+  const who = `〈${t.presetTitle ?? `片段 #${t.presetIds[0]}`}〉${name ? `（${name}）` : ''}`
+  return t.origin === 'adopted' ? `採用${who}帶進來的` : `來自${who}`
 }
 /** 後端多了新的 origin 時當成模型生成，不讓整張卡壞掉。 */
 const look = (t: TagSource) => `${SWATCH[t.origin] ?? SWATCH.llm} ${TEXT[t.origin] ?? TEXT.llm}`

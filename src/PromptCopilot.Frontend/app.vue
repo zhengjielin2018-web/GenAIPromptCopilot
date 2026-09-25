@@ -12,6 +12,7 @@
       </section>
       <Dashboard class="hidden border-l border-rule md:flex" />
       <PresetDrawer />
+      <AdoptDialog />
     </div>
   </div>
 </template>

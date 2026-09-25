@@ -120,6 +120,8 @@ export const useSessionStore = defineStore('session', () => {
   /** 一輪：display 是使用者泡泡先顯示的字（採用時是暫代字，session 事件會換成伺服器組的那句），body 是真正送出的內容。 */
   async function runTurn(display: string, body: TurnBody) {
     if (busy.value || !state.value.sessionId) return
+    // 另一輪開始後，還開著的對照表不能再採用（它對應的是舊狀態）
+    closeAdopt()
     busy.value = true
     notice.value = null
     state.value = beginTurn(state.value, display)

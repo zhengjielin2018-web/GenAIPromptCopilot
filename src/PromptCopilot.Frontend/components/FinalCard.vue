@@ -15,9 +15,10 @@
 
     <section v-if="s.prefs.showTrace && hasSources" class="mt-4" data-section="trace">
       <h4 class="text-xs font-bold">檢索貢獻</h4>
-      <p class="mt-1.5 text-xs tabular-nums text-muted">rag {{ trace.counts.rag }}・llm {{ trace.counts.llm }}・base {{ trace.counts.base }}</p>
+      <p class="mt-1.5 text-xs tabular-nums text-muted">rag {{ trace.counts.rag }}・adopted {{ trace.counts.adopted }}・llm {{ trace.counts.llm }}・base {{ trace.counts.base }}</p>
       <ul v-if="trace.byPreset.length" class="mt-1.5 flex flex-col gap-1 text-xs">
-        <li v-for="p in trace.byPreset" :key="p.presetId" class="flex items-baseline gap-2">
+        <li v-for="p in trace.byPreset" :key="`${p.origin}:${p.presetId}`" class="flex items-baseline gap-2">
+          <span class="shrink-0 text-[10px] text-muted">{{ p.origin === 'adopted' ? '採用' : '借用' }}</span>
           <button type="button" class="shrink-0 font-medium hover:text-cyan" @click="s.openDrawer(p.presetId)">{{ p.title }}</button>
           <span class="text-muted">→</span>
           <span class="font-mono text-[11px]">{{ p.tags.join(', ') }}</span>
@@ -25,6 +26,8 @@
       </ul>
       <p v-else class="mt-1.5 text-xs text-muted">這次定稿沒有借用知識庫片段。</p>
     </section>
+
+    <RecommendationStrip v-if="recommendations" :recs="recommendations" :turn-index="turnIndex" />
 
     <footer :id="`save-${turnIndex}`" class="mt-5 border-t border-rule pt-4">
       <p v-if="superseded" class="text-xs text-muted">這份已被後面的定稿取代。要存進共享知識庫，請用最新那張。</p>
@@ -52,9 +55,9 @@
 </template>
 
 <script setup lang="ts">
-import type { FinalizedData } from '../types/api'
+import type { FinalizedData, Recommendations } from '../types/api'
 import { contributions } from '../lib/trace'
-const props = defineProps<{ data: FinalizedData; turnIndex: number }>()
+const props = defineProps<{ data: FinalizedData; turnIndex: number; recommendations?: Recommendations | null }>()
 const s = useSessionStore()
 const intent = ref(props.data.intentSummary)
 const expanded = computed(() => s.expandedSaveTurn === props.turnIndex)

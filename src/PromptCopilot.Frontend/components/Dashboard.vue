@@ -26,7 +26,7 @@
           <span v-else-if="s.state.profile && !row.applicable" class="text-[11px] text-muted">此題材不適用</span>
         </div>
         <div class="flex flex-wrap gap-1">
-          <span v-for="c in row.chips" :key="c.id" :title="`${c.label}：${stateLabel(c.state)}`" :data-state="c.state"
+          <span v-for="c in row.chips" :key="c.id" :title="`${c.label}：${stateLabel(c.state)}${c.tags ? `（${c.tags}）` : ''}`" :data-state="c.state"
                 class="rounded-[3px] px-1.5 py-[3px] text-[11px] leading-4" :class="chipClass(c.state)">
             {{ c.label }}
           </span>
@@ -61,7 +61,7 @@ import { retrievalSummary } from '../lib/trace'
 import type { FacetState } from '../types/api'
 
 const s = useSessionStore()
-const rows = computed(() => s.catalog ? dashboardRows(s.catalog, s.state.profile, s.state.facetStates, s.state.highlighted) : [])
+const rows = computed(() => s.catalog ? dashboardRows(s.catalog, s.state.profile, s.state.facetStates, s.state.highlighted, s.state.facetTags) : [])
 const PROFILE_LABELS: Record<string, string> = { portrait: '人像', landscape: '風景', object: '物件', vehicle: '載具' }
 const profileLabel = computed(() => s.state.profile ? (PROFILE_LABELS[s.state.profile] ?? s.state.profile) : '尚未判定')
 const coverage = computed(() => {
