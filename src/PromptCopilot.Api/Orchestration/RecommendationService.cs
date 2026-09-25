@@ -21,8 +21,8 @@ public sealed class RecommendationService(FacetCatalog catalog, IEmbeddingClient
 {
     public const int QueryChars = 500;
     public const int MinAnchoredHits = 2;
-    /// <summary>伺服器組的採用句開頭（AdoptionComposer 也用這個字串）。</summary>
-    public const string AdoptionPrefix = "採用〈";
+    /// <summary>伺服器組的採用句開頭；直接引用 AdoptionComposer 的常數，兩處不會分岔。</summary>
+    public const string AdoptionPrefix = AdoptionComposer.Prefix;
 
     public async Task<RecommendationsEvent?> BuildAsync(Session s, TurnOutcome outcome, int turnIndex, CancellationToken ct)
     {
