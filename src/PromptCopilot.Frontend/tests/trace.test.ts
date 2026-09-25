@@ -17,10 +17,10 @@ const NEG: TagSource[] = [
 describe('contributions', () => {
   it('counts positive origins only and groups each tag under its first preset, most tags first', () => {
     const c = contributions(POS, NEG)
-    expect(c.counts).toEqual({ rag: 2, llm: 1, base: 1 })
+    expect(c.counts).toEqual({ rag: 2, adopted: 0, llm: 1, base: 1 })
     expect(c.byPreset).toEqual([
-      { presetId: 9, title: '霓虹雨夜', sourceRef: 'civitai:1:0', tags: ['neon lights', '-blurry'] },
-      { presetId: 3, title: '夏日涼鞋', sourceRef: null, tags: ['sandals'] },
+      { presetId: 9, title: '霓虹雨夜', sourceRef: 'civitai:1:0', origin: 'rag', tags: ['neon lights', '-blurry'] },
+      { presetId: 3, title: '夏日涼鞋', sourceRef: null, origin: 'rag', tags: ['sandals'] },
     ])
   })
 
@@ -30,11 +30,25 @@ describe('contributions', () => {
       { tag: 'a', origin: 'rag', presetIds: [5, 6, 7], presetTitle: 'five', sourceRef: 'civitai:5:0' },
       { tag: 'b', origin: 'rag', presetIds: [5, 8], presetTitle: 'five' },
     ], [])
-    expect(c.byPreset).toEqual([{ presetId: 5, title: 'five', sourceRef: 'civitai:5:0', tags: ['a', 'b'] }])
+    expect(c.byPreset).toEqual([{ presetId: 5, title: 'five', sourceRef: 'civitai:5:0', origin: 'rag', tags: ['a', 'b'] }])
+  })
+
+  // 採用的組合另外列，同一筆 preset 既是採用來源又是 rag 命中時分成兩列
+  it('lists adopted tags under their own origin, separately from rag hits of the same preset', () => {
+    const c = contributions([
+      { tag: 'purple kimono', origin: 'adopted', presetIds: [41720], presetTitle: '和風女僕', sourceRef: 'civitai:9:0' },
+      { tag: 'sandals', origin: 'rag', presetIds: [41720], presetTitle: '和風女僕', sourceRef: 'civitai:9:0' },
+      { tag: 'maid headdress', origin: 'adopted', presetIds: [41720], presetTitle: '和風女僕' },
+    ], [])
+    expect(c.counts).toEqual({ rag: 1, adopted: 2, llm: 0, base: 0 })
+    expect(c.byPreset).toEqual([
+      { presetId: 41720, title: '和風女僕', sourceRef: 'civitai:9:0', origin: 'adopted', tags: ['purple kimono', 'maid headdress'] },
+      { presetId: 41720, title: '和風女僕', sourceRef: 'civitai:9:0', origin: 'rag', tags: ['sandals'] },
+    ])
   })
 
   it('handles empty sources', () => {
-    expect(contributions([], [])).toEqual({ counts: { rag: 0, llm: 0, base: 0 }, byPreset: [] })
+    expect(contributions([], [])).toEqual({ counts: { rag: 0, adopted: 0, llm: 0, base: 0 }, byPreset: [] })
   })
 })
 

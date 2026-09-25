@@ -1,23 +1,25 @@
 import type { Entry, FinalEntry, ToolEntry } from './reducer'
 import { isPresetsDetail, type TagSource } from '../types/api'
 
-export interface Contribution { presetId: number; title: string; sourceRef: string | null; tags: string[] }
-export interface ContributionSummary { counts: { rag: number; llm: number; base: number }; byPreset: Contribution[] }
+export interface Contribution { presetId: number; title: string; sourceRef: string | null; origin: 'rag' | 'adopted'; tags: string[] }
+export interface ContributionSummary { counts: { rag: number; adopted: number; llm: number; base: number }; byPreset: Contribution[] }
 
 /** 定稿卡的「檢索貢獻」：只靠伺服器標的 tag 來源。counts 只算正向（與 audit 的 tagOrigins 一致）；
- *  負向 tag 加 - 前綴列在同一組。
+ *  rag 與 adopted 的 tag 按 preset 分組，負向 tag 加 - 前綴列在同一組。
  *  一個 tag 只歸給 presetIds[0]：後端把整段相等的片段排在前面，presetTitle／sourceRef 也是它的，chip 點開的也是它。
  *  後面的 presetIds 是字尾相符的其他片段，知識庫裡同名片段常有好幾筆，全列會把同一個標題重複很多次、讀不出誰貢獻了什麼。 */
 export function contributions(positive: TagSource[], negative: TagSource[]): ContributionSummary {
-  const counts = { rag: 0, llm: 0, base: 0 }
-  for (const t of positive) if (t.origin !== 'adopted') counts[t.origin] += 1  // counts 還沒有 adopted 這格
-  const groups = new Map<number, Contribution>()
+  const counts = { rag: 0, adopted: 0, llm: 0, base: 0 }
+  for (const t of positive) if (t.origin in counts) counts[t.origin] += 1
+  // 鍵含 origin：同一筆 preset 既是採用來源又是 rag 命中時分成兩列，讀的人才分得出哪些是採用帶進來的
+  const groups = new Map<string, Contribution>()
   const add = (t: TagSource, label: string) => {
-    if (t.origin !== 'rag' || t.presetIds.length === 0) return
+    if ((t.origin !== 'rag' && t.origin !== 'adopted') || t.presetIds.length === 0) return
     const id = t.presetIds[0]
-    const g = groups.get(id) ?? { presetId: id, title: t.presetTitle ?? String(id), sourceRef: t.sourceRef ?? null, tags: [] }
+    const key = `${t.origin}:${id}`
+    const g = groups.get(key) ?? { presetId: id, title: t.presetTitle ?? String(id), sourceRef: t.sourceRef ?? null, origin: t.origin, tags: [] }
     g.tags.push(label)
-    groups.set(id, g)
+    groups.set(key, g)
   }
   for (const t of positive) add(t, t.tag)
   for (const t of negative) add(t, `-${t.tag}`)

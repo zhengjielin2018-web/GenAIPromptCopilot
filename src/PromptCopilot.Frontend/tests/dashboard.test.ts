@@ -37,4 +37,10 @@ describe('dashboardRows', () => {
     const rows = dashboardRows(catalog, 'portrait', {}, [])
     expect(rows[1].chips[0].state).toBe('missing')
   })
+
+  it('carries the model-supplied tags onto the chip and null when there are none', () => {
+    const rows = dashboardRows(catalog, 'portrait', { 'style.genre': 'covered' }, [], { 'style.genre': 'oil painting' })
+    expect(rows[0].chips[0].tags).toBe('oil painting')
+    expect(rows[1].chips[0].tags).toBeNull()
+  })
 })
