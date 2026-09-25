@@ -115,6 +115,17 @@ public class DialogPluginTests
         Assert.IsType<FinalizedOutcome>(turn.Outcome);
         Assert.Equal(SessionStatus.Finalized, s.Status);
         Assert.Equal("1girl", s.LastFinal!.Positive);
+        Assert.True(s.LastFinal.Reviewed);
+    }
+
+    /// <summary>審查開關關著的那一輪，輸出側沒檢過：定稿要記下來，save-to-shared 才擋得住。</summary>
+    [Fact]
+    public void FinalizePrompt_with_review_off_marks_the_final_unreviewed()
+    {
+        var (p, turn, s) = Make();
+        turn.SafetyOn = false;
+        Assert.Equal("ok", p.FinalizePrompt("1girl", "lowres", "tips", "一個女生", States(("pose.gaze", "covered"))));
+        Assert.False(s.LastFinal!.Reviewed);
     }
 
     [Fact]
