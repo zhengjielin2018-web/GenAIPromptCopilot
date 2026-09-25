@@ -52,6 +52,15 @@ clean／structure／embed／load 全部五個階段，`--max-records` 預設不�
     python -m pipeline.embed [--reindex]
     python -m pipeline.load
 
+## 一次性回填：`facet_tags`（整套組合推薦用）
+
+把每筆片段的 tag 歸到它 `facet_ids` 裡的哪個 facet，寫進 `prompt_knowledge_presets.facet_tags`。
+整套組合推薦的對照表與「只採用這幾個 facet」靠它。只處理 `facet_tags IS NULL` 的列，可中斷、可重跑；
+19k 筆約 1,000 次 Gemini 呼叫。既有資料庫先套 `db/migrations/002_facet_tags.sql`。
+
+    python backfill_facet_tags.py --dry-run --limit 20   # 先看 20 筆拆得對不對
+    python backfill_facet_tags.py                        # 全量
+
 ## 一次性補充語料：Kisegaeningyou 服裝集
 
 補 clothing 維度的候選池缺口用的一次性匯入，**不是** `seed_data.py` 的階段之一
