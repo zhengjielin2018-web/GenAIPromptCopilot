@@ -39,8 +39,12 @@ public class AdoptionComposerTests
         Assert.Equal(new[] { "clothing.head", "clothing.upper" }, c.Adoption.Taken.Keys);
         Assert.Equal(new[] { "clothing.lower", "clothing.footwear", "clothing.accessories" }, c.Adoption.Kept);
         Assert.Equal("civitai:9:0", c.Adoption.SourceRef);
+        Assert.Equal(41720, c.Adoption.PresetId); Assert.Equal("和風女僕紫和服", c.Adoption.Title); Assert.Equal("clothing", c.Adoption.Dimension);
+        Assert.Equal(new[] { "purple kimono", "detached sleeves" }, c.Adoption.Taken["clothing.upper"]);
         Assert.Equal(41720, c.Preset.Id); Assert.Equal("detached sleeves, purple kimono, maid headdress, sandals", c.Preset.PromptSnippet);
         Assert.Equal("https://img", c.Preset.ImageUrl);
+        // 字串參數一旦對調（Title／SourceRef／snippet）就會在這裡露餡
+        Assert.Equal("civitai:9:0", c.Preset.SourceRef); Assert.Null(c.Preset.NegativeSnippet); Assert.Equal(3, c.Preset.FacetIds.Count);
     }
 
     [Fact]
@@ -57,9 +61,9 @@ public class AdoptionComposerTests
     [Fact]
     public void Classifies_taken_facets_into_filled_and_replaced_by_their_previous_state()
     {
-        var s = Sess(("clothing.footwear", FacetState.Covered), ("clothing.head", FacetState.Waived));
+        var s = Sess(("clothing.footwear", FacetState.Covered), ("clothing.head", FacetState.Waived), ("clothing.upper", FacetState.NotApplicable));
         var c = AdoptionComposer.Compose(new AdoptRequest(41720, "clothing", new[] { "clothing.head", "clothing.upper", "clothing.footwear" }), Preset(Tags), s, Catalog, 1);
-        Assert.Equal(new[] { "clothing.upper" }, c.Adoption.Filled);
+        Assert.Equal(new[] { "clothing.upper" }, c.Adoption.Filled);                        // notApplicable 也算補上
         Assert.Equal(new[] { "clothing.head", "clothing.footwear" }, c.Adoption.Replaced);
     }
 
@@ -76,9 +80,10 @@ public class AdoptionComposerTests
     [InlineData("clothing", new[] { "scene.weather" }, "facet scene.weather 不屬於維度 clothing")]
     [InlineData("clothing", new string[0], "take 不可為空")]
     [InlineData("nope", new[] { "clothing.upper" }, "維度 nope 對 portrait 不適用或不存在")]
-    public void Rejects_take_facet_the_set_has_no_tags_for_and_other_bad_requests(string dimension, string[] take, string message)
+    [InlineData(null, new[] { "clothing.upper" }, "dimension 不可為空")]                     // JSON 的 null 要是 400，不是 500
+    public void Rejects_take_facet_the_set_has_no_tags_for_and_other_bad_requests(string? dimension, string[] take, string message)
     {
-        var e = Assert.Throws<AdoptValidationException>(() => AdoptionComposer.Compose(new AdoptRequest(41720, dimension, take), Preset(Tags), Sess(), Catalog, 1));
+        var e = Assert.Throws<AdoptValidationException>(() => AdoptionComposer.Compose(new AdoptRequest(41720, dimension!, take), Preset(Tags), Sess(), Catalog, 1));
         Assert.StartsWith(message, e.Message);
     }
 

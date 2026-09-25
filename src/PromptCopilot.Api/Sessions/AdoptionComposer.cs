@@ -6,7 +6,8 @@ namespace PromptCopilot.Api.Sessions;
 /// <summary>POST /messages 的 adopt 欄位（設計 §6.1）。Take：照它的 facet；該維度其餘 facet 視為保留我的。</summary>
 public sealed record AdoptRequest(long PresetId, string Dimension, IReadOnlyList<string>? Take);
 
-/// <summary>請求本身不成立（端點回 400）。retrieval off 與 profile 未設是 409，端點先擋。</summary>
+/// <summary>請求本身不成立（端點回 400）。retrieval off 與 profile 未設是 409，端點先擋；
+/// Compose 開頭的 profile 檢查只是端點 409 後面的保險，正常走不到。</summary>
 public sealed class AdoptValidationException(string message) : Exception(message);
 
 public sealed record ComposedAdoption(string Text, Adoption Adoption, LedgerEntry Preset);
@@ -20,6 +21,8 @@ public static class AdoptionComposer
     {
         if (s.Profile is null) throw new AdoptValidationException("尚未判定題材，還不能採用組合");
         if (preset.FacetTags is null) throw new AdoptValidationException("這筆片段尚未拆分 facet，無法採用");
+        // JSON 可以送 null；不先擋，字典查找會丟 ArgumentNullException 變成 500
+        if (string.IsNullOrWhiteSpace(req.Dimension)) throw new AdoptValidationException("dimension 不可為空");
         var facets = catalog.FacetsOf(s.Profile, req.Dimension);
         if (facets.Count == 0) throw new AdoptValidationException($"維度 {req.Dimension} 對 {s.Profile} 不適用或不存在");
         var take = (req.Take ?? Array.Empty<string>()).Distinct().ToList();
