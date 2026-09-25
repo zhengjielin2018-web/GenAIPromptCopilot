@@ -4,7 +4,9 @@ import { initialState, beginTurn, applyEvent, endTurn, failHttp, hydrate, latest
 import { loadPersisted, savePersisted } from '../lib/persist'
 import { loadPrefs, savePrefs, type Prefs } from '../lib/prefs'
 import { composeDraft, appendChip, chipKey, type Chip } from '../lib/composer'
-import { AGENT_EVENT_TYPES, type AgentEvent, type FacetCatalog, type RetrievalMode } from '../types/api'
+import { latestRecommendableTurn as latestRecommendableTurnOf, adoptPlaceholder } from '../lib/adopt'
+import { AGENT_EVENT_TYPES, type AdoptRequest, type AgentEvent, type FacetCatalog, type RecommendedSet, type RetrievalMode } from '../types/api'
+import type { TurnBody } from '../composables/useApi'
 
 type SaveStatus = { status: 'idle' | 'saving' | 'saved' | 'error'; error?: string }
 
@@ -48,6 +50,11 @@ export const useSessionStore = defineStore('session', () => {
 
   /** 最新一張定稿卡：save_consent_requested 要展開它，也只有它可以存（後端永遠存 LastFinal）。 */
   const latestFinalizedTurn = computed<number | null>(() => latestFinalizedTurnOf(state.value.transcript))
+
+  /** 對照表正在看的那套；null 表示關閉。 */
+  const adoptTarget = ref<{ set: RecommendedSet; dimension: string; turnIndex: number } | null>(null)
+  /** 只有最新一張追問卡／定稿卡上的推薦可以採用。 */
+  const latestRecommendableTurn = computed<number | null>(() => latestRecommendableTurnOf(state.value.transcript))
 
   /** opts.draft 只在送出當下帶原文（輪次中重載時放回輸入框），其餘時候存空字串。 */
   function persist(opts: { draft?: string } = {}) {
@@ -96,31 +103,42 @@ export const useSessionStore = defineStore('session', () => {
     state.value = { ...initialState(), sessionId: created.sessionId, retrieval: created.retrieval }
     chips.value = []; draft.value = ''; draftDirty.value = false
     expandedSaveTurn.value = null; saveState.value = {}; drawerPresetId.value = null
+    // 舊對話的組合不能採用到新對話
+    adoptTarget.value = null
     notice.value = null
     persist()
   }
 
   async function send() {
     const text = draft.value.trim()
+    // busy／沒 session 時先擋：否則輸入框被清掉、runTurn 又不送，原文就丟了
     if (!text || busy.value || !state.value.sessionId) return
-    busy.value = true
     draft.value = ''; chips.value = []; draftDirty.value = false
+    await runTurn(text, { text })
+  }
+
+  /** 一輪：display 是使用者泡泡先顯示的字（採用時是暫代字，session 事件會換成伺服器組的那句），body 是真正送出的內容。 */
+  async function runTurn(display: string, body: TurnBody) {
+    if (busy.value || !state.value.sessionId) return
+    busy.value = true
     notice.value = null
-    state.value = beginTurn(state.value, text)
-    // 送出當下先存一次：輪次中重載時，原文經 draft 回到輸入框（hydrate 會拿掉沒有下文的 user 條目）
-    persist({ draft: text })
+    state.value = beginTurn(state.value, display)
+    // 送出當下先存一次：輪次中重載時，原文經 draft 回到輸入框（hydrate 會拿掉沒有下文的 user 條目；採用沒有原文可回，存空字串）
+    persist({ draft: 'text' in body ? body.text : '' })
     const ctl = new AbortController()
     try {
-      const r = await api.openStream(state.value.sessionId!, text, ctl.signal)
+      const r = await api.openStream(state.value.sessionId!, body, ctl.signal)
       if (r.status === 404) {
-        // session 過期：開新的、提示、原文留在輸入框（spec §5）。newSession 會清掉 transcript，所以提示放 notice。
+        // session 過期：開新的、提示、一般訊息的原文留在輸入框（spec §5）。newSession 會清掉 transcript，所以提示放 notice。
         await newSession()
-        notice.value = EXPIRED_KEPT_TEXT
-        draft.value = text; draftDirty.value = true
+        notice.value = 'text' in body ? EXPIRED_KEPT_TEXT : '上次的對話已過期，已開新對話。'
+        if ('text' in body) { draft.value = body.text; draftDirty.value = true }
         return
       }
       if (!r.ok || !r.body) {
-        const msg = r.status === 409 ? '這個對話還有一輪在跑，等它結束再送。' : `送出失敗（HTTP ${r.status}）。`
+        let msg = r.status === 409 ? '這個對話還有一輪在跑，等它結束再送。' : `送出失敗（HTTP ${r.status}）。`
+        // 採用被拒（400／409）帶有理由：直接顯示
+        if ('adopt' in body) { try { msg = (await r.json()).error ?? msg } catch { /* 沒 body 就用預設字 */ } }
         state.value = failHttp(state.value, `http_${r.status}`, msg)
         return
       }
@@ -137,6 +155,18 @@ export const useSessionStore = defineStore('session', () => {
       persist()
       busy.value = false
     }
+  }
+
+  function openAdopt(set: RecommendedSet, dimension: string, turnIndex: number) {
+    if (busy.value || turnIndex !== latestRecommendableTurn.value) return
+    adoptTarget.value = { set, dimension, turnIndex }
+  }
+  function closeAdopt() { adoptTarget.value = null }
+
+  /** 確定採用：關對照表、走一般的一輪。泡泡先顯示「採用〈標題〉…」。 */
+  async function adopt(req: AdoptRequest, title: string) {
+    closeAdopt()
+    await runTurn(adoptPlaceholder(title), { adopt: req })
   }
 
   /** 失敗條目的「重試」：原文填回輸入框，不自動送。 */
@@ -187,5 +217,6 @@ export const useSessionStore = defineStore('session', () => {
     dimensionLabels, latestFinalizedTurn,
     prefs, retrievalMismatch, setRetrievalPref, setShowTrace,
     boot, newSession, send, retry, setDraft, toggleChip, isChipSelected, openDrawer, closeDrawer, expandSave, save,
+    adoptTarget, latestRecommendableTurn, openAdopt, closeAdopt, adopt,
   }
 })

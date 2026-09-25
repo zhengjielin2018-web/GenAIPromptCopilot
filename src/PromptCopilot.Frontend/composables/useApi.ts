@@ -1,4 +1,6 @@
-import type { FacetCatalog, PresetDetail, RetrievalMode, SessionCreated, SessionSnapshotDto } from '../types/api'
+import type { AdoptRequest, FacetCatalog, PresetDetail, RetrievalMode, SessionCreated, SessionSnapshotDto } from '../types/api'
+
+export type TurnBody = { text: string } | { adopt: AdoptRequest }
 
 export type SaveResult = { ok: true; id: string } | { ok: false; status: number; error: string }
 
@@ -46,11 +48,11 @@ export function useApi() {
     return { ok: false, status: r.status, error }
   }
 
-  /** 不檢查 status：404／409 的處理在 store。 */
-  function openStream(id: string, text: string, signal: AbortSignal): Promise<Response> {
+  /** 不檢查 status：404／409／400 的處理在 store。body 是一般訊息或採用（設計 §6.1）。 */
+  function openStream(id: string, body: TurnBody, signal: AbortSignal): Promise<Response> {
     return fetch(`${base}/api/sessions/${encodeURIComponent(id)}/messages`, {
       method: 'POST', headers: { 'content-type': 'application/json', accept: 'text/event-stream' },
-      body: JSON.stringify({ text }), signal,
+      body: JSON.stringify(body), signal,
     })
   }
 
