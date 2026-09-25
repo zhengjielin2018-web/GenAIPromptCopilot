@@ -28,6 +28,14 @@ public class FacetCatalogTests
     }
 
     [Fact]
+    public void DimensionsOf_lists_only_dimensions_the_profile_has_in_yaml_order()
+    {
+        var c = Real();
+        Assert.Equal(new[] { "style", "scene", "camera", "appearance", "pose", "clothing" }, c.DimensionsOf("portrait"));
+        Assert.Equal(new[] { "style", "scene", "camera" }, c.DimensionsOf("landscape"));
+    }
+
+    [Fact]
     public void IdsForProfile_portrait_has_31_ids_and_no_vehicle_facets()
     {
         var ids = Real().IdsForProfile("portrait");

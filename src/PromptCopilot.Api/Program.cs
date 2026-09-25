@@ -80,6 +80,7 @@ services.AddSingleton<SafetyGuard>();
 
 // ---- orchestration ----
 services.AddSingleton<AgentKernelFactory>();
+services.AddSingleton<IRecommendationService, RecommendationService>();
 services.AddSingleton<IPromptOrchestrator>(sp =>
 {
     var o = sp.GetRequiredService<OrchestratorOptions>();
@@ -88,6 +89,7 @@ services.AddSingleton<IPromptOrchestrator>(sp =>
         sp.GetRequiredService<IChatCompletionService>(), sp.GetRequiredService<FacetCatalog>(), sp.GetRequiredService<SafetyGuard>(),
         sp.GetRequiredService<SystemPromptBuilder>(), sp.GetRequiredService<IAuditSink>(), o,
         sp.GetRequiredService<SafetyClassifier>(), sp.GetRequiredService<ILogger<AgenticOrchestrator>>(),
+        sp.GetRequiredService<IRecommendationService>(),
         kernelFactory: sp.GetRequiredService<AgentKernelFactory>().Create);
 });
 

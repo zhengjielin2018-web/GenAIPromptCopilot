@@ -24,6 +24,7 @@ public sealed class AgenticOrchestrator(
     OrchestratorOptions options,
     SafetyClassifier classifier,
     ILogger<AgenticOrchestrator> logger,
+    IRecommendationService recommendations,
     Func<TurnContext, IReadOnlySet<string>, bool, Kernel> kernelFactory) : IPromptOrchestrator
 {
     private static readonly JsonSerializerOptions Json = new() { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
@@ -135,6 +136,8 @@ public sealed class AgenticOrchestrator(
             HistoryTrimmer.Truncate(session.ChatHistory, options.HistoryTurns);
             writer.TryWrite(final);
             writer.TryWrite(dimensions);
+            var recommended = await TryRecommendAsync(session, turn.Outcome, turnIndex, version, text);
+            if (recommended is not null) writer.TryWrite(recommended);
 
             // 主規格 §5.1：LLM 挑了哪些 facet 追問、哪些被使用者放掉，要在紀錄裡看得見。
             // 不另開事件（沒有行為掛在上面），寫進這一筆的 payload。
@@ -142,7 +145,11 @@ public sealed class AgenticOrchestrator(
                 Payload(("retrieval", session.RetrievalMode), ("outcome", turn.Outcome.GetType().Name), ("toolCalls", turn.ToolCalls), ("rejections", turn.Rejections),
                     ("askedFacetIds", turn.Outcome is AskOutcome ask ? ask.Asks.SelectMany(a => a.MissingFacetIds).Distinct().ToArray() : null),
                     ("waivedFacetIds", session.FacetStates.Where(kv => kv.Value == FacetState.Waived).Select(kv => kv.Key).ToArray()),
-                    ("tagOrigins", turn.Outcome is FinalizedOutcome fin ? TagOrigins(fin.Final.PositiveSources) : null)),
+                    ("tagOrigins", turn.Outcome is FinalizedOutcome fin ? TagOrigins(fin.Final.PositiveSources) : null),
+                    ("recommendations", recommended is null ? null : (object)new
+                    {
+                        dimensions = recommended.Dimensions.Select(d => new { dimension = d.Dimension, anchored = d.Anchored, presetIds = d.Sets.Select(x => x.PresetId).ToArray() }).ToArray(),
+                    })),
                 LatencyMs: (int)sw.ElapsedMilliseconds));
         }
         catch (OutputBlockedException e)
@@ -212,6 +219,22 @@ public sealed class AgenticOrchestrator(
         UnusableResponseException { Attempts: > 0 } r => r.Attempts,
         _ => null,
     };
+
+    /// <summary>推薦是附加的（設計 §5.1、§9）：final 已宣告出去，推薦失敗或逾時只記 audit，不回滾、不發 error。
+    /// 用自己的逾時，不掛在整輪的 token 上——整輪的 token 取消會走回滾路徑。</summary>
+    private async Task<RecommendationsEvent?> TryRecommendAsync(Session session, TurnOutcome outcome, int turnIndex, string version, string text)
+    {
+        if (!session.RetrievalEnabled || outcome is not (AskOutcome or FinalizedOutcome)) return null;
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(options.RecommendationTimeoutSeconds));
+        try { return await recommendations.BuildAsync(session, outcome, turnIndex, cts.Token); }
+        catch (Exception e)
+        {
+            logger.LogWarning(e, "recommendations failed for session {SessionId} turn {TurnIndex}", session.Id, turnIndex);
+            await TryAuditAsync(new AuditEntry(session.Id, turnIndex, "Recommendation_Failed", version, text,
+                Payload(("stage", "recommend"), ("errorClass", e is OperationCanceledException ? "Timeout" : e.GetType().Name))));
+            return null;
+        }
+    }
 
     /// <summary>稽核是旁路：寫不進去不該回滾已成立的一輪，也不該吃掉使用者該看到的事件。
     /// 失敗由 DB 監控發現；不另發事件，免得前端誤出重試按鈕。</summary>

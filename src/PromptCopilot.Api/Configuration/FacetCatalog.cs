@@ -33,6 +33,9 @@ public sealed class FacetCatalog
     public IReadOnlyList<string> FacetsOf(string profile, string dimension) =>
         Profiles[profile].TryGetValue(dimension, out var ids) ? ids : Array.Empty<string>();
 
+    /// <summary>該 profile 有 facet 的維度，依 facets.yaml 順序。</summary>
+    public IReadOnlyList<string> DimensionsOf(string profile) => Dimensions.Where(d => FacetsOf(profile, d).Count > 0).ToList();
+
     public string DimensionLabel(string dimension, string profile) =>
         _profileLabels.TryGetValue(profile, out var o) && o.TryGetValue(dimension, out var l) ? l
         : DimensionLabels.GetValueOrDefault(dimension, dimension);

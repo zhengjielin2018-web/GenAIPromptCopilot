@@ -33,6 +33,10 @@ public sealed class OrchestratorOptions
     public int OfferedOptionsLimit { get; set; } = 24;
     public int MaxAsksPerCall { get; set; } = 3;
     public int SessionSlidingExpirationMinutes { get; set; } = 120;
+    /// <summary>整套組合推薦：每個維度幾套（設計 §5.3）。</summary>
+    public int RecommendationTake { get; set; } = 3;
+    /// <summary>推薦自己的逾時：它在 final 宣告之後才跑，不能掛在整輪的 token 上（那會走回滾）。</summary>
+    public int RecommendationTimeoutSeconds { get; set; } = 20;
 }
 
 public sealed class DatabaseOptions

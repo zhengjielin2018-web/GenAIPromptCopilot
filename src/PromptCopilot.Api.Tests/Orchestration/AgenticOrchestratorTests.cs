@@ -48,6 +48,9 @@ public class AgenticOrchestratorTests
         /// <summary>把 Chat 包進真的重試層。要驗 attempts 就不能繞過它。</summary>
         public bool Resilient { get; set; }
 
+        /// <summary>預設不推薦：既有測試不該因為推薦而多出事件。</summary>
+        public IRecommendationService Recommendations { get; set; } = new StubRecommendations(_ => Task.FromResult<RecommendationsEvent?>(null));
+
         public AgenticOrchestrator Build()
         {
             var llm = Microsoft.Extensions.Options.Options.Create(new LlmOptions());
@@ -57,7 +60,7 @@ public class AgenticOrchestratorTests
                 ? new ResilientChatCompletion(Chat, llm, (_, _) => Task.CompletedTask)
                 : Chat;
             return new AgenticOrchestrator(chat, Catalog, guard, prompts, SinkOverride ?? Audit, Options,
-                new SafetyClassifier(ClassifierChat, llm), NullLogger<AgenticOrchestrator>.Instance,
+                new SafetyClassifier(ClassifierChat, llm), NullLogger<AgenticOrchestrator>.Instance, Recommendations,
                 kernelFactory: (turn, tools, _) =>
                 {
                     var k = Kernel.CreateBuilder().Build();
@@ -496,5 +499,103 @@ public class AgenticOrchestratorTests
         Assert.Equal("protocol_violation", Assert.Single(second.OfType<ErrorEvent>()).Code);
         Assert.Empty(second.OfType<FinalEvent>());
         Assert.Equal(1, h.Session.DiscussStreak);                                     // 沒有拿上一輪的句子再包一次
+    }
+
+    internal sealed class StubRecommendations(Func<TurnOutcome, Task<RecommendationsEvent?>> impl) : IRecommendationService
+    {
+        public int Calls { get; private set; }
+        public Task<RecommendationsEvent?> BuildAsync(Session s, TurnOutcome outcome, int turnIndex, CancellationToken ct) { Calls++; return impl(outcome); }
+    }
+
+    private static RecommendationsEvent SomeRecommendations(int turnIndex) => new(turnIndex, new[]
+    {
+        new RecommendedDimension("style", "風格", false, Array.Empty<string>(), new[]
+        {
+            new RecommendedSet(7, "油畫", null, null, 0.2, new[] { new RecommendedFacet("style.genre", "藝術流派／媒材", "missing", new[] { "oil painting" }) }),
+        }),
+    });
+
+    /// <summary>設計 §5.1：推薦事件跟在 final 與 dimensions 之後；audit 記推薦了哪些 preset。</summary>
+    [Fact]
+    public async Task Recommendations_event_follows_final_and_is_audited()
+    {
+        var h = new Harness();
+        h.Recommendations = new StubRecommendations(_ => Task.FromResult<RecommendationsEvent?>(SomeRecommendations(1)));
+        h.Chat.ThenAsync(async (hist, k) =>
+        {
+            await Invoke(hist, k!, "Session", "SetProfile", new { profile = "portrait" });
+            return new[] { await Invoke(hist, k!, "Dialog", "AskUser", AskArgs()) };
+        });
+        var events = await h.RunAsync("一個銀髮少女");
+        var kinds = events.Select(e => e.Type).ToList();
+        Assert.True(kinds.IndexOf("final") < kinds.LastIndexOf("dimensions") && kinds.LastIndexOf("dimensions") < kinds.IndexOf("recommendations"));
+        Assert.Equal(7, Assert.Single(events.OfType<RecommendationsEvent>()).Dimensions[0].Sets[0].PresetId);
+        var completed = Assert.Single(h.Audit.Entries, a => a.EventType == "Turn_Completed");
+        Assert.Contains("""recommendations":{"dimensions":[{"dimension":"style","anchored":false,"presetIds":[7]}]}""", completed.PayloadJson!);
+    }
+
+    /// <summary>設計 §9：推薦是附加的。final 已宣告，推薦炸了不能回滾、不能發 error。</summary>
+    [Fact]
+    public async Task Recommendation_failure_does_not_roll_back_the_turn()
+    {
+        var h = new Harness();
+        h.Recommendations = new StubRecommendations(_ => throw new InvalidOperationException("db down"));
+        h.Chat.ThenAsync(async (hist, k) =>
+        {
+            await Invoke(hist, k!, "Session", "SetProfile", new { profile = "portrait" });
+            return new[] { await Invoke(hist, k!, "Dialog", "AskUser", AskArgs()) };
+        });
+        var events = await h.RunAsync("一個銀髮少女");
+        Assert.Single(events.OfType<FinalEvent>());
+        Assert.Empty(events.OfType<ErrorEvent>());
+        Assert.Empty(events.OfType<RecommendationsEvent>());
+        Assert.Equal(1, h.Session.AskCount);
+        var failed = Assert.Single(h.Audit.Entries, a => a.EventType == "Recommendation_Failed");
+        Assert.Contains("\"errorClass\":\"InvalidOperationException\"", failed.PayloadJson!);
+        Assert.Contains(h.Audit.Entries, a => a.EventType == "Turn_Completed");
+    }
+
+    [Fact]
+    public async Task Recommendation_timeout_is_audited_as_timeout()
+    {
+        var h = new Harness();
+        h.Options.RecommendationTimeoutSeconds = 0;        // CancellationTokenSource(0)：token 立刻取消
+        h.Recommendations = new ObservingRecommendations();  // 會觀察 ct 的 stub，永遠等到被取消
+        h.Chat.ThenAsync(async (hist, k) =>
+        {
+            await Invoke(hist, k!, "Session", "SetProfile", new { profile = "portrait" });
+            return new[] { await Invoke(hist, k!, "Dialog", "AskUser", AskArgs()) };
+        });
+        var events = await h.RunAsync("一個銀髮少女");
+        Assert.Single(events.OfType<FinalEvent>());
+        Assert.Contains("\"errorClass\":\"Timeout\"", Assert.Single(h.Audit.Entries, a => a.EventType == "Recommendation_Failed").PayloadJson!);
+    }
+
+    private sealed class ObservingRecommendations : IRecommendationService
+    {
+        public async Task<RecommendationsEvent?> BuildAsync(Session s, TurnOutcome outcome, int turnIndex, CancellationToken ct)
+        {
+            await Task.Delay(Timeout.Infinite, ct);
+            return null;
+        }
+    }
+
+    [Fact]
+    public async Task Retrieval_off_never_calls_recommendations()
+    {
+        var h = new Harness();
+        var stub = new StubRecommendations(_ => Task.FromResult<RecommendationsEvent?>(SomeRecommendations(1)));
+        h.Recommendations = stub;
+        var off = new Session("off", retrievalEnabled: false);
+        h.Chat.ThenAsync(async (hist, k) =>
+        {
+            await Invoke(hist, k!, "Session", "SetProfile", new { profile = "portrait" });
+            return new[] { await Invoke(hist, k!, "Dialog", "AskUser", AskArgs()) };
+        });
+        h.GuardChat.Then(FakeChatCompletion.Text(OkVerdict)); h.ClassifierChat.Then(FakeChatCompletion.Text(OkVerdict));
+        var events = new List<AgentEvent>();
+        await foreach (var e in h.Build().RunTurnAsync(off, "一個銀髮少女", default)) events.Add(e);
+        Assert.Equal(0, stub.Calls);
+        Assert.Empty(events.OfType<RecommendationsEvent>());
     }
 }
