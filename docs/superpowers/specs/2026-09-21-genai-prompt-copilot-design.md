@@ -631,6 +631,7 @@ CREATE TABLE prompt_knowledge_presets (
     prompt_snippet   TEXT NOT NULL,               -- 英文正向片段
     negative_snippet TEXT,                        -- 英文負向片段（可空）
     image_url        TEXT,
+    facet_tags       JSONB,                       -- tag → facet 拆分（2026-09-25 整套組合推薦）；NULL＝尚未回填，由 scripts/backfill_facet_tags.py 填
     preset_embedding VECTOR(768),
     created_at       TIMESTAMPTZ DEFAULT NOW()
 );
@@ -729,7 +730,7 @@ scripts/
 | `POST` | `/api/sessions/{id}/messages` | body `{ text }`；回 `text/event-stream`；同一 session 已有一輪在跑 → `409` |
 | `POST` | `/api/sessions/{id}/save-to-shared` | body `{ intent }`；需 `Finalized`，否則 `409`；寫 `shared_prompt_histories` 並向量化；**唯一的寫入路徑** |
 | `GET` | `/api/config/facets` | 回 `facets.yaml` 內容供前端渲染 |
-| `GET` | `/api/presets/{id}` | preset 詳情（抽屜用）；含 `sourceRef` 與伺服器算的 `sourceUrl`（出處連結，子專案 4） |
+| `GET` | `/api/presets/{id}` | preset 詳情（抽屜用）；含 `sourceRef` 與伺服器算的 `sourceUrl`（出處連結，子專案 4）；`facetTags`（2026-09-25，未回填時為 null） |
 | `GET` | `/health` | |
 
 `save-to-shared` 的 `intent` 是使用者這次需求的整句繁中原話（會被向量化成 `intent_embedding`，即 RAG 1 的檢索鍵），不是定稿的英文提示詞；定稿內容從 session 的 `LastFinal` 取，不由客戶端送。

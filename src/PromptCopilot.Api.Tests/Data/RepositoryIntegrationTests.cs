@@ -10,24 +10,29 @@ public class RepositoryIntegrationTests(ITestOutputHelper output) : IAsyncLifeti
 {
     private NpgsqlDataSource _ds = null!;
     private static readonly string Ref = $"test:{Guid.NewGuid():N}";
+    private static readonly string Ref2 = Ref + ":1";
     private static float[] Unit(int hot) { var v = new float[768]; v[hot] = 1f; return v; }
 
     public async Task InitializeAsync()
     {
         var b = new NpgsqlDataSourceBuilder(TestEnv.Db); b.UseVector(); _ds = b.Build();
         await using var cmd = _ds.CreateCommand("""
-            INSERT INTO prompt_knowledge_presets (source_ref, title, category, description, tags, facet_ids, prompt_snippet, negative_snippet, preset_embedding)
-            VALUES (@r, '測試片段', 'Style', 'd', ARRAY['x'], ARRAY['style.genre'], 'photo realism', NULL, @e)
+            INSERT INTO prompt_knowledge_presets (source_ref, title, category, description, tags, facet_ids, prompt_snippet, negative_snippet, preset_embedding, facet_tags)
+            VALUES (@r, '測試片段', 'Style', 'd', ARRAY['x'], ARRAY['style.genre'], 'photo realism', NULL, @e, NULL),
+                   (@r2, '測試穿搭', 'Clothing', 'd', ARRAY['x'], ARRAY['clothing.upper','clothing.footwear'], 'white shirt, platform sandals', NULL, @e,
+                    '{"clothing.upper":["white shirt"],"clothing.footwear":["platform sandals"]}'::jsonb)
             """);
         cmd.Parameters.AddWithValue("r", Ref);
+        cmd.Parameters.AddWithValue("r2", Ref2);
         cmd.Parameters.AddWithValue("e", new Pgvector.Vector(Unit(0)));
         await cmd.ExecuteNonQueryAsync();
     }
 
     public async Task DisposeAsync()
     {
-        await using var cmd = _ds.CreateCommand("DELETE FROM prompt_knowledge_presets WHERE source_ref = @r");
+        await using var cmd = _ds.CreateCommand("DELETE FROM prompt_knowledge_presets WHERE source_ref = @r OR source_ref = @r2");
         cmd.Parameters.AddWithValue("r", Ref);
+        cmd.Parameters.AddWithValue("r2", Ref2);
         await cmd.ExecuteNonQueryAsync();
         await using var cmd2 = _ds.CreateCommand("DELETE FROM shared_prompt_histories WHERE user_intent = @i");
         cmd2.Parameters.AddWithValue("i", Ref);
@@ -53,6 +58,43 @@ public class RepositoryIntegrationTests(ITestOutputHelper output) : IAsyncLifeti
         var d = await repo.GetAsync(hit.Id, default);
         Assert.NotNull(d); Assert.Equal("photo realism", d!.PromptSnippet);
         Assert.Null(await repo.GetAsync(-1, default));
+    }
+
+    [IntegrationFact]
+    public async Task Recommend_requires_two_dimension_facets_and_backfilled_tags()
+    {
+        var repo = new PresetRepository(_ds);
+        var clothing = new[] { "clothing.upper", "clothing.lower", "clothing.footwear" };
+        var hits = await repo.RecommendAsync(Unit(0), clothing, Array.Empty<string>(), Array.Empty<string>(), 3, default);
+        var set = Assert.Single(hits, h => h.Title == "測試穿搭");
+        Assert.Equal(new[] { "platform sandals" }, set.FacetTags["clothing.footwear"]);
+        Assert.Equal(Ref2, set.SourceRef);
+        // 單一 facet 的片段不是「組合」，而且它沒有 facet_tags
+        Assert.DoesNotContain(await repo.RecommendAsync(Unit(0), new[] { "style.genre", "style.palette" }, Array.Empty<string>(), Array.Empty<string>(), 3, default),
+            h => h.Title == "測試片段");
+    }
+
+    [IntegrationFact]
+    public async Task Recommend_anchor_matches_whole_tag_and_word_suffix_within_the_anchor_facets()
+    {
+        var repo = new PresetRepository(_ds);
+        var clothing = new[] { "clothing.upper", "clothing.footwear" };
+        Task<IReadOnlyList<PresetCandidate>> Q(string facet, string tag) => repo.RecommendAsync(Unit(0), clothing, new[] { facet }, new[] { tag }, 3, default);
+
+        Assert.Contains(await Q("clothing.footwear", "sandals"), h => h.Title == "測試穿搭");            // 字尾：platform sandals ← sandals
+        Assert.Contains(await Q("clothing.footwear", "platform sandals"), h => h.Title == "測試穿搭");   // 整段相等
+        Assert.DoesNotContain(await Q("clothing.footwear", "boots"), h => h.Title == "測試穿搭");
+        Assert.DoesNotContain(await Q("clothing.upper", "sandals"), h => h.Title == "測試穿搭");          // 錨只看指定的 facet
+    }
+
+    [IntegrationFact]
+    public async Task Preset_get_returns_facet_tags_or_null()
+    {
+        var repo = new PresetRepository(_ds);
+        var set = (await repo.RecommendAsync(Unit(0), new[] { "clothing.upper", "clothing.footwear" }, Array.Empty<string>(), Array.Empty<string>(), 3, default)).First(h => h.Title == "測試穿搭");
+        Assert.Equal(new[] { "white shirt" }, (await repo.GetAsync(set.Id, default))!.FacetTags!["clothing.upper"]);
+        var single = (await repo.SearchAsync(Unit(0), new[] { "style.genre" }, 5, default)).First(h => h.Title == "測試片段");
+        Assert.Null((await repo.GetAsync(single.Id, default))!.FacetTags);
     }
 
     [IntegrationFact]
