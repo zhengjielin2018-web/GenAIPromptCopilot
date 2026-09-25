@@ -116,4 +116,35 @@ public class SystemPromptBuilderTests
         Assert.DoesNotContain("才 `AskUser`", prompt);
         Assert.DoesNotContain("底下的 facet 全是 missing", prompt);
     }
+
+    private static readonly IReadOnlySet<string> ToolsWithoutSearch =
+        ToolNames.Always.Except(new[] { ToolNames.SearchPresets, ToolNames.SearchSimilarPrompts }).ToHashSet();
+
+    /// <summary>計畫 §4.1：off 的 prompt 不能再要求檢索，也不能留下講片段可否借入的規則；on 的字句逐字不變。</summary>
+    [Fact]
+    public void Retrieval_off_prompt_drops_search_step_and_borrow_rule()
+    {
+        var on = Make().Build(new Session("s"), ToolNames.Always);
+        var off = Make().Build(new Session("s", retrievalEnabled: false), ToolsWithoutSearch);
+
+        Assert.Contains("用一次 `SearchPresets`", on.Prompt);
+        Assert.Contains("「僅供建議」的片段任何詞都不可進提示詞", on.Prompt);
+        Assert.Contains("知識庫：on", on.Prompt);
+
+        Assert.DoesNotContain("SearchPresets", off.Prompt);
+        Assert.DoesNotContain("SearchSimilarPrompts", off.Prompt);
+        Assert.Contains("本段對話沒有知識庫：不做檢索，直接依 facet 狀態追問或定稿。", off.Prompt);
+        Assert.Contains("- 本段對話沒有知識庫片段，所有 tag 由你自行產生。", off.Prompt);
+        Assert.Contains("知識庫：off", off.Prompt);
+        Assert.DoesNotContain("{{", off.Prompt);
+        Assert.NotEqual(on.Version, off.Version);
+    }
+
+    /// <summary>off 的步驟 1 仍要接得上「然後：只要還有 missing 的維度就 AskUser」，不能因為換掉一段就斷句。</summary>
+    [Fact]
+    public void Retrieval_off_step_one_still_flows_into_ask_rule()
+    {
+        var (prompt, _) = Make().Build(new Session("s", retrievalEnabled: false), ToolsWithoutSearch);
+        Assert.Contains("追問或定稿。然後：**只要還有 missing 的維度就 `AskUser`**", prompt);
+    }
 }
