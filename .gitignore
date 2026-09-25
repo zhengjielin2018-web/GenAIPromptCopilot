@@ -35,3 +35,6 @@ Thumbs.db
 # 工具的本機工作區（worktree、SDD 進度）
 .claude/worktrees/
 .superpowers/
+
+# git worktrees for isolated feature work (superpowers)
+.worktrees/
