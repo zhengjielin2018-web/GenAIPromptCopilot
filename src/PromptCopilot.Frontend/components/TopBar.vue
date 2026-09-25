@@ -34,6 +34,18 @@
         </button>
         顯示檢索細節
       </label>
+      <!-- 測試用：後端 SAFETY_ALLOW_DISABLE 開著才出現。關掉時整組轉成 magenta，免得忘了關回來 -->
+      <label v-if="s.safetyCanDisable" class="flex items-center gap-1.5 text-xs" :class="s.safetyOff ? 'text-magenta' : 'text-ink/80'">
+        <button type="button" role="switch" :aria-checked="!s.safetyOff"
+                class="relative h-4 w-7 shrink-0 rounded-full border transition-colors"
+                :class="s.safetyOff ? 'border-magenta bg-paper' : 'border-ink bg-ink'"
+                @click="s.setSafetyOff(!s.safetyOff)">
+          <span class="absolute top-0.5 h-2.5 w-2.5 rounded-full transition-[left]"
+                :class="s.safetyOff ? 'left-0.5 bg-magenta' : 'left-[15px] bg-paper'" aria-hidden="true" />
+        </button>
+        程式端審查
+        <span v-if="s.safetyOff" class="text-[11px] font-medium">已關閉（測試用）</span>
+      </label>
       <button type="button" :disabled="s.busy || !!s.bootError"
               class="rounded-md border border-ink/80 px-3 py-1 text-sm font-medium hover:bg-ink hover:text-paper disabled:border-rule disabled:text-muted disabled:hover:bg-transparent"
               @click="onNew">新對話</button>

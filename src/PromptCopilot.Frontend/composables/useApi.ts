@@ -31,6 +31,14 @@ export function useApi() {
     return await r.json()
   }
 
+  /** 後端開放測試用的審查開關才回 true。失敗（包括還沒有這支的舊後端）一律當不開放，不擋開頁。 */
+  async function getSafetyConfig(): Promise<boolean> {
+    try {
+      const r = await fetch(`${base}/api/config/safety`)
+      return r.ok && (await r.json()).canDisable === true
+    } catch { return false }
+  }
+
   async function getPreset(id: number): Promise<PresetDetail | null> {
     const r = await fetch(`${base}/api/presets/${id}`)
     if (r.status === 404) return null
@@ -48,7 +56,7 @@ export function useApi() {
     return { ok: false, status: r.status, error }
   }
 
-  /** 不檢查 status：404／409／400 的處理在 store。body 是一般訊息或採用（設計 §6.1）。 */
+  /** 不檢查 status：404／409／400／403 的處理在 store。body 是一般訊息或採用（設計 §6.1），可能帶 safety: off（lib/safety）。 */
   function openStream(id: string, body: TurnBody, signal: AbortSignal): Promise<Response> {
     return fetch(`${base}/api/sessions/${encodeURIComponent(id)}/messages`, {
       method: 'POST', headers: { 'content-type': 'application/json', accept: 'text/event-stream' },
@@ -56,5 +64,5 @@ export function useApi() {
     })
   }
 
-  return { createSession, getSession, getFacets, getPreset, saveToShared, openStream }
+  return { createSession, getSession, getFacets, getSafetyConfig, getPreset, saveToShared, openStream }
 }

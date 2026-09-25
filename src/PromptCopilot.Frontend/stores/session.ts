@@ -5,6 +5,7 @@ import { loadPersisted, savePersisted } from '../lib/persist'
 import { loadPrefs, savePrefs, type Prefs } from '../lib/prefs'
 import { composeDraft, appendChip, chipKey, type Chip } from '../lib/composer'
 import { latestRecommendableTurn as latestRecommendableTurnOf, adoptPlaceholder } from '../lib/adopt'
+import { messageBody } from '../lib/safety'
 import { AGENT_EVENT_TYPES, type AdoptRequest, type AgentEvent, type FacetCatalog, type RecommendedSet, type RetrievalMode } from '../types/api'
 import type { TurnBody } from '../composables/useApi'
 
@@ -30,6 +31,11 @@ export const useSessionStore = defineStore('session', () => {
   /** 開關值與目前這段對話的模式不同：畫面要說「新對話後生效」。
    *  還沒有對話時 state.retrieval 只是預設值，不算不一致，免得空白頁就冒出提示。 */
   const retrievalMismatch = computed(() => !!state.value.sessionId && prefs.value.retrieval !== state.value.retrieval)
+
+  /** 測試用的審查開關：後端開放才顯示；下一則訊息就生效。刻意不存：重新整理就回到審查開著，免得忘了關回來。 */
+  const safetyCanDisable = ref(false)
+  const safetyOff = ref(false)
+  function setSafetyOff(v: boolean) { safetyOff.value = v }
 
   const draft = ref('')
   const chips = ref<Chip[]>([])
@@ -77,6 +83,7 @@ export const useSessionStore = defineStore('session', () => {
     bootError.value = null
     try {
       catalog.value = await api.getFacets()
+      safetyCanDisable.value = await api.getSafetyConfig()
       const saved = loadPersisted()
       if (saved) {
         const dto = await api.getSession(saved.sessionId)
@@ -129,7 +136,7 @@ export const useSessionStore = defineStore('session', () => {
     persist({ draft: 'text' in body ? body.text : '' })
     const ctl = new AbortController()
     try {
-      const r = await api.openStream(state.value.sessionId!, body, ctl.signal)
+      const r = await api.openStream(state.value.sessionId!, messageBody(body, { canDisable: safetyCanDisable.value, off: safetyOff.value }), ctl.signal)
       if (r.status === 404) {
         // session 過期：開新的、提示、一般訊息的原文留在輸入框（spec §5）。newSession 會清掉 transcript，所以提示放 notice。
         await newSession()
@@ -139,8 +146,8 @@ export const useSessionStore = defineStore('session', () => {
       }
       if (!r.ok || !r.body) {
         let msg = r.status === 409 ? '這個對話還有一輪在跑，等它結束再送。' : `送出失敗（HTTP ${r.status}）。`
-        // 採用被拒（400／409）帶有理由：直接顯示
-        if ('adopt' in body) { try { msg = (await r.json()).error ?? msg } catch { /* 沒 body 就用預設字 */ } }
+        // 採用被拒（400／409）與審查開關被拒（403：後端中途關掉了開放）帶有理由：直接顯示
+        if ('adopt' in body || r.status === 403) { try { msg = (await r.json()).error ?? msg } catch { /* 沒 body 就用預設字 */ } }
         state.value = failHttp(state.value, `http_${r.status}`, msg)
         return
       }
@@ -217,7 +224,7 @@ export const useSessionStore = defineStore('session', () => {
   return {
     state, catalog, bootError, notice, busy, draft, chips, draftDirty, drawerPresetId, expandedSaveTurn, saveState,
     dimensionLabels, latestFinalizedTurn,
-    prefs, retrievalMismatch, setRetrievalPref, setShowTrace,
+    prefs, retrievalMismatch, setRetrievalPref, setShowTrace, safetyCanDisable, safetyOff, setSafetyOff,
     boot, newSession, send, retry, setDraft, toggleChip, isChipSelected, openDrawer, closeDrawer, expandSave, save,
     adoptTarget, latestRecommendableTurn, openAdopt, closeAdopt, adopt,
   }
