@@ -24,6 +24,7 @@
    ```bash
    docker compose exec db psql -U postgres -d prompt_copilot -c "SELECT count(*) FROM prompt_knowledge_presets;"
    ```
+5. 2026-09-25 之前建的開發庫若沒經過 seed 服務（`start_api.py` 只起 db），要自己補一次 `facet_tags` 欄位（`IF NOT EXISTS`，重跑無害；檔案不在容器裡，所以 `-f -` 從 stdin 讀）：`docker exec -i prompt-copilot-db psql -U postgres -d prompt_copilot -v ON_ERROR_STOP=1 -f - < db/migrations/002_facet_tags.sql`
 
 ## 1. 啟動 API
 
