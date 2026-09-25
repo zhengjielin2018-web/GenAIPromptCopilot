@@ -44,6 +44,7 @@ CREATE TABLE prompt_knowledge_presets (
     prompt_snippet   TEXT NOT NULL,
     negative_snippet TEXT,
     image_url        TEXT,
+    facet_tags       JSONB,                              -- tag → facet 拆分（2026-09-25 整套組合推薦）：{"clothing.footwear":["sandals"]}；NULL＝尚未回填
     preset_embedding VECTOR(768),
     created_at       TIMESTAMPTZ DEFAULT NOW()
 );

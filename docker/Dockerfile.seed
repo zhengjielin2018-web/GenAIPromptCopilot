@@ -3,6 +3,7 @@ FROM pgvector/pgvector:pg16
 RUN apt-get update \
  && apt-get install -y --no-install-recommends curl ca-certificates \
  && rm -rf /var/lib/apt/lists/*
+COPY db/migrations /migrations
 COPY docker/seed.sh /usr/local/bin/seed.sh
 # .gitattributes 已強制 LF；這行是保險
 RUN sed -i 's/\r$//' /usr/local/bin/seed.sh && chmod +x /usr/local/bin/seed.sh
