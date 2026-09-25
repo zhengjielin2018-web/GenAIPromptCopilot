@@ -99,7 +99,7 @@ export interface PresetDetail {
   imageUrl: string | null
   sourceRef: string | null
   sourceUrl: string | null
-  /** tag → facet 拆分（2026-09-25）；尚未回填時省略 */
+  /** tag → facet 拆分（2026-09-25）；尚未回填時是 null（後端照樣輸出這個欄位，不省略）；舊後端沒有這個欄位 */
   facetTags?: Record<string, string[]> | null
 }
 

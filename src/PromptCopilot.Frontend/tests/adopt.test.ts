@@ -22,6 +22,14 @@ describe('adoptRows', () => {
     ])
   })
 
+  // 推薦事件的 state 停在出卡那一輪；之後討論輪改了狀態，對照表要照目前的
+  it('uses the current facet state over the one on the card', () => {
+    const rows = adoptRows(SET, { 'clothing.head': 'covered', 'clothing.upper': 'covered' })
+    expect(rows[0]).toMatchObject({ facetId: 'clothing.head', state: 'covered', choice: 'mine' })
+    expect(rows.map(r => r.facetId)).toEqual(['clothing.head', 'clothing.upper', 'clothing.lower', 'clothing.footwear'])   // 沒給目前狀態的列照卡上的
+    expect(adoptRows(SET, {})).toEqual(adoptRows(SET))
+  })
+
   it('setChoice only changes available rows; takeAll switches every available row', () => {
     const rows = adoptRows(SET)
     expect(setChoice(rows, 'clothing.upper', 'set')[1].choice).toBe('set')

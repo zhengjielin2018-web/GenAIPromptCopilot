@@ -219,7 +219,7 @@ public sealed record Adoption(int TurnIndex, long PresetId, string Dimension,
 
 - 上方：標題、大圖（既有署名）、來源連結。
 - 表格一列一個 facet（`notApplicable` 不列）：facet 名｜**你的**（covered→「保留你講的」、missing→「空白」、waived→「不指定」）｜**這套**（`tags` 以 chip 顯示；空則「這套沒有」）｜切換（留我的／照它的）。
-- 預設：missing→照它的；covered、waived→留我的；「這套沒有」的列停用、固定留我的。
+- 預設：missing→照它的；covered、waived→留我的；「這套沒有」的列停用、固定留我的。狀態以目前的 `facetStates` 為準，不是推薦事件那份：出卡之後的討論輪可能改過狀態。
 - 底部：「全部照它的」快捷（把可用列全切到照它的）、「確定採用」（至少一列照它的才可按）、取消。
 - 確定後：`s.adopt({ presetId, dimension, take })`，store 走 `send` 同一條路徑（busy、SSE、persist），只是 body 帶 `adopt` 而非 `text`。使用者泡泡顯示伺服器組的那句：`SessionEvent`（串流的第一個事件）加可省略的 `text` 欄位，只在採用輪帶值；前端收到就把該輪的使用者條目文字換成它（一般訊息 `text` 為 null，不動）。
 
