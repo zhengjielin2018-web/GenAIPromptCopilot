@@ -171,7 +171,7 @@ export function contributions(positive: TagSource[], negative: TagSource[]): Con
 ```ts
 export interface RetrievalSummary {
   searches: number                                   // 完成的 SearchPresets 次數
-  pools: { dimension: string; label: string; poolSize: number }[]   // 每個維度最近一次查詢的候選池（facet 項目歸到所屬維度，取該維度最後一個 item）
+  pools: { dimension: string; label: string; poolSize: number }[]   // 每個維度最近一次查詢的候選池（facet 項目歸到所屬維度，取該維度最後一個 item；標籤與數字都來自那個 item）
   seen: number                                       // 命中過的不同 preset 數
   borrowed: number                                   // 最新一次定稿裡 rag 來源引用的不同 preset 數
 }

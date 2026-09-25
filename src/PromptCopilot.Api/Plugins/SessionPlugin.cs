@@ -25,7 +25,7 @@ public sealed class SessionPlugin(TurnContext turn, FacetCatalog catalog)
     }
 
     [KernelFunction(ToolNames.SetFacetStates)]
-    [Description("更新 facet 狀態。使用者第一次描述題材時，先用它把已描述的 facet 標 covered，再檢索。另外用於 waived（使用者明說不要指定）與單一項目的委託（note 記「使用者委託此項」，狀態維持 missing）。")]
+    [Description("更新 facet 狀態。使用者第一次描述題材時，先用它把已描述的 facet 標 covered，再依流程檢索或追問。另外用於 waived（使用者明說不要指定）與單一項目的委託（note 記「使用者委託此項」，狀態維持 missing）。")]
     public string SetFacetStates(FacetStateEntry[] updates) => Apply(turn, catalog, updates);
 
     /// <summary>三個終止型 tool 也用這個：解析、過濾、套用、發 dimensions 事件。</summary>

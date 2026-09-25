@@ -1,5 +1,5 @@
 <template>
-  <header class="flex items-center justify-between border-b border-rule bg-surface px-5 py-2.5">
+  <header class="flex flex-wrap items-center justify-between gap-y-2 border-b border-rule bg-surface px-5 py-2.5">
     <div class="flex items-center gap-3">
       <!-- 套準標記：印刷對版用的十字圓，這個工具的輸出是「要拿去印（生圖）的稿」 -->
       <svg viewBox="0 0 24 24" class="h-6 w-6 text-ink" aria-hidden="true">
@@ -12,10 +12,10 @@
         <p class="text-[11px] text-muted">把中文描述整理成 SD/SDXL 提示詞</p>
       </div>
     </div>
-    <div class="flex items-center gap-4">
+    <div class="flex flex-wrap items-center gap-4">
       <label class="flex items-center gap-1.5 text-xs text-ink/80">
         <button type="button" role="switch" :aria-checked="s.prefs.retrieval === 'on'"
-                class="relative h-4 w-7 rounded-full border transition-colors"
+                class="relative h-4 w-7 shrink-0 rounded-full border transition-colors"
                 :class="s.prefs.retrieval === 'on' ? 'border-ink bg-ink' : 'border-muted bg-paper'"
                 @click="s.setRetrievalPref(s.prefs.retrieval === 'on' ? 'off' : 'on')">
           <span class="absolute top-0.5 h-2.5 w-2.5 rounded-full transition-[left]"
@@ -26,7 +26,7 @@
       </label>
       <label class="flex items-center gap-1.5 text-xs text-ink/80">
         <button type="button" role="switch" :aria-checked="s.prefs.showTrace"
-                class="relative h-4 w-7 rounded-full border transition-colors"
+                class="relative h-4 w-7 shrink-0 rounded-full border transition-colors"
                 :class="s.prefs.showTrace ? 'border-ink bg-ink' : 'border-muted bg-paper'"
                 @click="s.setShowTrace(!s.prefs.showTrace)">
           <span class="absolute top-0.5 h-2.5 w-2.5 rounded-full transition-[left]"

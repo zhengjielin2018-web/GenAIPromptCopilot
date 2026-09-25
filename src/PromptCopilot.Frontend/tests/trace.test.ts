@@ -74,4 +74,12 @@ describe('retrievalSummary', () => {
     const t: Entry[] = [tool('c1', { items: [{ ...item('style', '風格', 0, []), error: 'x' }] })]
     expect(retrievalSummary(t).pools).toEqual([])
   })
+
+  it('labels each dimension pool with the item that supplied the number', () => {
+    const t: Entry[] = [tool('c1', { items: [
+      item('appearance', '年齡與性別', 120, [1], 'appearance.age_gender'),
+      item('appearance', '髮型', 640, [2], 'appearance.hair'),
+    ] })]
+    expect(retrievalSummary(t).pools).toEqual([{ dimension: 'appearance', label: '髮型', poolSize: 640 }])
+  })
 })

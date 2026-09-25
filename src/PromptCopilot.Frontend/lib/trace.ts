@@ -55,9 +55,9 @@ export function retrievalSummary(transcript: Entry[]): RetrievalSummary {
     searches += 1
     for (const it of t.detail.items) {
       if (it.error) continue
-      // 同維度後面的項目蓋掉前面的，但 label 用維度的：facet 項目的 label 是 facet 名，維度列要維度名
-      const prev = pools.get(it.dimension)
-      pools.set(it.dimension, { dimension: it.dimension, label: it.facetId ? (prev?.label ?? it.label) : it.label, poolSize: it.poolSize })
+      // 同維度後面的項目蓋掉前面的，label 也跟著換成該 item 的：標籤要跟數字來自同一個 item，
+      // 否則同維度兩個 facet 項目（例如 年齡與性別 → 髮型）會把前一個的名字配上後一個的候選池
+      pools.set(it.dimension, { dimension: it.dimension, label: it.label, poolSize: it.poolSize })
       for (const h of it.hits) seen.add(h.id)
     }
   }

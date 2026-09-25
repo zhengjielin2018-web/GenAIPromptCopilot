@@ -119,8 +119,9 @@ transcript: Entry[]          # 顯示用，每筆是 user | tool | final | failu
 lastFinal | null
 pending: { text, snapshot } | null   # 這一輪送出的原文與送出前的快照
 drawer: presetId | null
-prefs: { retrieval, showTrace }  # localStorage pc.prefs，跨對話
 ```
+
+另外 `prefs: { retrieval, showTrace }`（localStorage `pc.prefs`，跨對話）放在 ChatState 之外：偏好不隨輪次回滾。
 
 `Entry` 的四種：
 
