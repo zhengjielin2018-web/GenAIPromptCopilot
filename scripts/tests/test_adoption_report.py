@@ -54,10 +54,13 @@ def test_a_card_adopted_twice_counts_once():
     assert "追問輪採用率：1/1（100.0%）" in text
     assert "採用 2 次" in text
     assert "採用時該維度有錨：2/2" in text
+    assert "有錨列採用率：1/1（100.0%）" in text  # 同一列採用兩次只算一次
 
 
 def test_zero_denominator_prints_a_dash_not_zero_percent():
-    assert "定稿輪採用率：0/0（—）" in build_report([fin("a", 1)])
+    text = build_report([fin("a", 1)])
+    assert "定稿輪採用率：0/0（—）" in text
+    assert "有錨列採用率：0/0（—）" in text
 
 
 def test_ask_turns_are_reported_separately():
@@ -81,6 +84,27 @@ def test_filled_replaced_averages_dimension_counts_and_anchored_split():
     assert "平均補上 1.0 個 facet、換掉 0.5 個 facet" in text
     assert "clothing：1" in text and "style：1" in text
     assert "採用時該維度有錨：1/2" in text
+    assert "有錨列採用率：1/1（100.0%）" in text
+    assert "無錨列採用率：1/1（100.0%）" in text
+
+
+def test_anchored_and_unanchored_row_rates_split_by_the_adopted_row():
+    rec = {"dimensions": [
+        {"dimension": "clothing", "anchored": True, "presetIds": [1, 2, 3]},
+        {"dimension": "style", "anchored": False, "presetIds": [7, 8]},
+    ]}
+    turns = [fin("a", 1, rec=rec), fin("a", 2, adoption=ADOPT_CLOTHING)]
+    text = build_report(turns)
+    assert "有錨列採用率：1/1（100.0%）" in text
+    assert "無錨列採用率：0/1（0.0%）" in text
+    assert "採用時該維度有錨：1/1" in text
+
+
+def test_row_rates_count_shown_rows_even_without_adoptions():
+    text = build_report([fin("a", 1, rec=REC_STYLE), ask("b", 1, rec=REC_CLOTHING)])
+    assert "有錨列採用率：0/1（0.0%）" in text
+    assert "無錨列採用率：0/1（0.0%）" in text
+    assert "尚無採用紀錄" in text
 
 
 def test_adopted_tag_share_over_finalized_turns():

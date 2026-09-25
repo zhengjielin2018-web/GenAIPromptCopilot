@@ -239,8 +239,9 @@ public sealed record Adoption(int TurnIndex, long PresetId, string Dimension,
   - `tagOrigins` 多 `adopted`。
 - 新事件 `Recommendation_Failed`（payload：`stage`、`errorClass`）。
 - `scripts/adoption_report.py`：讀 `audit_logs`，輸出 Markdown：
-  - 採用率＝有 `recommendations` 的定稿輪中，同 session 下一輪是採用的比例；另列追問輪的採用率。
-  - 平均 `filled` 數、平均 `replaced` 數、各維度採用次數、`anchored` 與否的採用率對比。
+  - 採用率＝有 `recommendations` 的定稿輪中，後來被採用的比例；另列追問輪的採用率。採用輪往回對：同 session 在它之前最近的一張追問卡或定稿卡就是它採用的那張（前端只讓人從最新那張卡採用，中間的討論輪不換卡），同一張卡被採用兩次只算一次；對不到推薦輪的採用另列一行。
+  - `anchored` 與否的採用率對比：「有錨列採用率」與「無錨列採用率」。分母是推薦輪上出現過的維度列（`recommendations.dimensions[]` 每筆算一列），依該列的 `anchored` 分；分子是被採用的列，依採用對到的那張卡上同維度那列的 `anchored` 分，同一列採用兩次只算一次。另列「採用時該維度有錨」（以採用次數為分母）。
+  - 平均 `filled` 數、平均 `replaced` 數、各維度採用次數。
   - 定稿 tag 裡 `adopted` 的佔比（來自 `tagOrigins`）。
   - `--since` 日期參數；沒有資料時印「尚無採用紀錄」。
 

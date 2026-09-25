@@ -6,6 +6,8 @@
 採用率：有推薦的追問輪／定稿輪裡，後來被採用的比例（兩種分開算）。採用輪往回對：同 session 在它之前
 最近的一張追問卡或定稿卡，就是它採用的那張——前端只讓人從最新那張卡採用，中間的討論輪不換卡。
 同一張卡被採用兩次只算一次。
+有錨／無錨列採用率：推薦卡上一個維度是一列，依該列的 anchored 分開算。分母是出現過的列數，分子是被採用的列
+（採用對到的那張卡上、維度相同的那列；同一列採用兩次只算一次，比率才不會超過 100%）。
 擴充率／取代率：採用時補上的（原本 missing）與換掉的（原本 covered／waived）facet 數。
 採用率與「有錨」只算對得到推薦輪的採用；--since 可能把 session 從中切開，對不到的另列一行，說明兩邊的落差。
 """
@@ -59,6 +61,9 @@ def build_report(turns: list[Turn]) -> str:
     rec_turns = {ASK: 0, FINAL: 0}
     adopted = {ASK: 0, FINAL: 0}
     credited: set[tuple[str, int]] = set()
+    shown_rows = {True: 0, False: 0}  # 依 anchored 分：推薦卡上出現過的維度列
+    adopted_rows = {True: 0, False: 0}
+    credited_rows: set[tuple[str, int, str]] = set()
     linked = unlinked = anchored_hit = 0
     session: str | None = None
     card: Turn | None = None  # 這個 session 目前最新的追問卡／定稿卡
@@ -68,6 +73,8 @@ def build_report(turns: list[Turn]) -> str:
         outcome = t.payload.get("outcome")
         if outcome in rec_turns and t.payload.get("recommendations"):
             rec_turns[outcome] += 1
+            for d in t.payload["recommendations"].get("dimensions", []):
+                shown_rows[bool(d.get("anchored"))] += 1
         adoption = t.payload.get("adoption")
         if adoption:
             rec = card.payload.get("recommendations") if card else None
@@ -81,6 +88,10 @@ def build_report(turns: list[Turn]) -> str:
                 dims = rec.get("dimensions", [])
                 dim = next((d for d in dims if d.get("dimension") == adoption.get("dimension")), None)
                 anchored_hit += bool(dim and dim.get("anchored"))
+                row = (card.session_id, card.turn_index, adoption.get("dimension"))
+                if dim and row not in credited_rows:
+                    credited_rows.add(row)
+                    adopted_rows[bool(dim.get("anchored"))] += 1
         if outcome in rec_turns:
             card = t
 
@@ -91,6 +102,8 @@ def build_report(turns: list[Turn]) -> str:
     lines = ["# 整套組合推薦：採用率", ""]
     lines.append(f"- 有推薦的定稿輪：{rec_turns[FINAL]}；定稿輪採用率：{_pct(adopted[FINAL], rec_turns[FINAL])}")
     lines.append(f"- 有推薦的追問輪：{rec_turns[ASK]}；追問輪採用率：{_pct(adopted[ASK], rec_turns[ASK])}")
+    lines.append(f"- 有錨列採用率：{_pct(adopted_rows[True], shown_rows[True])}")
+    lines.append(f"- 無錨列採用率：{_pct(adopted_rows[False], shown_rows[False])}")
     lines.append(f"- adopted tag 佔定稿 tag：{_pct(adopted_tags, all_tags)}")
     if not adoptions:
         lines += ["", "尚無採用紀錄。"]

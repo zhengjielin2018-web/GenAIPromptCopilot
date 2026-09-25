@@ -67,6 +67,7 @@ clean／structure／embed／load 全部五個階段，`--max-records` 預設不�
     python adoption_report.py [--since 2026-09-25]
 
 讀 `audit_logs` 的 `Turn_Completed`（`recommendations`、`adoption`、`tagOrigins.adopted`），印 Markdown：定稿輪／追問輪採用率、
+有錨列／無錨列採用率（推薦卡上一個維度一列，依該列 `anchored` 分開算，看錨有沒有讓推薦更常被採用）、
 平均補上與換掉的 facet 數、各維度採用次數、adopted tag 佔比。這是決定要不要做離線 A/B 之前要看的數字。
 採用率與「有錨」只算往回對得到推薦輪（同 session 之前最近的追問卡／定稿卡）的採用；`--since` 可能把 session 從中切開，
 對不到的另列「未對到推薦輪的採用」，說明兩邊的落差。
