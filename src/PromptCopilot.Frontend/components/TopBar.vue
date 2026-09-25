@@ -12,9 +12,32 @@
         <p class="text-[11px] text-muted">把中文描述整理成 SD/SDXL 提示詞</p>
       </div>
     </div>
-    <button type="button" :disabled="s.busy || !!s.bootError"
-            class="rounded-md border border-ink/80 px-3 py-1 text-sm font-medium hover:bg-ink hover:text-paper disabled:border-rule disabled:text-muted disabled:hover:bg-transparent"
-            @click="onNew">新對話</button>
+    <div class="flex items-center gap-4">
+      <label class="flex items-center gap-1.5 text-xs text-ink/80">
+        <button type="button" role="switch" :aria-checked="s.prefs.retrieval === 'on'"
+                class="relative h-4 w-7 rounded-full border transition-colors"
+                :class="s.prefs.retrieval === 'on' ? 'border-ink bg-ink' : 'border-muted bg-paper'"
+                @click="s.setRetrievalPref(s.prefs.retrieval === 'on' ? 'off' : 'on')">
+          <span class="absolute top-0.5 h-2.5 w-2.5 rounded-full transition-[left]"
+                :class="s.prefs.retrieval === 'on' ? 'left-[15px] bg-paper' : 'left-0.5 bg-muted'" aria-hidden="true" />
+        </button>
+        使用知識庫
+        <span v-if="s.retrievalMismatch" class="text-[11px] text-muted">新對話後生效</span>
+      </label>
+      <label class="flex items-center gap-1.5 text-xs text-ink/80">
+        <button type="button" role="switch" :aria-checked="s.prefs.showTrace"
+                class="relative h-4 w-7 rounded-full border transition-colors"
+                :class="s.prefs.showTrace ? 'border-ink bg-ink' : 'border-muted bg-paper'"
+                @click="s.setShowTrace(!s.prefs.showTrace)">
+          <span class="absolute top-0.5 h-2.5 w-2.5 rounded-full transition-[left]"
+                :class="s.prefs.showTrace ? 'left-[15px] bg-paper' : 'left-0.5 bg-muted'" aria-hidden="true" />
+        </button>
+        顯示檢索細節
+      </label>
+      <button type="button" :disabled="s.busy || !!s.bootError"
+              class="rounded-md border border-ink/80 px-3 py-1 text-sm font-medium hover:bg-ink hover:text-paper disabled:border-rule disabled:text-muted disabled:hover:bg-transparent"
+              @click="onNew">新對話</button>
+    </div>
   </header>
 </template>
 

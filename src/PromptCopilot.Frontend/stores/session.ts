@@ -25,8 +25,9 @@ export const useSessionStore = defineStore('session', () => {
   const prefs = ref<Prefs>(loadPrefs())
   function setRetrievalPref(v: RetrievalMode) { prefs.value = { ...prefs.value, retrieval: v }; savePrefs(prefs.value) }
   function setShowTrace(v: boolean) { prefs.value = { ...prefs.value, showTrace: v }; savePrefs(prefs.value) }
-  /** 開關值與目前這段對話的模式不同：畫面要說「新對話後生效」。 */
-  const retrievalMismatch = computed(() => prefs.value.retrieval !== state.value.retrieval)
+  /** 開關值與目前這段對話的模式不同：畫面要說「新對話後生效」。
+   *  還沒有對話時 state.retrieval 只是預設值，不算不一致，免得空白頁就冒出提示。 */
+  const retrievalMismatch = computed(() => !!state.value.sessionId && prefs.value.retrieval !== state.value.retrieval)
 
   const draft = ref('')
   const chips = ref<Chip[]>([])
