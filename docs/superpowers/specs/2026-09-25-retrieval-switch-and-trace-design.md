@@ -182,7 +182,7 @@ export function retrievalSummary(transcript: Entry[]): RetrievalSummary
 
 ### 4.8 相容性
 
-- 舊 transcript（沒有 detail）：工具卡退回一行摘要，儀表板摘要不顯示（`searches` 為 0 時整區隱藏），定稿卡的檢索貢獻仍有（它只靠 sources）。
+- 舊 transcript（沒有 detail）：工具卡退回一行摘要，儀表板摘要不顯示（`searches` 為 0 時整區隱藏），定稿卡沒有 sources 時不顯示檢索貢獻（畫 0 會誤導）。
 - 後端舊版（沒有 `retrieval` 欄位）：前端 `state.retrieval` 預設 `'on'`，開關仍可切但無效；不特別處理，這是本機開發時前後端版本不齊的暫時狀態。
 
 ## 5. 測試

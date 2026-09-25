@@ -166,7 +166,7 @@ prefs: { retrieval, showTrace }  # localStorage pc.prefs，跨對話
 | `ToolCallCard` | 行內卡片：「🔍 查詢知識庫：鏡頭 → 池 2147 → 3 筆」。`tool_result` 到之前顯示進行中；完成後摺疊成一行，點開看 `summary` 與 preset 縮圖列，縮圖可開抽屜；「顯示檢索細節」開啟且有 `detail` 時改列每個查詢項目（標籤｜查詢句｜池 → 命中），項目可展開命中清單（標題可開抽屜、分級、距離、可借入／僅供建議） |
 | `AskCard` | `kind: ask`：`preamble` 在上，每則 ask 一區（維度標題、`question`、一排 chip）。該維度在儀表板高亮，直到下一輪 `session` 事件為止 |
 | `MessageBubble` | `kind: message`：氣泡 + 輕量「參考方向」列表（有 `presetId` 的可開抽屜）；儀表板不高亮 |
-| `FinalCard` | `kind: finalized`：正／負向 prompt 各自有複製鈕、`tips`、「儲存至共享知識庫」。按下展開確認區：預填 `intentSummary` 的輸入框 + 「確認儲存」；成功後按鈕變「已儲存」並失效；`save-to-shared` 回 `409`／`400` 時把後端的 `error` 字串顯示在確認區內，按鈕可再按；「顯示檢索細節」開啟時多一區「檢索貢獻」：rag／llm／base 計數與片段 → tag 清單 |
+| `FinalCard` | `kind: finalized`：正／負向 prompt 各自有複製鈕、`tips`、「儲存至共享知識庫」。按下展開確認區：預填 `intentSummary` 的輸入框 + 「確認儲存」；成功後按鈕變「已儲存」並失效；`save-to-shared` 回 `409`／`400` 時把後端的 `error` 字串顯示在確認區內，按鈕可再按；「顯示檢索細節」開啟且卡片帶 sources 時多一區「檢索貢獻」：rag／llm／base 計數與片段 → tag 清單（舊卡沒有 sources 不顯示，畫 0 會誤導） |
 | `SaveConsentNotice` | `kind: save_consent_requested`：一筆短條目，同時把**最近一張** `FinalCard` 的確認區展開並捲過去 |
 | `FailureNotice` | `error`／`blocked`：原因用 `reason`／`code` 對到繁中文案、訊息用後端的 `message`；「重試」把 `originalText` 填回輸入框並聚焦，不自動送 |
 | `Composer` | 輸入框 + 送出；輪次進行中鎖住送出（避免 `409`）；chip 在此累積 |

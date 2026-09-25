@@ -13,7 +13,7 @@
       <p class="mt-1.5 whitespace-pre-wrap text-sm leading-6 text-ink/90">{{ data.tips }}</p>
     </section>
 
-    <section v-if="s.prefs.showTrace" class="mt-4" data-section="trace">
+    <section v-if="s.prefs.showTrace && hasSources" class="mt-4" data-section="trace">
       <h4 class="text-xs font-bold">檢索貢獻</h4>
       <p class="mt-1.5 text-xs tabular-nums text-muted">rag {{ trace.counts.rag }}・llm {{ trace.counts.llm }}・base {{ trace.counts.base }}</p>
       <ul v-if="trace.byPreset.length" class="mt-1.5 flex flex-col gap-1 text-xs">
@@ -61,5 +61,7 @@ const expanded = computed(() => s.expandedSaveTurn === props.turnIndex)
 const save = computed(() => s.saveState[props.turnIndex] ?? { status: 'idle' as const, error: undefined })
 /** 後端 save-to-shared 永遠存最新一次定稿；舊卡已存過的保留「已存」狀態，沒存過的就不給存。 */
 const superseded = computed(() => s.latestFinalizedTurn !== props.turnIndex && save.value.status !== 'saved')
+/** 舊的定稿卡沒有 sources，畫出 0 會誤導；空陣列是真的資料（沒借用），照樣顯示。 */
+const hasSources = computed(() => !!(props.data.positiveSources || props.data.negativeSources))
 const trace = computed(() => contributions(props.data.positiveSources ?? [], props.data.negativeSources ?? []))
 </script>
