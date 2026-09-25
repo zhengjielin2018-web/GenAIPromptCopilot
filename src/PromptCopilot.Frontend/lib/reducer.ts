@@ -1,7 +1,8 @@
-import { TERMINAL_TOOLS, type AgentEvent, type FacetState, type FinalData, type FinalizedData, type PresetRef, type SessionSnapshotDto, type SessionStatus } from '../types/api'
+import { TERMINAL_TOOLS, type AgentEvent, type FacetState, type FinalData, type FinalizedData, type PresetRef, type RetrievalMode, type SessionSnapshotDto, type SessionStatus, type ToolDetail } from '../types/api'
 
 export interface UserEntry { kind: 'user'; text: string }
-export interface ToolEntry { kind: 'tool'; callId: string; name: string; argsSummary: string; summary: string | null; presets: PresetRef[]; done: boolean }
+/** detail 是 2026-09-25 加的：之前存進 sessionStorage 的條目沒有這個鍵。 */
+export interface ToolEntry { kind: 'tool'; callId: string; name: string; argsSummary: string; summary: string | null; presets: PresetRef[]; detail?: ToolDetail | null; done: boolean }
 export interface FinalEntry { kind: 'final'; turnIndex: number; data: FinalData }
 export interface FailureEntry { kind: 'failure'; source: 'error' | 'blocked' | 'stream_ended' | 'http'; code: string; message: string; originalText: string }
 export type Entry = UserEntry | ToolEntry | FinalEntry | FailureEntry
@@ -14,6 +15,8 @@ export interface ChatState {
   facetStates: Record<string, FacetState>
   askCount: number
   askLimit: number
+  /** 這段對話建立時定下的知識庫開關；對話中途不會變 */
+  retrieval: RetrievalMode
   transcript: Entry[]
   lastFinal: FinalizedData | null
   /** ask 之後高亮的維度，下一個 session 事件清掉 */
@@ -24,7 +27,7 @@ export interface ChatState {
 export function initialState(): ChatState {
   return {
     sessionId: null, turnIndex: 0, status: 'Collecting', profile: null,
-    facetStates: {}, askCount: 0, askLimit: 2,
+    facetStates: {}, askCount: 0, askLimit: 2, retrieval: 'on',
     transcript: [], lastFinal: null, highlighted: [], pending: null,
   }
 }
@@ -40,6 +43,8 @@ export function hydrate(state: ChatState, dto: SessionSnapshotDto, transcript: E
     ...state,
     sessionId: dto.sessionId, status: dto.status, profile: dto.profile, turnIndex: dto.turnIndex,
     askCount: dto.askCount, askLimit: dto.askLimit, facetStates: { ...dto.facetStates },
+    // 舊後端的回應沒有 retrieval：那時還沒有開關，一律是 on
+    retrieval: dto.retrieval ?? 'on',
     lastFinal, transcript: entries, highlighted: [], pending: null,
   }
 }
@@ -59,19 +64,21 @@ export function applyEvent(state: ChatState, ev: AgentEvent): ChatState {
 
     case 'tool_call': {
       if (TERMINAL_TOOLS.has(ev.name)) return state
-      const entry: ToolEntry = { kind: 'tool', callId: ev.callId, name: ev.name, argsSummary: ev.argsSummary, summary: null, presets: [], done: false }
+      const entry: ToolEntry = { kind: 'tool', callId: ev.callId, name: ev.name, argsSummary: ev.argsSummary, summary: null, presets: [], detail: null, done: false }
       return { ...state, transcript: [...state.transcript, entry] }
     }
 
     case 'tool_result': {
       const idx = state.transcript.findIndex(e => e.kind === 'tool' && e.callId === ev.callId)
       const presets = ev.presets ?? []
+      // 沒有 detail 的工具（或舊後端）線上不帶這個鍵；補回 null，state 裡才不會出現 undefined
+      const detail = ev.detail ?? null
       if (idx < 0) {
-        const orphan: ToolEntry = { kind: 'tool', callId: ev.callId, name: ev.name, argsSummary: '', summary: ev.summary, presets, done: true }
+        const orphan: ToolEntry = { kind: 'tool', callId: ev.callId, name: ev.name, argsSummary: '', summary: ev.summary, presets, detail, done: true }
         return { ...state, transcript: [...state.transcript, orphan] }
       }
       const transcript = state.transcript.slice()
-      transcript[idx] = { ...(transcript[idx] as ToolEntry), summary: ev.summary, presets, done: true }
+      transcript[idx] = { ...(transcript[idx] as ToolEntry), summary: ev.summary, presets, detail, done: true }
       return { ...state, transcript }
     }
 

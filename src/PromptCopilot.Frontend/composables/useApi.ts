@@ -1,14 +1,18 @@
-import type { FacetCatalog, PresetDetail, SessionSnapshotDto } from '../types/api'
+import type { FacetCatalog, PresetDetail, RetrievalMode, SessionCreated, SessionSnapshotDto } from '../types/api'
 
 export type SaveResult = { ok: true; id: string } | { ok: false; status: number; error: string }
 
 export function useApi() {
   const base = useRuntimeConfig().public.apiBase as string
 
-  async function createSession(): Promise<string> {
-    const r = await fetch(`${base}/api/sessions`, { method: 'POST' })
+  async function createSession(retrieval: RetrievalMode): Promise<SessionCreated> {
+    const r = await fetch(`${base}/api/sessions`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ retrieval }),
+    })
     if (!r.ok) throw new Error(`createSession HTTP ${r.status}`)
-    return (await r.json()).sessionId as string
+    const body = await r.json()
+    // 舊後端沒有 retrieval 欄位：當成 on
+    return { sessionId: body.sessionId as string, retrieval: body.retrieval === 'off' ? 'off' : 'on' }
   }
 
   /** 404（不存在或已過期）回 null；其他失敗丟例外。 */

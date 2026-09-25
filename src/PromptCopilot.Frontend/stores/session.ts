@@ -2,8 +2,9 @@ import { defineStore } from 'pinia'
 import { readSse } from '../lib/sse'
 import { initialState, beginTurn, applyEvent, endTurn, failHttp, hydrate, latestFinalizedTurn as latestFinalizedTurnOf, type ChatState } from '../lib/reducer'
 import { loadPersisted, savePersisted } from '../lib/persist'
+import { loadPrefs, savePrefs, type Prefs } from '../lib/prefs'
 import { composeDraft, appendChip, chipKey, type Chip } from '../lib/composer'
-import { AGENT_EVENT_TYPES, type AgentEvent, type FacetCatalog } from '../types/api'
+import { AGENT_EVENT_TYPES, type AgentEvent, type FacetCatalog, type RetrievalMode } from '../types/api'
 
 type SaveStatus = { status: 'idle' | 'saving' | 'saved' | 'error'; error?: string }
 
@@ -19,6 +20,13 @@ export const useSessionStore = defineStore('session', () => {
   const bootError = ref<string | null>(null)
   const notice = ref<string | null>(null)
   const busy = ref(false)
+
+  /** 跨對話的偏好。retrieval 只在 newSession 時送出；showTrace 純顯示。 */
+  const prefs = ref<Prefs>(loadPrefs())
+  function setRetrievalPref(v: RetrievalMode) { prefs.value = { ...prefs.value, retrieval: v }; savePrefs(prefs.value) }
+  function setShowTrace(v: boolean) { prefs.value = { ...prefs.value, showTrace: v }; savePrefs(prefs.value) }
+  /** 開關值與目前這段對話的模式不同：畫面要說「新對話後生效」。 */
+  const retrievalMismatch = computed(() => prefs.value.retrieval !== state.value.retrieval)
 
   const draft = ref('')
   const chips = ref<Chip[]>([])
@@ -83,8 +91,8 @@ export const useSessionStore = defineStore('session', () => {
 
   /** 不先清 sessionStorage：createSession 失敗時舊對話要留著，重載還回得去。成功後最後的 persist() 會蓋掉舊的。 */
   async function newSession() {
-    const id = await api.createSession()
-    state.value = { ...initialState(), sessionId: id }
+    const created = await api.createSession(prefs.value.retrieval)
+    state.value = { ...initialState(), sessionId: created.sessionId, retrieval: created.retrieval }
     chips.value = []; draft.value = ''; draftDirty.value = false
     expandedSaveTurn.value = null; saveState.value = {}; drawerPresetId.value = null
     notice.value = null
@@ -176,6 +184,7 @@ export const useSessionStore = defineStore('session', () => {
   return {
     state, catalog, bootError, notice, busy, draft, chips, draftDirty, drawerPresetId, expandedSaveTurn, saveState,
     dimensionLabels, latestFinalizedTurn,
+    prefs, retrievalMismatch, setRetrievalPref, setShowTrace,
     boot, newSession, send, retry, setDraft, toggleChip, isChipSelected, openDrawer, closeDrawer, expandSave, save,
   }
 })

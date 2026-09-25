@@ -7,6 +7,21 @@ export interface AskItem { dimension: string; question: string; missingFacetIds:
 /** sourceRef：資料來源識別（`civitai:12345:0`），縮圖依前綴標來源名。2026-09-25 加的，之前存進 sessionStorage 的沒有。 */
 export interface PresetRef { id: number; title: string; imageUrl?: string | null; sourceRef?: string | null }
 
+export type RetrievalMode = 'on' | 'off'
+
+/** tool_result.detail（2026-09-25 起）：SearchPresets 與 SearchSimilarPrompts 各一種，用事件的 name 分辨。不含 snippet 本文。 */
+export interface SearchPresetsHit { id: number; title: string; band: string; dist: number; usable: boolean; facets: Record<string, string> }
+export interface SearchPresetsItem {
+  dimension: string; facetId?: string | null; label: string; query: string
+  grounded: boolean; poolSize: number; k: number; error?: string | null; hits: SearchPresetsHit[]
+}
+export interface SearchPresetsDetail { items: SearchPresetsItem[] }
+export interface SearchSimilarHit { intent: string; profile: string; dist: number }
+export interface SearchSimilarDetail { hits: SearchSimilarHit[] }
+export type ToolDetail = SearchPresetsDetail | SearchSimilarDetail
+export function isPresetsDetail(name: string, d: ToolDetail | null | undefined): d is SearchPresetsDetail { return name === 'SearchPresets' && !!d && 'items' in d }
+export function isSimilarDetail(name: string, d: ToolDetail | null | undefined): d is SearchSimilarDetail { return name === 'SearchSimilarPrompts' && !!d && 'hits' in d }
+
 /** 定稿 tag 的來源，伺服器定稿時比對 ledger 算的。rag：知識庫片段（presetIds 依片段被撈到的先後，presetTitle 與 sourceRef 取第一個）；
  *  llm：模型生成；base：基礎畫質詞／負向詞。presetTitle、sourceRef 為 null 時線上省略。 */
 export interface TagSource { tag: string; origin: 'rag' | 'llm' | 'base'; presetIds: number[]; presetTitle?: string | null; sourceRef?: string | null }
@@ -25,7 +40,7 @@ export type FinalData =
 export type AgentEvent =
   | { type: 'session'; sessionId: string; turnIndex: number; status: SessionStatus }
   | { type: 'tool_call'; callId: string; name: string; argsSummary: string }
-  | { type: 'tool_result'; callId: string; name: string; summary: string; presets?: PresetRef[] }
+  | { type: 'tool_result'; callId: string; name: string; summary: string; presets?: PresetRef[]; detail?: ToolDetail }
   | { type: 'dimensions'; profile?: string | null; facetStates: Record<string, FacetState> }
   | { type: 'token'; text: string }
   | ({ type: 'final' } & FinalData)
@@ -34,6 +49,9 @@ export type AgentEvent =
 
 export type AgentEventType = AgentEvent['type']
 export const AGENT_EVENT_TYPES = ['session', 'tool_call', 'tool_result', 'dimensions', 'token', 'final', 'blocked', 'error'] as const satisfies readonly AgentEventType[]
+
+/** POST /api/sessions */
+export interface SessionCreated { sessionId: string; retrieval: RetrievalMode }
 
 /** GET /api/sessions/{id} */
 export interface SessionSnapshotDto {
@@ -45,6 +63,8 @@ export interface SessionSnapshotDto {
   askLimit: number
   facetStates: Record<string, FacetState>
   lastFinal: Omit<FinalizedData, 'kind'> | null
+  /** 舊後端沒有這個欄位，讀的一方當成 on */
+  retrieval?: RetrievalMode
 }
 
 /** GET /api/config/facets */

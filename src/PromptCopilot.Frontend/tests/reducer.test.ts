@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { initialState, beginTurn, applyEvent, endTurn, failHttp, hydrate, latestFinalizedTurn, type ChatState, type Entry } from '../lib/reducer'
+import { initialState, beginTurn, applyEvent, endTurn, failHttp, hydrate, latestFinalizedTurn, type ChatState, type Entry, type ToolEntry } from '../lib/reducer'
 import type { AgentEvent, SessionSnapshotDto, TagSource } from '../types/api'
 
 const session = (turnIndex = 1): AgentEvent => ({ type: 'session', sessionId: 's1', turnIndex, status: 'Collecting' })
@@ -226,5 +226,33 @@ describe('latestFinalizedTurn', () => {
 
   it('is null when nothing was finalized', () => {
     expect(latestFinalizedTurn([{ kind: 'user', text: 'x' }, msg(1)])).toBeNull()
+  })
+})
+
+describe('retrieval and detail (2026-09-25)', () => {
+  const detail = {
+    items: [{ dimension: 'style', facetId: null, label: '風格', query: '寫實攝影', grounded: false, poolSize: 4455, k: 3, hits: [
+      { id: 7, title: 't', band: '高', dist: 0.2, usable: false, facets: { 'style.genre': 'missing' } },
+    ] }],
+  }
+
+  it('tool_result with detail stores it on the entry', () => {
+    let s = applyEvent(started(), call('c1'))
+    s = applyEvent(s, { type: 'tool_result', callId: 'c1', name: 'SearchPresets', summary: '風格 池 4455 → 1', presets: [], detail })
+    expect((s.transcript.at(-1) as ToolEntry).detail).toEqual(detail)
+  })
+
+  it('tool_result without detail leaves detail null', () => {
+    let s = applyEvent(started(), call('c1'))
+    s = applyEvent(s, result('c1'))
+    expect((s.transcript.at(-1) as ToolEntry).detail).toBeNull()
+  })
+
+  it('initial state is retrieval on; hydrate takes retrieval from the dto and defaults to on when absent', () => {
+    expect(initialState().retrieval).toBe('on')
+    const dto: SessionSnapshotDto = { sessionId: 's9', status: 'Collecting', profile: null, turnIndex: 0, askCount: 0, askLimit: 2, facetStates: {}, lastFinal: null, retrieval: 'off' }
+    expect(hydrate(initialState(), dto, []).retrieval).toBe('off')
+    const { retrieval: _drop, ...older } = dto
+    expect(hydrate(initialState(), older as SessionSnapshotDto, []).retrieval).toBe('on')
   })
 })
