@@ -32,6 +32,30 @@ public class SessionTests
         Assert.False(s.FacetStates.ContainsKey("clothing.head"));
     }
 
+    /// <summary>設計 §5.5：只有 covered 的 facet 有 tags；狀態改成別的就移除；不適用的 facet 一起被丟掉。</summary>
+    [Fact]
+    public void ApplyFacetStates_keeps_tags_only_for_covered_and_drops_them_when_state_changes()
+    {
+        var s = New(); s.ApplyProfile("portrait", Catalog);
+        s.ApplyFacetStates(
+            new Dictionary<string, FacetState> { ["clothing.footwear"] = FacetState.Covered, ["clothing.upper"] = FacetState.Missing, ["scene.season"] = FacetState.Covered },
+            Catalog,
+            new Dictionary<string, string> { ["clothing.footwear"] = " sandals ", ["clothing.upper"] = "shirt", ["scene.season"] = "autumn" });
+        Assert.Equal(new Dictionary<string, string> { ["clothing.footwear"] = "sandals" }, s.FacetTags);   // missing 的不存；portrait 沒有 scene.season
+
+        s.ApplyFacetStates(new Dictionary<string, FacetState> { ["clothing.footwear"] = FacetState.Waived }, Catalog);
+        Assert.Empty(s.FacetTags);
+    }
+
+    [Fact]
+    public void ApplyProfile_clears_facet_tags()
+    {
+        var s = New(); s.ApplyProfile("portrait", Catalog);
+        s.ApplyFacetStates(new Dictionary<string, FacetState> { ["pose.gaze"] = FacetState.Covered }, Catalog, new Dictionary<string, string> { ["pose.gaze"] = "looking at viewer" });
+        s.ApplyProfile("landscape", Catalog);
+        Assert.Empty(s.FacetTags);
+    }
+
     [Fact]
     public void GroundedDimensions_derives_from_covered_only()
     {
@@ -72,6 +96,7 @@ public class SessionTests
         s.FacetNotes["clothing.footwear"] = "使用者委託此項";
         s.ChatHistory.AddAssistantMessage("x"); s.ChatHistory.AddUserMessage("y");
         s.Ledger.Record(new LedgerEntry { Id = 7, Title = "t", PromptSnippet = "a", FacetIds = Array.Empty<string>() }, new LedgerHit("style", 0.1, true));
+        s.ApplyFacetStates(new Dictionary<string, FacetState> { ["scene.season"] = FacetState.Covered }, Catalog, new Dictionary<string, string> { ["scene.season"] = "autumn" });
         s.RecordFinalize(new FinalPrompt("p", "n", "t", "i"));
 
         s.Restore(snap);
@@ -83,6 +108,7 @@ public class SessionTests
         Assert.Single(s.ChatHistory);
         Assert.False(s.Ledger.Contains(7));
         Assert.Empty(s.FacetNotes);
+        Assert.Empty(s.FacetTags);
     }
 
     [Fact]

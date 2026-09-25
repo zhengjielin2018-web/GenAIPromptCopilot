@@ -30,7 +30,7 @@ public sealed class TurnContext(Session session, int turnIndex, GuardResult guar
     public void Emit(AgentEvent e) => events.TryWrite(e);
 
     public DimensionsEvent DimensionsSnapshot() =>
-        new(Session.Profile, Session.FacetStates.ToDictionary(kv => kv.Key, kv => FacetStateParser.ToWire(kv.Value)));
+        new(Session.Profile, Session.FacetStates.ToDictionary(kv => kv.Key, kv => FacetStateParser.ToWire(kv.Value)), new Dictionary<string, string>(Session.FacetTags));
 }
 
 public static class FacetStateParser

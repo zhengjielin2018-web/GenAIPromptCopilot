@@ -15,7 +15,8 @@ public sealed record PresetRef(long Id, string Title, string? ImageUrl, string? 
 /// <summary>Detail：SearchPresets 放 <see cref="SearchPresetsDetail"/>、SearchSimilarPrompts 放 <see cref="SearchSimilarDetail"/>，其他 null（線上省略）。
 /// 宣告成 object 讓 STJ 照實際型別序列化。</summary>
 public sealed record ToolResultEvent(string CallId, string Name, string Summary, IReadOnlyList<PresetRef>? Presets, object? Detail = null) : AgentEvent("tool_result");
-public sealed record DimensionsEvent(string? Profile, IReadOnlyDictionary<string, string> FacetStates) : AgentEvent("dimensions");
+/// <summary>FacetTags（2026-09-25）：模型給 covered facet 的英文 tag，儀表板 chip 的 title 顯示。</summary>
+public sealed record DimensionsEvent(string? Profile, IReadOnlyDictionary<string, string> FacetStates, IReadOnlyDictionary<string, string>? FacetTags = null) : AgentEvent("dimensions");
 public sealed record FinalEvent(
     string Kind,
     string? Preamble = null, IReadOnlyList<AskItem>? Asks = null,

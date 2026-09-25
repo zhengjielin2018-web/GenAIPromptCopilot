@@ -33,4 +33,14 @@ public class ContractsTests
         Assert.Equal("""{"dimension":"clothing","query":"sandals","facetId":"clothing.footwear"}""", json);
         Assert.Equal(q, JsonSerializer.Deserialize<SearchQuery>(json));
     }
+
+    /// <summary>設計 §5.5：tags 可省略（舊形狀照收），有就是逗號分隔的英文。</summary>
+    [Fact]
+    public void FacetStateEntry_tags_round_trips_and_may_be_omitted()
+    {
+        var parsed = JsonSerializer.Deserialize<FacetStateEntry[]>("""[{"facetId":"clothing.footwear","state":"covered","tags":"sandals"},{"facetId":"pose.gaze","state":"missing"}]""")!;
+        Assert.Equal("sandals", parsed[0].Tags);
+        Assert.Null(parsed[1].Tags); Assert.Null(parsed[1].Note);
+        Assert.Equal("""{"facetId":"a","state":"covered","note":null,"tags":"x, y"}""", JsonSerializer.Serialize(new FacetStateEntry("a", "covered", Tags: "x, y")));
+    }
 }

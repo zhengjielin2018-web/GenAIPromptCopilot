@@ -117,6 +117,14 @@ public class SystemPromptBuilderTests
         Assert.DoesNotContain("底下的 facet 全是 missing", prompt);
     }
 
+    /// <summary>設計 §5.5：第 1 條要模型把 covered facet 的英文 tag 一起給，推薦的錨從這裡來。</summary>
+    [Fact]
+    public void Flow_rule_asks_for_english_tags_on_covered_facets()
+    {
+        var (prompt, _) = Make().Build(new Session("s"), ToolNames.Always);
+        Assert.Contains("標 `covered`，並在 `tags` 附上那一項的英文 tag（例：涼鞋 → `sandals`）", prompt);
+    }
+
     private static readonly IReadOnlySet<string> ToolsWithoutSearch =
         ToolNames.Always.Except(new[] { ToolNames.SearchPresets, ToolNames.SearchSimilarPrompts }).ToHashSet();
 

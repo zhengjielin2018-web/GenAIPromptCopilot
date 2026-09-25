@@ -207,6 +207,17 @@ public class EndpointTests : IClassFixture<EndpointTests.Factory>
     }
 
     [Fact]
+    public async Task Get_session_includes_facet_tags()
+    {
+        var store = _factory.Services.GetRequiredService<SessionStore>();
+        var catalog = _factory.Services.GetRequiredService<PromptCopilot.Api.Configuration.FacetCatalog>();
+        var s = store.Create(); s.ApplyProfile("portrait", catalog);
+        s.ApplyFacetStates(new Dictionary<string, FacetState> { ["clothing.footwear"] = FacetState.Covered }, catalog, new Dictionary<string, string> { ["clothing.footwear"] = "sandals" });
+        var body = await (await _client.GetAsync($"/api/sessions/{s.Id}")).Content.ReadAsStringAsync();
+        Assert.Contains("\"facetTags\":{\"clothing.footwear\":\"sandals\"}", body);
+    }
+
+    [Fact]
     public async Task Get_session_404_for_unknown()
     {
         Assert.Equal(HttpStatusCode.NotFound, (await _client.GetAsync("/api/sessions/nope")).StatusCode);
