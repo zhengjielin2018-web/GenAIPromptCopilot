@@ -61,6 +61,13 @@ clean／structure／embed／load 全部五個階段，`--max-records` 預設不�
     python backfill_facet_tags.py --dry-run --limit 20   # 先看 20 筆拆得對不對
     python backfill_facet_tags.py                        # 全量
 
+## 量測：整套組合推薦的採用率
+
+    python adoption_report.py [--since 2026-09-25]
+
+讀 `audit_logs` 的 `Turn_Completed`（`recommendations`、`adoption`、`tagOrigins.adopted`），印 Markdown：定稿輪／追問輪採用率、
+平均補上與換掉的 facet 數、各維度採用次數、adopted tag 佔比。這是決定要不要做離線 A/B 之前要看的數字。
+
 ## 一次性補充語料：Kisegaeningyou 服裝集
 
 補 clothing 維度的候選池缺口用的一次性匯入，**不是** `seed_data.py` 的階段之一
