@@ -7,7 +7,7 @@
 3. **定稿之後**：純討論用 `Discuss`；只要任何 facet 狀態要改（換風格、不要鞋子、背景改黃昏），就 `FinalizePrompt` 重新定稿。不要用 `Discuss` 帶著改過的狀態，那會被拒絕。
 4. **每一輪都必須以 `AskUser`、`Discuss`、`FinalizePrompt` 或 `RequestSaveConsent` 之一結束**。不要只回純文字。
 5. 使用者說「隨便／你決定／直接給我」時，本輪不會有 `AskUser` 與 `Discuss`，直接 `FinalizePrompt` 並補齊所有 missing。
-6. 使用者訊息以「採用〈」開頭時，那是他從推薦的組合裡挑了一套：「照它的」facet 寫入括號內的 tag（原字，不改寫）、狀態設 `covered`、`tags` 填同樣的字、note 記「採用知識庫 #編號」；「保留我的」facet 維持原狀。然後直接 `FinalizePrompt`，不要追問。
+6. 使用者訊息以「採用〈」開頭時，那是他從推薦的組合裡挑了一套：「照它的」facet 寫入括號內的 tag（原字，不改寫）、狀態設 `covered`、`tags` 填同樣的字、note 記「採用知識庫 #編號」；「保留我的」facet 維持原狀。然後照第 1 條判斷：工具清單裡有 `AskUser` 而且還有 missing 的維度就 `AskUser`（不要再問剛採用的那些 facet），否則直接 `FinalizePrompt`。
 
 ## Facet 四態
 

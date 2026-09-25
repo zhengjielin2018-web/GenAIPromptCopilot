@@ -26,7 +26,7 @@
 | 採用怎麼影響既有設定 | **逐 facet 對照後採用**：每個 facet 各自選「留我的」或「照它的」 | 「只填空」與「整套照它的」都是它的特例；對照表本身就是看圖比設定的介面 |
 | 推薦何時出現 | **追問時**（正在問的維度）與**每次定稿**（含重新定稿，所有適用維度） | 兩處都是使用者本來就在做決定的時候；定稿後才真的在看結果 |
 | 哪些維度 | **本 profile 適用的全部維度，不設「還有 missing」的條件** | 推薦系統的邏輯：講滿了也推薦，讓使用者看到別的搭法 |
-| 推薦由誰產生 | **伺服器**（模型不知道有推薦這回事）；**採用走對話**（伺服器組一句使用者訊息，模型照一般流程重新定稿） | 推薦要「每次都在、每次一樣」，那是伺服器的事；改設定要理解語意、重新定稿，那是模型的事。對話仍是全 agentic |
+| 推薦由誰產生 | **伺服器**（模型不知道有推薦這回事）；**採用走對話**（伺服器組一句使用者訊息，模型照一般流程追問或重新定稿） | 推薦要「每次都在、每次一樣」，那是伺服器的事；改設定要理解語意、重新定稿，那是模型的事。對話仍是全 agentic |
 | 追問階段的錨從哪來 | **模型在 `SetFacetStates` 把 covered facet 標 covered 時順便給英文 `tags`**（「涼鞋」→ `sandals`），伺服器存成 `session.FacetTags`，追問與定稿都用它當錨；定稿時再加上定稿 positive 的 tag | 追問是使用者第一次看到推薦的地方，沒錨的推薦第一印象會差。翻錯就抓不到錨、退回無錨，不會壞 |
 | 錨過濾的順序 | **SQL 先依 `facet_tags` 過濾，再依向量排序**（同 `SearchPresets` 的做法） | 涼鞋只有 20 筆、穿著片段 2,357 筆；先取向量前 30 再過濾會漏掉大半 |
 | 資料庫端 facet 層級向量 | **不在本案**，另開一案排在本案之後 | 它改的是借 tag 的檢索排序，要分開量；它完全建立在 `facet_tags` 上，本案回填完就能做 |
@@ -198,7 +198,7 @@ public sealed record Adoption(int TurnIndex, long PresetId, string Dimension,
 
 `system.md`「## 流程」加第 6 條：
 
-> 6. 使用者訊息以「採用〈」開頭時，那是他從推薦的組合裡挑了一套：「照它的」facet 寫入括號內的 tag（原字，不改寫）、狀態設 `covered`、`tags` 填同樣的字、note 記「採用知識庫 #編號」；「保留我的」facet 維持原狀。然後直接 `FinalizePrompt`，不要追問。
+> 6. 使用者訊息以「採用〈」開頭時，那是他從推薦的組合裡挑了一套：「照它的」facet 寫入括號內的 tag（原字，不改寫）、狀態設 `covered`、`tags` 填同樣的字、note 記「採用知識庫 #編號」；「保留我的」facet 維持原狀。然後照第 1 條判斷：工具清單裡有 `AskUser` 而且還有 missing 的維度就 `AskUser`（不要再問剛採用的那些 facet），否則直接 `FinalizePrompt`。
 
 本案的 prompt 改動只有這一條加上 5.5 的半句。`SystemPromptBuilderTests` 各加一條驗證存在。
 
@@ -251,7 +251,7 @@ public sealed record Adoption(int TurnIndex, long PresetId, string Dimension,
 | 推薦查詢或嵌入失敗 | 不發事件；audit `Recommendation_Failed`；本輪其他結果照常 |
 | `facet_tags` 尚未回填（全 NULL） | 推薦事件沒有任何維度就不發；前端沒有區塊；`seed.sh` 印提示 |
 | `adopt` 驗證失敗 | 400／409，session 狀態不變，不進 orchestrator |
-| 採用後模型沒有 `FinalizePrompt`（追問或 Discuss） | 現有規則處理（追問額度、協定違規重試）；`Adoption` 仍記錄，tag 來源在下次定稿時生效 |
+| 採用後模型沒有 `FinalizePrompt` | 在追問卡上採用（session 還在收集、`AskUser` 在清單上）而且還有 missing 的維度時，追問剩下的維度是第 6 條的預期：定稿閘門本來就不放行沒問過的 missing。其他情況（Discuss 等）由現有規則處理（追問額度、協定違規重試）。兩種都照樣記 `Adoption`，tag 來源在下次定稿時生效 |
 | 採用那一輪被攔截或失敗 | `Restore(snapshot)` 一併回滾 `Adoptions` 與 ledger |
 
 ## 10. 測試
@@ -264,8 +264,8 @@ public sealed record Adoption(int TurnIndex, long PresetId, string Dimension,
 - `TagAttributionTests`：adopted 優先於 rag、次於 base；字尾規則；多筆 adoption 取最近。
 - `SessionEndpointsTests`：`adopt` 的每一種 400／409；組句格式（含無保留項）；`Text` 被忽略。
 - `SessionTests`：`Adoptions` 進 snapshot／restore；`Filled`／`Replaced` 分類。
-- `SystemPromptBuilderTests`：第 6 條存在且 off 模式也存在（規則無害）。
-- `AgenticOrchestratorTests`：`Turn_Completed` 的 `recommendations`／`adoption` payload；推薦失敗寫 `Recommendation_Failed`。
+- `SystemPromptBuilderTests`：第 6 條存在（採用後照第 1 條判斷追問或定稿）且 off 模式也存在（規則無害）。
+- `AgenticOrchestratorTests`：`Turn_Completed` 的 `recommendations`／`adoption` payload；推薦失敗寫 `Recommendation_Failed`；在追問卡上採用、以 ask 收尾的輪照樣記採用。
 
 ### 10.2 前端（Vitest）
 
@@ -281,7 +281,7 @@ public sealed record Adoption(int TurnIndex, long PresetId, string Dimension,
 
 ### 10.4 手動驗收
 
-`docs/eval-cases.md` 加 S1–S6（S5 重載、S6 `adoption_report.py` 見該檔）：
+`docs/eval-cases.md` 加 S1–S7（S5 重載、S6 `adoption_report.py`、S7 在追問卡上採用，見該檔）：
 
 - S1：「一個少女穿涼鞋」→ 儀表板鞋履 facet 顯示模型給的 `sandals`；追問卡下有穿著維度的推薦、`anchored=true`、副標含 `sandals`。
 - S2：直接定稿後定稿卡下每個維度都有推薦；穿著維度 `anchored=true` 且副標含 `sandals`。

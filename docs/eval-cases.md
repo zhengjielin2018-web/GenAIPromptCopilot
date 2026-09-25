@@ -123,6 +123,7 @@ fresh clone 在暫存目錄進行，只放 `.env`；開發用的 stack 先 `dock
 | S4 | `retrieval: off` 的新對話跑到定稿；再用 curl 對它送 `{"adopt":{"presetId":1,"dimension":"clothing","take":["clothing.upper"]}}` | 沒有任何「參考組合」區塊；curl 回 `409` | ✅ `retrieval: off` 一輪就定稿，事件裡沒有 `recommendations`，tag 來源只有 llm／base（audit `tagOrigins.rag=0`）；對它送 adopt 回 `409`「這段對話沒有知識庫，沒有組合可以採用」 |
 | S5 | 在 S3 的對話重新整理 | 兩張定稿卡與參考組合都回來；只有最新一張的「採用」可按，舊的停用並提示；`adopted` chip 仍在 | ⏸ 需要瀏覽器 |
 | S6 | 跑 `python scripts/adoption_report.py --since <今天>` | 定稿輪採用率分子 ≥ 1、各維度採用次數有 clothing | ✅ `--since 2026-09-25`：定稿輪採用率 1/2、追問輪 0/1；各維度採用次數 clothing 1；採用時有錨 1/1；未對到推薦輪的採用 0 |
+| S7 | 在 S1 的追問卡按一套穿著的「採用」，上半身照它的 | 使用者泡泡是伺服器組句；若還有 missing 維度則出現新的追問卡（不再問上半身），否則定稿卡；儀表板上半身變 covered | ⏳ |
 
 API 層是用 SSE 直接打分支 `feat/set-recommendations` 的 API（本機 5010 埠），沒開前端。session：S1–S3 `5c422dd6…`（prompt_version 依序 7329f17c68b4、0424e1916433、f1c04de38f36），S4 `ec15eb6e…`（82e0ed128450）。全程沒有 `Turn_Failed`、`Protocol_Violation`。
 

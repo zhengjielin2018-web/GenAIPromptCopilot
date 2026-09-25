@@ -903,7 +903,7 @@ Chat history：
 21. 以 fake connector 讓第二次 LLM 呼叫 500 兩次後成功 → 使用者無感，audit 無 `Turn_Failed`
 22. 讓它連續失敗超過重試次數 → `error` 事件、儀表板回到輪次開始、按「重試」後正常完成、`AskCount` 只算一次
 23. 送出會觸發上游攔截的描述 → `blocked` 事件、訊息保留、按「重試」原文回到輸入框、改寫後送出正常完成
-24. 整套組合推薦與採用 → `docs/eval-cases.md` S1–S6（2026-09-25）
+24. 整套組合推薦與採用 → `docs/eval-cases.md` S1–S7（2026-09-25）
 
 ### 12.4 TDD 適用範圍
 

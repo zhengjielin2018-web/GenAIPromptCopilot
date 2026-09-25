@@ -162,7 +162,11 @@ public class SystemPromptBuilderTests
     {
         var (prompt, _) = Make().Build(new Session("s"), ToolNames.Always);
         Assert.Contains("6. 使用者訊息以「採用〈」開頭時", prompt);
-        Assert.Contains("然後直接 `FinalizePrompt`，不要追問", prompt);
+        // 在追問卡上採用時 session 還在收集：照第 1 條走，定稿閘門才不會擋（全分支審查 #1）
+        Assert.Contains("然後照第 1 條判斷", prompt);
+        Assert.Contains("不要再問剛採用的那些 facet", prompt);
+        Assert.Contains("否則直接 `FinalizePrompt`", prompt);
+        Assert.DoesNotContain("不要追問", prompt);
         // off 模式也要有：規則無害，而且 off 的 session 根本不會收到採用句
         Assert.Contains("6. 使用者訊息以「採用〈」開頭時", Make().Build(new Session("s", retrievalEnabled: false), ToolsWithoutSearch).Prompt);
     }

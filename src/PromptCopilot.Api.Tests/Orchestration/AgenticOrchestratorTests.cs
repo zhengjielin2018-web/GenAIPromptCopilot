@@ -640,6 +640,35 @@ public class AgenticOrchestratorTests
         Assert.StartsWith("採用〈", completed.RawInput!);
     }
 
+    /// <summary>全分支審查 #1：在追問卡上採用時 session 還在收集、AskUser 還在清單上；第 6 條要模型照第 1 條走，
+    /// 還有 missing 的維度就追問。這一輪以 ask 收尾也要照樣記採用、寫 ledger、audit 記 adoption。</summary>
+    [Fact]
+    public async Task Adoption_turn_while_collecting_can_end_in_ask()
+    {
+        var h = new Harness();
+        h.Session.ApplyProfile("portrait", Catalog);
+        h.Session.RecordAsk();                                                          // 剛出過一張追問卡；額度 2 還沒用完
+        Assert.Equal(SessionStatus.Collecting, h.Session.Status);
+        h.Chat.ThenAsync(async (hist, k) =>
+        {
+            await Invoke(hist, k!, "Session", "SetFacetStates", new
+            {
+                updates = new[] { new { facetId = "clothing.upper", state = "covered", note = "採用知識庫 #41720", tags = "purple kimono, detached sleeves" } },
+            });
+            return new[] { await Invoke(hist, k!, "Dialog", "AskUser", AskArgs()) };
+        });
+        var events = await h.RunAsync(AdoptInput());
+
+        Assert.Equal(AdoptInput().Text, Assert.Single(events.OfType<SessionEvent>()).Text);
+        Assert.Equal(1, Assert.Single(h.Session.Adoptions).TurnIndex);
+        Assert.Equal("採用", Assert.Single(h.Session.Ledger.Get(41720)!.OfferedAs).Label);
+        Assert.Equal(FacetState.Covered, h.Session.FacetStates["clothing.upper"]);
+        Assert.Equal("ask", Assert.Single(events.OfType<FinalEvent>()).Kind);
+        Assert.Equal(SessionStatus.Collecting, h.Session.Status);
+        var completed = Assert.Single(h.Audit.Entries, a => a.EventType == "Turn_Completed");
+        Assert.Contains("""adoption":{"presetId":41720,"dimension":"clothing","take":["clothing.upper"]""", completed.PayloadJson!);
+    }
+
     [Fact]
     public async Task Ordinary_turn_session_event_has_no_text_and_no_adoption_in_audit()
     {
