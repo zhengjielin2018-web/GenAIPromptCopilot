@@ -192,13 +192,14 @@ public sealed class AgenticOrchestrator(
     private static string Payload(params (string Key, object? Value)[] fields) =>
         JsonSerializer.Serialize(fields.Where(f => f.Value is not null).ToDictionary(f => f.Key, f => f.Value), Json);
 
-    /// <summary>positive 各來源的 tag 數；三者加總等於 positive 的 tag 數（eval #25）。</summary>
+    /// <summary>positive 各來源的 tag 數；四者加總等於 positive 的 tag 數（eval #25）。</summary>
     private static object TagOrigins(IReadOnlyList<TagSource>? sources)
     {
         var s = sources ?? Array.Empty<TagSource>();
         return new
         {
             rag = s.Count(x => x.Origin == TagAttribution.Rag),
+            adopted = s.Count(x => x.Origin == TagAttribution.Adopted),
             llm = s.Count(x => x.Origin == TagAttribution.Llm),
             @base = s.Count(x => x.Origin == TagAttribution.Base),
         };

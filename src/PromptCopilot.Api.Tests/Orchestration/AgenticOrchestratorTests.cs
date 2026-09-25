@@ -459,9 +459,9 @@ public class AgenticOrchestratorTests
         Assert.NotNull(final.NegativeSources);
         Assert.Equal(SessionStatus.Finalized, h.Session.Status);
         Assert.Contains(h.Audit.Entries, a => a.EventType == "Tool_Budget_Exhausted");
-        // positive 的三種來源計數，加總等於 positive 的 tag 數（eval #25）
+        // positive 的四種來源計數，加總等於 positive 的 tag 數（eval #25）
         var completed = Assert.Single(h.Audit.Entries, a => a.EventType == "Turn_Completed");
-        Assert.Contains("""tagOrigins":{"rag":0,"llm":1,"base":1}""", completed.PayloadJson!);
+        Assert.Contains("""tagOrigins":{"rag":0,"adopted":0,"llm":1,"base":1}""", completed.PayloadJson!);
     }
 
     private sealed class ThrowingSink : IAuditSink

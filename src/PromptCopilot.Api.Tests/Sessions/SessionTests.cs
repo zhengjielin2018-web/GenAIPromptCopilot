@@ -82,6 +82,24 @@ public class SessionTests
         Assert.Equal(1, s.AskCount); Assert.Equal(1, s.DiscussStreak);
     }
 
+    private static Adoption SomeAdoption(int turn = 3) =>
+        new(turn, 41720, "和風女僕", "civitai:1:0", "clothing",
+            new Dictionary<string, IReadOnlyList<string>> { ["clothing.upper"] = new[] { "purple kimono" } },
+            new[] { "clothing.footwear" }, new[] { "clothing.upper" }, Array.Empty<string>());
+
+    /// <summary>設計 §6.3：採用寫進 ledger，定稿 chip 能開抽屜、offered 區段會列它。</summary>
+    [Fact]
+    public void RecordAdoption_adds_to_list_ledger_and_offered()
+    {
+        var s = New(); s.ApplyProfile("portrait", Catalog);
+        s.RecordAdoption(SomeAdoption(), new LedgerEntry { Id = 41720, Title = "和風女僕", PromptSnippet = "purple kimono, sandals", FacetIds = new[] { "clothing.upper", "clothing.footwear" } });
+        Assert.Single(s.Adoptions);
+        var e = s.Ledger.Get(41720)!;
+        Assert.Equal("clothing", Assert.Single(e.Hits).Dimension);
+        Assert.Equal("採用", Assert.Single(e.OfferedAs).Label);
+        Assert.Equal(3, e.OfferedAs[0].TurnIndex);
+    }
+
     [Fact]
     public void Snapshot_restore_reverts_everything_including_history_and_ledger()
     {
@@ -97,6 +115,7 @@ public class SessionTests
         s.ChatHistory.AddAssistantMessage("x"); s.ChatHistory.AddUserMessage("y");
         s.Ledger.Record(new LedgerEntry { Id = 7, Title = "t", PromptSnippet = "a", FacetIds = Array.Empty<string>() }, new LedgerHit("style", 0.1, true));
         s.ApplyFacetStates(new Dictionary<string, FacetState> { ["scene.season"] = FacetState.Covered }, Catalog, new Dictionary<string, string> { ["scene.season"] = "autumn" });
+        s.RecordAdoption(SomeAdoption(), new LedgerEntry { Id = 41720, Title = "t", PromptSnippet = "p", FacetIds = Array.Empty<string>() });
         s.RecordFinalize(new FinalPrompt("p", "n", "t", "i"));
 
         s.Restore(snap);
@@ -109,6 +128,7 @@ public class SessionTests
         Assert.False(s.Ledger.Contains(7));
         Assert.Empty(s.FacetNotes);
         Assert.Empty(s.FacetTags);
+        Assert.Empty(s.Adoptions); Assert.False(s.Ledger.Contains(41720));
     }
 
     [Fact]

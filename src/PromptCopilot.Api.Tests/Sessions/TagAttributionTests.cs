@@ -216,4 +216,54 @@ public class TagAttributionTests
         var s = Assert.Single(TagAttribution.Attribute("best quality", Ledger((1, "畫質", "very best quality", null)), negative: false));
         Assert.Equal("base", s.Origin);
     }
+
+    // ---- adopted：採用組合帶進來的（設計 §6.5） ----
+
+    private static Adoption Adopt(long id, string title, params (string facet, string tags)[] taken) =>
+        new(2, id, title, "civitai:1:0", "clothing", taken.ToDictionary(t => t.facet, t => (IReadOnlyList<string>)t.tags.Split(", ")),
+            Array.Empty<string>(), Array.Empty<string>(), Array.Empty<string>());
+
+    /// <summary>設計 §6.5：優先序 base → adopted → rag → llm。</summary>
+    [Fact]
+    public void Adopted_wins_over_rag_and_loses_to_base()
+    {
+        var ledger = Ledger((5, "涼鞋套裝", "sandals, masterpiece, white socks", null));
+        var r = TagAttribution.Attribute("masterpiece, sandals, white socks, 1girl", ledger, negative: false,
+            new[] { Adopt(41720, "和風女僕", ("clothing.footwear", "sandals")) });
+        Assert.Equal(new[] { "base", "adopted", "rag", "llm" }, r.Select(x => x.Origin));
+        Assert.Equal(new long[] { 41720 }, r[1].PresetIds);
+        Assert.Equal("和風女僕", r[1].PresetTitle);
+        Assert.Equal("civitai:1:0", r[1].SourceRef);
+    }
+
+    [Fact]
+    public void Adopted_uses_the_same_word_suffix_rule_both_ways()
+    {
+        var a = new[] { Adopt(1, "t", ("clothing.footwear", "platform sandals"), ("clothing.upper", "shirt")) };
+        var r = TagAttribution.Attribute("sandals, white shirt, (Shirt:1.1)", Ledger(), negative: false, a);
+        Assert.All(r, x => Assert.Equal("adopted", x.Origin));
+    }
+
+    [Fact]
+    public void Latest_adoption_wins_when_two_sets_brought_the_same_tag()
+    {
+        var a = new[] { Adopt(1, "first", ("clothing.upper", "shirt")), Adopt(2, "second", ("clothing.upper", "shirt")) };
+        Assert.Equal(new long[] { 2 }, Assert.Single(TagAttribution.Attribute("shirt", Ledger(), negative: false, a)).PresetIds);
+    }
+
+    [Fact]
+    public void Adoptions_do_not_apply_to_the_negative_prompt()
+    {
+        var a = new[] { Adopt(1, "t", ("clothing.upper", "shirt")) };
+        Assert.Equal("llm", Assert.Single(TagAttribution.Attribute("shirt", Ledger(), negative: true, a)).Origin);
+    }
+
+    [Fact]
+    public void Split_normalize_and_endswithword_are_public_and_shared()
+    {
+        Assert.Equal(new[] { "a", "b c" }, TagAttribution.Split(" a ,, b c "));
+        Assert.Equal("long hair", TagAttribution.Normalize("(Long_Hair:1.2)"));
+        Assert.True(TagAttribution.EndsWithWord("platform sandals", "sandals"));
+        Assert.False(TagAttribution.EndsWithWord("laptop", "top"));
+    }
 }

@@ -13,7 +13,7 @@ public sealed record FinalPrompt(string Positive, string Negative, string Tips, 
 public sealed record SessionSnapshot(
     SessionStatus Status, string? Profile, int AskCount, int DiscussStreak, bool AutoFill,
     Dictionary<string, FacetState> FacetStates, Dictionary<string, string> FacetNotes, int HistoryCount, PresetLedger Ledger, FinalPrompt? LastFinal, int TurnIndex,
-    Dictionary<string, string> FacetTags);
+    Dictionary<string, string> FacetTags, List<Adoption> Adoptions);
 
 public sealed class Session
 {
@@ -31,6 +31,8 @@ public sealed class Session
     public Dictionary<string, string> FacetNotes { get; private set; } = new();
     /// <summary>模型標 covered 時給的英文 tag（設計 §5.5），整套組合推薦的錨。只有 covered 的 facet 有；狀態改成別的就移除；隨 profile 重設。</summary>
     public Dictionary<string, string> FacetTags { get; private set; } = new();
+    /// <summary>採用過的組合，依採用先後（設計 §6.3）。定稿時 TagAttribution 用它標 adopted。</summary>
+    public List<Adoption> Adoptions { get; private set; } = new();
     public FinalPrompt? LastFinal { get; private set; }
     public int TurnIndex { get; set; }
     /// <summary>建立時定死：off 是量測用的對照組（計畫 §4.1）。中途不能切，所以不進 Snapshot／Restore。</summary>
@@ -70,9 +72,18 @@ public sealed class Session
     public void RecordDiscuss() { if (Status == SessionStatus.Collecting) DiscussStreak++; }
     public void RecordFinalize(FinalPrompt final) { LastFinal = final; Status = SessionStatus.Finalized; DiscussStreak = 0; }
 
+    /// <summary>採用寫進 ledger：定稿 chip 能開抽屜、system prompt 的 offered 區段會列它。dist 0、grounded true：
+    /// 使用者親手選的，當然可借入。</summary>
+    public void RecordAdoption(Adoption a, LedgerEntry preset)
+    {
+        Adoptions.Add(a);
+        Ledger.Record(preset, new LedgerHit(a.Dimension, 0, true));
+        Ledger.MarkOffered(preset.Id, new OfferedRef(a.TurnIndex, a.Dimension, "採用"));
+    }
+
     public SessionSnapshot Snapshot() => new(Status, Profile, AskCount, DiscussStreak, AutoFill,
         new Dictionary<string, FacetState>(FacetStates), new Dictionary<string, string>(FacetNotes), ChatHistory.Count, Ledger.Clone(), LastFinal, TurnIndex,
-        new Dictionary<string, string>(FacetTags));
+        new Dictionary<string, string>(FacetTags), new List<Adoption>(Adoptions));
 
     public void Restore(SessionSnapshot s)
     {
@@ -80,6 +91,7 @@ public sealed class Session
         FacetStates = new Dictionary<string, FacetState>(s.FacetStates);
         FacetNotes = new Dictionary<string, string>(s.FacetNotes);
         FacetTags = new Dictionary<string, string>(s.FacetTags);
+        Adoptions = new List<Adoption>(s.Adoptions);
         while (ChatHistory.Count > s.HistoryCount) ChatHistory.RemoveAt(ChatHistory.Count - 1);
         Ledger = s.Ledger.Clone(); LastFinal = s.LastFinal; TurnIndex = s.TurnIndex;
     }

@@ -48,7 +48,7 @@ public class ToolSetBuilderTests
     {
         var s = new Session("s");
         s.Restore(new SessionSnapshot(SessionStatus.Finalized, null, 0, 8, false,
-            new(), new(), 0, new PresetLedger(), new FinalPrompt("p", "n", "t", "i"), 0, new()));
+            new(), new(), 0, new PresetLedger(), new FinalPrompt("p", "n", "t", "i"), 0, new(), new()));
         Assert.Contains(ToolNames.Discuss, ToolSetBuilder.Build(s, false, O));
     }
 

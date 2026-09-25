@@ -74,7 +74,7 @@ public sealed class DialogPlugin(TurnContext turn, FacetCatalog catalog, Orchest
         var positive = positivePrompt.Trim();
         var negative = negativePrompt.Trim();
         S.RecordFinalize(new FinalPrompt(positive, negative, tips.Trim(), intentSummary.Trim(),
-            TagAttribution.Attribute(positive, S.Ledger, negative: false), TagAttribution.Attribute(negative, S.Ledger, negative: true)));
+            TagAttribution.Attribute(positive, S.Ledger, negative: false, S.Adoptions), TagAttribution.Attribute(negative, S.Ledger, negative: true)));
         turn.Outcome = new FinalizedOutcome(S.LastFinal!);
         return "ok";
     }
