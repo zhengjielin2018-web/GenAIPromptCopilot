@@ -152,6 +152,7 @@ public class AgenticOrchestratorTests
         Assert.Contains("""askedFacetIds":["style.genre"]""", completed.PayloadJson!);
         Assert.Contains("waivedFacetIds", completed.PayloadJson!);
         Assert.DoesNotContain("tagOrigins", completed.PayloadJson!);                      // 只有定稿那一輪才寫
+        Assert.Contains("\"retrieval\":\"on\"", completed.PayloadJson!);   // 計畫 §4.1：事後分組用
         var askCall = h.Session.ChatHistory.SelectMany(m => m.Items.OfType<FunctionCallContent>()).Single(c => c.FunctionName == "AskUser");
         Assert.DoesNotContain("photo realism", askCall.Arguments!["asks"]!.ToString());   // history 已壓縮
     }

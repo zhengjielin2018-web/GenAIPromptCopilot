@@ -139,7 +139,7 @@ public sealed class AgenticOrchestrator(
             // 主規格 §5.1：LLM 挑了哪些 facet 追問、哪些被使用者放掉，要在紀錄裡看得見。
             // 不另開事件（沒有行為掛在上面），寫進這一筆的 payload。
             await TryAuditAsync(new AuditEntry(session.Id, turnIndex, "Turn_Completed", version, text,
-                Payload(("outcome", turn.Outcome.GetType().Name), ("toolCalls", turn.ToolCalls), ("rejections", turn.Rejections),
+                Payload(("retrieval", session.RetrievalMode), ("outcome", turn.Outcome.GetType().Name), ("toolCalls", turn.ToolCalls), ("rejections", turn.Rejections),
                     ("askedFacetIds", turn.Outcome is AskOutcome ask ? ask.Asks.SelectMany(a => a.MissingFacetIds).Distinct().ToArray() : null),
                     ("waivedFacetIds", session.FacetStates.Where(kv => kv.Value == FacetState.Waived).Select(kv => kv.Key).ToArray()),
                     ("tagOrigins", turn.Outcome is FinalizedOutcome fin ? TagOrigins(fin.Final.PositiveSources) : null)),
