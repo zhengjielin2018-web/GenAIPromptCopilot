@@ -70,7 +70,7 @@ public sealed class AgenticOrchestrator(
         try
         {
             // ① 輸入側：不進 kernel、不計任何東西
-            var g = await guard.CheckAsync(text, ct);
+            var g = await guard.CheckAsync(text, input.SafetyOn, ct);
             if (g.Blocked)
             {
                 writer.TryWrite(new BlockedEvent(g.BlockCode!, g.Message!));
@@ -86,7 +86,7 @@ public sealed class AgenticOrchestrator(
             if (input.Adoption is { } adoption) session.RecordAdoption(adoption with { TurnIndex = turnIndex }, input.AdoptedPreset!);
             var tools = ToolSetBuilder.Build(session, g.WantsAutoComplete, options);
             if (g.WantsAutoComplete) session.AutoFill = true;
-            var turn = new TurnContext(session, turnIndex, g, tools, writer, snapshot.FacetStates);
+            var turn = new TurnContext(session, turnIndex, g, tools, writer, snapshot.FacetStates) { SafetyOn = input.SafetyOn };
             (var systemPrompt, version) = prompts.Build(session, tools);
             EnsureSystemMessage(session.ChatHistory, systemPrompt);
             session.ChatHistory.AddUserMessage(text);
@@ -111,9 +111,9 @@ public sealed class AgenticOrchestrator(
                 if (tools.Contains(ToolNames.Discuss) && lastText is not null)
                 {
                     // 這條路沒經過 kernel，OutputSafetyFilter 不會跑；但包出來的 message 一樣會送到
-                    // 使用者眼前（主規格 §6.2 點名 Discuss.message），所以這裡自己檢一次。
-                    var v = await classifier.ClassifyOutputAsync(lastText, tct);
-                    if (v.Nsfw || v.RealPerson) turn.Outcome = new BlockedOutcome(v.Reason);
+                    // 使用者眼前（主規格 §6.2 點名 Discuss.message），所以這裡自己檢一次（審查開關關著就不檢）。
+                    var v = turn.SafetyOn ? await classifier.ClassifyOutputAsync(lastText, tct) : null;
+                    if (v is { } hit && (hit.Nsfw || hit.RealPerson)) turn.Outcome = new BlockedOutcome(hit.Reason);
                     else
                     {
                         // 仍為純文字：包成 Discuss（options 空、facetStates 用現值）；走正規 plugin 路徑，DiscussStreak 才會照常累加
@@ -145,7 +145,7 @@ public sealed class AgenticOrchestrator(
             // 主規格 §5.1：LLM 挑了哪些 facet 追問、哪些被使用者放掉，要在紀錄裡看得見。
             // 不另開事件（沒有行為掛在上面），寫進這一筆的 payload。
             await TryAuditAsync(new AuditEntry(session.Id, turnIndex, "Turn_Completed", version, text,
-                Payload(("retrieval", session.RetrievalMode), ("outcome", turn.Outcome.GetType().Name), ("toolCalls", turn.ToolCalls), ("rejections", turn.Rejections),
+                Payload(("retrieval", session.RetrievalMode), ("safety", input.SafetyOn ? "on" : "off"), ("outcome", turn.Outcome.GetType().Name), ("toolCalls", turn.ToolCalls), ("rejections", turn.Rejections),
                     ("askedFacetIds", turn.Outcome is AskOutcome ask ? ask.Asks.SelectMany(a => a.MissingFacetIds).Distinct().ToArray() : null),
                     ("waivedFacetIds", session.FacetStates.Where(kv => kv.Value == FacetState.Waived).Select(kv => kv.Key).ToArray()),
                     ("tagOrigins", turn.Outcome is FinalizedOutcome fin ? TagOrigins(fin.Final.PositiveSources) : null),

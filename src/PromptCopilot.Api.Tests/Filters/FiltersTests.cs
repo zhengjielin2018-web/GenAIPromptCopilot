@@ -98,6 +98,22 @@ public class FiltersTests
         Assert.Equal("r", Assert.IsType<BlockedOutcome>(turn.Outcome).Reason);
     }
 
+    /// <summary>測試用的審查開關關著：分類器不呼叫、不攔，tool 照常跑。</summary>
+    [Fact]
+    public async Task OutputSafety_passes_through_without_classifying_when_the_turn_has_safety_off()
+    {
+        var (k, turn, _) = Kernel();
+        turn.SafetyOn = false;
+        var chat = new FakeChatCompletion().Then(FakeChatCompletion.Text("""{"nsfw":true,"realPerson":false,"personName":null,"wantsAutoComplete":false,"reason":"r"}"""));
+        var f = new OutputSafetyFilter(new SafetyClassifier(chat, Options.Create(new LlmOptions())));
+        var called = false;
+        var c = Ctx(k, "FinalizePrompt", ("positivePrompt", "1girl, bikini"));
+        await f.OnAutoFunctionInvocationAsync(c, Next(() => called = true));
+        Assert.True(called); Assert.False(c.Terminate);
+        Assert.Null(turn.Outcome);
+        Assert.Empty(chat.Calls);
+    }
+
     [Fact]
     public async Task OutputSafety_passes_clean_content()
     {

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Microsoft.Extensions.Options;
 using PromptCopilot.Api.Configuration;
 using PromptCopilot.Api.Data;
 using PromptCopilot.Api.Llm;
@@ -8,8 +9,9 @@ using PromptCopilot.Api.Streaming;
 
 namespace PromptCopilot.Api.Endpoints;
 
-/// <summary>Adopt（2026-09-25）：採用推薦的一套組合；有它時 Text 忽略（設計 §6.1）。</summary>
-public sealed record MessageRequest(string? Text, AdoptRequest? Adopt = null);
+/// <summary>Adopt（2026-09-25）：採用推薦的一套組合；有它時 Text 忽略（設計 §6.1）。
+/// Safety：on（預設）／off，off 是測試用的審查開關，後端 Safety:AllowDisable 開著才收。</summary>
+public sealed record MessageRequest(string? Text, AdoptRequest? Adopt = null, string? Safety = null);
 public sealed record SaveRequest(string Intent);
 public sealed record CreateSessionRequest(string? Retrieval);
 public sealed record SessionCreated(string SessionId, string Retrieval);
@@ -68,11 +70,16 @@ public static class SessionEndpoints
         .Produces<ErrorBody>(StatusCodes.Status404NotFound);
 
         g.MapPost("/{id}/messages", async (string id, MessageRequest req, SessionStore store, IPromptOrchestrator orchestrator,
-            PresetRepository presets, FacetCatalog catalog, HttpContext http) =>
+            PresetRepository presets, FacetCatalog catalog, IOptions<SafetyOptions> safety, HttpContext http) =>
         {
             var s = store.TryGet(id);
             if (s is null) return Results.NotFound(new ErrorBody("session 不存在或已過期"));
             if (req.Adopt is null && string.IsNullOrWhiteSpace(req.Text)) return Results.BadRequest(new ErrorBody("text 不可為空"));
+            bool? safetyOn = req.Safety?.Trim().ToLowerInvariant() switch { null or "" or "on" => true, "off" => false, _ => null };
+            if (safetyOn is null) return Results.BadRequest(new ErrorBody("safety 只能是 on 或 off"));
+            if (safetyOn is false && !safety.Value.AllowDisable)
+                return Results.Json(new ErrorBody("後端沒開放關閉審查：.env 設 SAFETY_ALLOW_DISABLE=true 後重建 api（本機開發設 Safety:AllowDisable）"),
+                    statusCode: StatusCodes.Status403Forbidden);
             if (!await s.Lock.WaitAsync(0)) return Results.Conflict(new ErrorBody("這個 session 還有一輪在跑"));
             try
             {
@@ -87,11 +94,11 @@ public static class SessionEndpoints
                     try
                     {
                         var c = AdoptionComposer.Compose(adopt, preset, s, catalog, s.TurnIndex + 1);
-                        input = new TurnInput(c.Text, c.Adoption, c.Preset);
+                        input = new TurnInput(c.Text, c.Adoption, c.Preset, safetyOn.Value);
                     }
                     catch (AdoptValidationException e) { return Results.BadRequest(new ErrorBody(e.Message)); }
                 }
-                else input = new TurnInput(req.Text!.Trim());
+                else input = new TurnInput(req.Text!.Trim(), SafetyOn: safetyOn.Value);
 
                 await SseWriter.WriteAsync(http.Response, orchestrator.RunTurnAsync(s, input, http.RequestAborted), http.RequestAborted);
                 return Results.Empty;
@@ -130,12 +137,16 @@ public static class SessionEndpoints
 
             Swagger UI 會等整輪跑完才一次顯示所有事件（通常數秒到數十秒）。要逐筆看，用 `curl -N` 或 repo 的 `manual-tests/chat.py`。
 
+            測試用的審查開關：body 可加 `"safety": "off"`（預設 `on`），這一輪不做程式端審查——denylist 不比對、輸入分類器照跑但只用來判斷「你看著辦」、輸出不檢。Gemini 自己的攔截（`Blocked_Upstream`）不受影響。後端要設 `Safety:AllowDisable=true` 才收；`GET /api/config/safety` 回報目前能不能關。
+
             - `404`：session 不存在或已過期
-            - `400`：`text` 是空白且沒有 `adopt`；`adopt` 的 preset 不存在、尚未拆分 facet、`take` 為空或含不屬於該維度／這套沒有 tag 的 facet
+            - `400`：`text` 是空白且沒有 `adopt`；`safety` 不是 `on`／`off`；`adopt` 的 preset 不存在、尚未拆分 facet、`take` 為空或含不屬於該維度／這套沒有 tag 的 facet
+            - `403`：`safety: off` 但後端沒開放
             - `409`：同一個 session 上一輪還沒跑完；`adopt` 但這段對話 `retrieval: off` 或尚未判定題材
             """)
         .Produces(StatusCodes.Status200OK, contentType: "text/event-stream")
         .Produces<ErrorBody>(StatusCodes.Status400BadRequest)
+        .Produces<ErrorBody>(StatusCodes.Status403Forbidden)
         .Produces<ErrorBody>(StatusCodes.Status404NotFound)
         .Produces<ErrorBody>(StatusCodes.Status409Conflict);
 

@@ -107,6 +107,29 @@ public class SafetyGuardTests
         Assert.False(r.Blocked); Assert.True(r.WantsAutoComplete);
     }
 
+    /// <summary>測試用的審查開關（enforce: false）：denylist 不比對，分類器照跑——「你看著辦」只有它判得出來。</summary>
+    [Fact]
+    public async Task Not_enforcing_skips_the_denylist_but_still_reads_wantsAutoComplete()
+    {
+        var (guard, chat) = Make("nude");
+        chat.Then(FakeChatCompletion.Text(Verdict(auto: true)));
+        var r = await guard.CheckAsync("a nude girl，其他你看著辦", enforce: false, default);
+        Assert.False(r.Blocked);
+        Assert.True(r.WantsAutoComplete);
+        Assert.Single(chat.Calls);
+    }
+
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public async Task Not_enforcing_ignores_the_classifier_verdict(bool nsfw, bool real)
+    {
+        var (guard, chat) = Make();
+        chat.Then(FakeChatCompletion.Text(Verdict(nsfw: nsfw, real: real, name: real ? "某某" : null)));
+        var r = await guard.CheckAsync("x", enforce: false, default);
+        Assert.False(r.Blocked);
+    }
+
     [Fact]
     public async Task Unparseable_verdict_throws()
     {

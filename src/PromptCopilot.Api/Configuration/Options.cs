@@ -39,6 +39,14 @@ public sealed class OrchestratorOptions
     public int RecommendationTimeoutSeconds { get; set; } = 20;
 }
 
+public sealed class SafetyOptions
+{
+    public const string Section = "Safety";
+    /// <summary>true 才收 messages 的 safety: off（測試用的審查開關）。預設關：誰都能打 API，不能一個欄位就關掉審查。
+    /// Denylist 同一節，但在 Program.cs 直接讀。</summary>
+    public bool AllowDisable { get; set; }
+}
+
 public sealed class DatabaseOptions
 {
     public const string Section = "Database";

@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Options;
 using PromptCopilot.Api.Configuration;
 using PromptCopilot.Api.Data;
 
@@ -31,6 +32,13 @@ public static class ReferenceEndpoints
                 - `dimensions`：6 個維度（風格、場景、鏡頭、人物樣貌、人物動作、人物穿著）。每個 facet 有 `id`（如 `style.genre`）、中文 `label`、英文提示詞範例 `hint`。
                 - `profiles`：4 種題材（`portrait`、`landscape`、`object`、`vehicle`）各用到哪些維度與 facet。`labels` 是該題材下的維度名稱：同一個維度換了題材可能改叫法（例如載具的 `pose` 叫「運動狀態」）。
                 """);
+
+        app.MapGet("/api/config/safety", (IOptions<SafetyOptions> o) => Results.Ok(new { canDisable = o.Value.AllowDisable })).WithTags("Reference")
+            .WithSummary("測試用審查開關是否開放")
+            .WithDescription("""
+                `{"canDisable": true | false}`：後端 `Safety:AllowDisable`（docker compose 用 `.env` 的 `SAFETY_ALLOW_DISABLE`）開著時為 `true`，前端才顯示審查開關，`POST /api/sessions/{id}/messages` 才收 `"safety": "off"`。預設 `false`。
+                """)
+            .Produces(StatusCodes.Status200OK);
 
         app.MapGet("/api/presets/{id:long}", async (long id, PresetRepository presets, CancellationToken ct) =>
             await presets.GetAsync(id, ct) is { } d ? Results.Ok(d) : Results.NotFound()).WithTags("Reference")

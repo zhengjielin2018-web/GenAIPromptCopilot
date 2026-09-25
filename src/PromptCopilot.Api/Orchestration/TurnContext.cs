@@ -21,6 +21,8 @@ public sealed class TurnContext(Session session, int turnIndex, GuardResult guar
     public TurnOutcome? Outcome { get; set; }
     /// <summary>預算用盡後的強制定稿（主規格 §4.6）。那時只掛 FinalizePrompt，定稿閘門要放行，否則這一輪沒有出口。</summary>
     public bool ForcedFinalize { get; set; }
+    /// <summary>false：這一輪關掉程式端審查（測試用開關，後端 Safety:AllowDisable 開著才收得到）。OutputSafetyFilter 看它放行。</summary>
+    public bool SafetyOn { get; set; } = true;
     /// <summary>AuditFilter 正在跑的那個 tool 的 call id；plugin 發 tool_result 時拿它對上 tool_call。</summary>
     public string? CurrentCallId { get; set; }
     public int ToolCalls { get; set; }

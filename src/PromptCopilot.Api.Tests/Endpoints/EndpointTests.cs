@@ -1,6 +1,8 @@
 using System.Net;
 using System.Net.Http.Json;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.SemanticKernel.ChatCompletion;
 using PromptCopilot.Api.Data;
@@ -25,7 +27,7 @@ public class EndpointTests : IClassFixture<EndpointTests.Factory>
             yield return new SessionEvent(session.Id, 1, "Collecting", input.Adoption is null ? null : input.Text);
             await Task.Delay(10, ct);
             if (input.Text == ThrowTrigger) throw new InvalidOperationException("boom");
-            yield return new FinalEvent("message", Message: $"echo: {input.Text}");
+            yield return new FinalEvent("message", Message: input.SafetyOn ? $"echo: {input.Text}" : $"echo(safety off): {input.Text}");
         }
     }
 
@@ -168,6 +170,51 @@ public class EndpointTests : IClassFixture<EndpointTests.Factory>
         Assert.Equal(HttpStatusCode.NotFound, (await _client.PostAsJsonAsync("/api/sessions/nope/messages", new { text = "hi" })).StatusCode);
         Assert.Equal(HttpStatusCode.BadRequest, (await _client.PostAsJsonAsync($"/api/sessions/{id}/messages", new { text = " " })).StatusCode);
     }
+
+    /// <summary>測試用的審查開關預設沒開放：誰都能打 API，不能讓任何人一個欄位就關掉審查。</summary>
+    [Fact]
+    public async Task Messages_rejects_safety_off_with_403_unless_the_backend_allows_it()
+    {
+        var id = (await (await _client.PostAsync("/api/sessions", null)).Content.ReadFromJsonAsync<Dictionary<string, string>>())!["sessionId"];
+        var r = await _client.PostAsJsonAsync($"/api/sessions/{id}/messages", new { text = "hi", safety = "off" });
+        Assert.Equal(HttpStatusCode.Forbidden, r.StatusCode);
+        Assert.Contains("SAFETY_ALLOW_DISABLE", (await r.Content.ReadFromJsonAsync<Dictionary<string, string>>())!["error"]);
+
+        var on = await _client.PostAsJsonAsync($"/api/sessions/{id}/messages", new { text = "hi", safety = "on" });
+        Assert.Contains("echo: hi", await on.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task Messages_rejects_unknown_safety_value()
+    {
+        var id = (await (await _client.PostAsync("/api/sessions", null)).Content.ReadFromJsonAsync<Dictionary<string, string>>())!["sessionId"];
+        var r = await _client.PostAsJsonAsync($"/api/sessions/{id}/messages", new { text = "hi", safety = "maybe" });
+        Assert.Equal(HttpStatusCode.BadRequest, r.StatusCode);
+        Assert.Contains("on 或 off", (await r.Content.ReadFromJsonAsync<Dictionary<string, string>>())!["error"]);
+    }
+
+    [Fact]
+    public async Task Messages_passes_safety_off_to_the_orchestrator_when_allowed()
+    {
+        var client = AllowingSafetyOff().CreateClient();
+        var id = (await (await client.PostAsync("/api/sessions", null)).Content.ReadFromJsonAsync<Dictionary<string, string>>())!["sessionId"];
+        var r = await client.PostAsJsonAsync($"/api/sessions/{id}/messages", new { text = "hi", safety = "OFF" });
+        Assert.Equal(HttpStatusCode.OK, r.StatusCode);
+        Assert.Contains("echo(safety off): hi", await r.Content.ReadAsStringAsync());
+    }
+
+    /// <summary>前端靠這支決定要不要顯示開關。</summary>
+    [Fact]
+    public async Task Safety_config_reports_whether_safety_can_be_disabled()
+    {
+        var off = await _client.GetFromJsonAsync<System.Text.Json.JsonElement>("/api/config/safety");
+        Assert.False(off.GetProperty("canDisable").GetBoolean());
+        var on = await AllowingSafetyOff().CreateClient().GetFromJsonAsync<System.Text.Json.JsonElement>("/api/config/safety");
+        Assert.True(on.GetProperty("canDisable").GetBoolean());
+    }
+
+    private WebApplicationFactory<Program> AllowingSafetyOff() => _factory.WithWebHostBuilder(b =>
+        b.ConfigureAppConfiguration((_, c) => c.AddInMemoryCollection(new Dictionary<string, string?> { ["Safety:AllowDisable"] = "true" })));
 
     [Fact]
     public async Task Messages_emits_error_frame_when_orchestrator_throws_mid_stream()
@@ -349,9 +396,10 @@ public class EndpointTests : IClassFixture<EndpointTests.Factory>
     [Theory]
     [InlineData("/api/sessions", "post", "201,400")]
     [InlineData("/api/sessions/{id}", "get", "200,404")]
-    [InlineData("/api/sessions/{id}/messages", "post", "200,400,404,409")]
+    [InlineData("/api/sessions/{id}/messages", "post", "200,400,403,404,409")]
     [InlineData("/api/sessions/{id}/save-to-shared", "post", "200,400,404,409")]
     [InlineData("/api/presets/{id}", "get", "200,404")]
+    [InlineData("/api/config/safety", "get", "200")]
     public async Task OpenApi_lists_the_status_codes_each_route_returns(string path, string method, string codes)
     {
         var doc = await _client.GetFromJsonAsync<System.Text.Json.JsonElement>("/swagger/v1/swagger.json");

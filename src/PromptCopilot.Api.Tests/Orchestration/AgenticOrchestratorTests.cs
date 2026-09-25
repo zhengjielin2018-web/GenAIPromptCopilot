@@ -158,6 +158,7 @@ public class AgenticOrchestratorTests
         Assert.Contains("waivedFacetIds", completed.PayloadJson!);
         Assert.DoesNotContain("tagOrigins", completed.PayloadJson!);                      // 只有定稿那一輪才寫
         Assert.Contains("\"retrieval\":\"on\"", completed.PayloadJson!);   // 計畫 §4.1：事後分組用
+        Assert.Contains("\"safety\":\"on\"", completed.PayloadJson!);
         var askCall = h.Session.ChatHistory.SelectMany(m => m.Items.OfType<FunctionCallContent>()).Single(c => c.FunctionName == "AskUser");
         Assert.DoesNotContain("photo realism", askCall.Arguments!["asks"]!.ToString());   // history 已壓縮
     }
@@ -408,6 +409,45 @@ public class AgenticOrchestratorTests
         Assert.Equal(0, h.Session.TurnIndex);
         Assert.Equal(0, h.Session.DiscussStreak);
         Assert.Contains(h.Audit.Entries, a => a.EventType == "Blocked_Output");
+    }
+
+    /// <summary>測試用的審查開關：輸入端判 nsfw 也照跑，這一輪的 TurnContext 帶著 SafetyOn=false 給 OutputSafetyFilter，
+    /// audit 記 safety 才分得出哪幾輪是關著審查跑的。</summary>
+    [Fact]
+    public async Task Safety_off_runs_the_turn_despite_an_nsfw_input_verdict_and_audits_it()
+    {
+        var h = new Harness { Deny = new[] { "bikini" } };
+        h.GuardChat.Then(FakeChatCompletion.Text("""{"nsfw":true,"realPerson":false,"personName":null,"wantsAutoComplete":false,"reason":"r"}"""));
+        bool? seen = null;
+        h.Chat.ThenAsync(async (hist, k) =>
+        {
+            seen = k!.Turn().SafetyOn;
+            await Invoke(hist, k!, "Session", "SetProfile", new { profile = "portrait" });
+            return new[] { await Invoke(hist, k!, "Dialog", "AskUser", AskArgs()) };
+        });
+
+        var events = await h.RunAsync(new TurnInput("穿著改成 bikini", SafetyOn: false));
+
+        Assert.Empty(events.OfType<BlockedEvent>());
+        Assert.Equal("ask", Assert.Single(events.OfType<FinalEvent>()).Kind);
+        Assert.False(seen);
+        var completed = Assert.Single(h.Audit.Entries, a => a.EventType == "Turn_Completed");
+        Assert.Contains("\"safety\":\"off\"", completed.PayloadJson!);
+    }
+
+    /// <summary>純文字包成 Discuss 那條路自己檢一次輸出（C1）；審查關著時那次也不做。</summary>
+    [Fact]
+    public async Task Safety_off_wraps_plain_text_without_the_output_check()
+    {
+        var h = new Harness();
+        h.ClassifierChat.Then(FakeChatCompletion.Text("""{"nsfw":true,"realPerson":false,"personName":null,"wantsAutoComplete":false,"reason":"露骨描述"}"""));
+        h.Chat.Then(FakeChatCompletion.Text("一段散文。")).Then(FakeChatCompletion.Text("一段散文。"));
+
+        var events = await h.RunAsync(new TurnInput("寫實跟動漫差在哪", SafetyOn: false));
+
+        Assert.Empty(events.OfType<BlockedEvent>());
+        Assert.Equal("message", Assert.Single(events.OfType<FinalEvent>()).Kind);
+        Assert.Empty(h.ClassifierChat.Calls);
     }
 
     /// <summary>命中的詞只進 audit payload，不進回給使用者的訊息。</summary>

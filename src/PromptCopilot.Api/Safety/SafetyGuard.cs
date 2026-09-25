@@ -9,11 +9,16 @@ public sealed record GuardResult(bool Blocked, string? BlockCode, string? Messag
 /// <summary>輸入側（主規格 §6.1）。在 service 層、進 kernel 之前執行。</summary>
 public sealed class SafetyGuard(Denylist denylist, SafetyClassifier classifier)
 {
-    public async Task<GuardResult> CheckAsync(string text, CancellationToken ct)
+    public Task<GuardResult> CheckAsync(string text, CancellationToken ct) => CheckAsync(text, enforce: true, ct);
+
+    /// <summary>enforce: false 是測試用的審查開關（後端 Safety:AllowDisable 開著才收得到）：不攔，
+    /// 但分類器照跑——wantsAutoComplete 只有它判得出來，跳過它等於連流程一起改掉。</summary>
+    public async Task<GuardResult> CheckAsync(string text, bool enforce, CancellationToken ct)
     {
-        if (denylist.Hits(text, out var term))
+        if (enforce && denylist.Hits(text, out var term))
             return new GuardResult(true, "Blocked_NSFW", "輸入含不允許的內容，這一輪不處理。", false, BlockDetail: term);
         var v = await classifier.ClassifyInputAsync(text, ct);
+        if (!enforce) return GuardResult.Ok(v.WantsAutoComplete);
         if (v.Nsfw)
             return new GuardResult(true, "Blocked_NSFW", $"輸入被判定為不當內容：{v.Reason}", false);
         if (v.RealPerson)
