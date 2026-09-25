@@ -9,9 +9,9 @@ public sealed class SessionStore
 
     public SessionStore(IMemoryCache cache, TimeSpan sliding) { _cache = cache; _sliding = sliding; }
 
-    public Session Create()
+    public Session Create(bool retrievalEnabled = true)
     {
-        var s = new Session(Guid.NewGuid().ToString("N"));
+        var s = new Session(Guid.NewGuid().ToString("N"), retrievalEnabled);
         _cache.Set(s.Id, s, new MemoryCacheEntryOptions { SlidingExpiration = _sliding });
         return s;
     }

@@ -26,6 +26,12 @@ public static class ToolSetBuilder
     public static IReadOnlySet<string> Build(Session s, bool wantsAutoComplete, OrchestratorOptions o)
     {
         var tools = new HashSet<string>(ToolNames.Always);
+        if (!s.RetrievalEnabled)
+        {
+            // 對照組：模型拿不到檢索工具，就不會「自稱」借用。Always 是一般情況的宣告，這裡減，不改它。
+            tools.Remove(ToolNames.SearchPresets);
+            tools.Remove(ToolNames.SearchSimilarPrompts);
+        }
         if (!wantsAutoComplete)
         {
             if (s.Status == SessionStatus.Collecting && s.AskCount < o.MaxAskCount)

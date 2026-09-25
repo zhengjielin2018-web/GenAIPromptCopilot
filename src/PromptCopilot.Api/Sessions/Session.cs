@@ -30,9 +30,12 @@ public sealed class Session
     public Dictionary<string, string> FacetNotes { get; private set; } = new();
     public FinalPrompt? LastFinal { get; private set; }
     public int TurnIndex { get; set; }
+    /// <summary>建立時定死：off 是量測用的對照組（計畫 §4.1）。中途不能切，所以不進 Snapshot／Restore。</summary>
+    public bool RetrievalEnabled { get; }
+    public string RetrievalMode => RetrievalEnabled ? "on" : "off";
     public SemaphoreSlim Lock { get; } = new(1, 1);
 
-    public Session(string id) => Id = id;
+    public Session(string id, bool retrievalEnabled = true) { Id = id; RetrievalEnabled = retrievalEnabled; }
 
     public void ApplyProfile(string profile, FacetCatalog catalog)
     {

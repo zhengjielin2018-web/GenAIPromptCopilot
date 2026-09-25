@@ -66,4 +66,33 @@ public class ToolSetBuilderTests
         var t = ToolSetBuilder.Build(S(asks: 2, streak: 8), false, O);
         Assert.Equal(ToolNames.Always, t);
     }
+
+    /// <summary>計畫 §4.1：off 的 session 是量測用的對照組。拿掉的只有兩個檢索工具，其餘規則照舊。</summary>
+    [Fact]
+    public void Retrieval_off_removes_both_search_tools_and_nothing_else()
+    {
+        var on = ToolSetBuilder.Build(S(), false, O);
+        var off = ToolSetBuilder.Build(new Session("s", retrievalEnabled: false), false, O);
+        Assert.DoesNotContain(ToolNames.SearchPresets, off);
+        Assert.DoesNotContain(ToolNames.SearchSimilarPrompts, off);
+        Assert.Equal(on.Except(new[] { ToolNames.SearchPresets, ToolNames.SearchSimilarPrompts }).ToHashSet(), off);
+        Assert.True(ToolNames.Always.IsSubsetOf(on));   // Always 本身不動
+    }
+
+    [Fact]
+    public void Retrieval_off_with_auto_complete_leaves_only_state_tools_and_finalize()
+    {
+        var off = ToolSetBuilder.Build(new Session("s", retrievalEnabled: false), true, O);
+        Assert.Equal(new HashSet<string> { ToolNames.SetProfile, ToolNames.SetFacetStates, ToolNames.FinalizePrompt }, off);
+    }
+
+    [Fact]
+    public void Retrieval_mode_defaults_on_and_survives_restore()
+    {
+        var s = new Session("s");
+        Assert.True(s.RetrievalEnabled); Assert.Equal("on", s.RetrievalMode);
+        var off = new Session("s", retrievalEnabled: false);
+        off.Restore(s.Snapshot());
+        Assert.False(off.RetrievalEnabled); Assert.Equal("off", off.RetrievalMode);
+    }
 }
