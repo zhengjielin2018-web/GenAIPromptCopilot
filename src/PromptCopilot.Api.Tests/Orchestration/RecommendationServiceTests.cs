@@ -121,6 +121,22 @@ public class RecommendationServiceTests
         Assert.Equal(0.21, set.Dist); Assert.Equal("https://img", set.ImageUrl); Assert.Equal("civitai:1:0", set.SourceRef);
     }
 
+    /// <summary>AnchorTags 要等於 SQL 過濾實際比中的錨：DB tag 等於錨、或以「空白＋錨」結尾。反方向（錨以 DB tag 結尾）SQL 不比，這裡也不能算。</summary>
+    [Fact]
+    public async Task Matched_anchors_mirror_the_sql_filter_and_ignore_anchors_that_only_end_with_a_db_tag()
+    {
+        var (svc, s, _, presets) = Make(("clothing.footwear", "sandals, white socks"));
+        presets.Script[("clothing.head", true)] = new[]
+        {
+            Set(1, "a", ("clothing.footwear", "sandals, socks"), ("clothing.upper", "x")),
+            Set(2, "b", ("clothing.footwear", "socks"), ("clothing.lower", "y")),
+        };
+        var e = await svc.BuildAsync(s, Ask("clothing"), 1, default);
+        var d = Assert.Single(e!.Dimensions);
+        Assert.True(d.Anchored);
+        Assert.Equal(new[] { "sandals" }, d.AnchorTags);                                  // white socks 不因 DB 的 socks 而算命中
+    }
+
     [Fact]
     public async Task Anchored_query_with_fewer_than_two_hits_falls_back_to_an_unanchored_query()
     {

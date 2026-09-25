@@ -552,6 +552,7 @@ public class AgenticOrchestratorTests
         Assert.Equal(1, h.Session.AskCount);
         var failed = Assert.Single(h.Audit.Entries, a => a.EventType == "Recommendation_Failed");
         Assert.Contains("\"errorClass\":\"InvalidOperationException\"", failed.PayloadJson!);
+        Assert.Contains("\"stage\":\"recommend\"", failed.PayloadJson!);
         Assert.Contains(h.Audit.Entries, a => a.EventType == "Turn_Completed");
     }
 
@@ -595,6 +596,7 @@ public class AgenticOrchestratorTests
         h.GuardChat.Then(FakeChatCompletion.Text(OkVerdict)); h.ClassifierChat.Then(FakeChatCompletion.Text(OkVerdict));
         var events = new List<AgentEvent>();
         await foreach (var e in h.Build().RunTurnAsync(off, "一個銀髮少女", default)) events.Add(e);
+        Assert.Single(events.OfType<FinalEvent>());
         Assert.Equal(0, stub.Calls);
         Assert.Empty(events.OfType<RecommendationsEvent>());
     }

@@ -94,7 +94,9 @@ public sealed class RecommendationService(FacetCatalog catalog, IEmbeddingClient
         return set;
     }
 
+    /// <summary>實際命中的錨，規則照 SQL 錨過濾：DB tag 等於錨，或以「空白＋錨」結尾。
+    /// 不算反方向（錨以 DB tag 結尾）：SQL 不比那個，列出來就是在報過濾沒用到的錨。</summary>
     private static IReadOnlyList<string> MatchedAnchors(IReadOnlyList<PresetCandidate> hits, IReadOnlyList<string> covered, IReadOnlyList<string> anchors) =>
         anchors.Where(a => hits.Any(h => covered.Any(f => (h.FacetTags.GetValueOrDefault(f) ?? Array.Empty<string>())
-            .Select(TagAttribution.Normalize).Any(t => t == a || TagAttribution.EndsWithWord(t, a) || TagAttribution.EndsWithWord(a, t))))).ToList();
+            .Select(TagAttribution.Normalize).Any(t => t == a || TagAttribution.EndsWithWord(t, a))))).ToList();
 }
