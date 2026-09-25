@@ -4,7 +4,8 @@
     python backfill_facet_tags.py [--limit N] [--batch-size 20] [--dry-run]
 
 只處理 facet_tags IS NULL 的列，每批一個交易，可中斷、可重跑。全部歸不進 facet 的列寫 {}（不是 NULL），
-重跑時不會再送一次。structure.py 不產這欄：語料現在沒在長，新片段進來後重跑這支即可。
+重跑時不會再送一次。某批被 Gemini 擋掉或回壞 JSON 就改一筆一筆送；單筆仍失敗的留 NULL、本次不再碰，
+結尾列出 id，下次重跑會再試。structure.py 不產這欄：語料現在沒在長，新片段進來後重跑這支即可。
 """
 
 from __future__ import annotations
@@ -16,19 +17,22 @@ from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from pipeline.config import FACETS_PATH  # noqa: E402
 from pipeline.facets import FacetCatalog, load_facets  # noqa: E402
+from pipeline.gemini_client import UnusableResponse, default_client  # noqa: E402
 
 BATCH_SIZE = 20
 OTHER = "other"
 
+# skip＝本次逐筆重送仍失敗的列。不排除的話 ORDER BY id 每批都先撈到它們，後面的列永遠輪不到。
+# ::bigint[] 讓空 list 也有型別
 PENDING_SQL = """
 SELECT id, facet_ids, prompt_snippet FROM prompt_knowledge_presets
-WHERE facet_tags IS NULL ORDER BY id LIMIT %(limit)s
+WHERE facet_tags IS NULL AND id <> ALL(%(skip)s::bigint[]) ORDER BY id LIMIT %(limit)s
 """
 # 再檢查一次 IS NULL：兩支程式同時跑也不會互相覆蓋
 UPDATE_SQL = """
@@ -37,9 +41,15 @@ WHERE id = %(id)s AND facet_tags IS NULL
 """
 
 
+# 用 list 不用 dict[str, str]：dict 會轉成 additionalProperties，Gemini Developer API 模式送出前就拒收
+class TagFacet(BaseModel):
+    tag: str = Field(description="tag 原字照抄")
+    facet: str = Field(description="facet id 或 other")
+
+
 class Assignment(BaseModel):
     id: int
-    assignments: dict[str, str] = Field(description="tag（原字）→ facet id 或 other")
+    assignments: list[TagFacet]
 
 
 class BatchOut(BaseModel):
@@ -52,8 +62,9 @@ PROMPT_TEMPLATE = """你是生圖提示詞知識庫的整理員。下面每一�
 
 規則：
 - 每個 tag 只歸一個 facet；facet 只能從該筆自己的清單選。
-- tag 原字照抄當 key：不要改寫、不要翻譯、不要合併、不要漏掉。
-- 回 JSON：{{"items":[{{"id":<id>,"assignments":{{"<tag>":"<facet id 或 other>", ...}}}}, ...]}}，每一筆都要有。
+- tag 原字照抄：不要改寫、不要翻譯、不要合併、不要漏掉。
+- 回 JSON，每一筆都要有：
+  {{"items":[{{"id":<id>,"assignments":[{{"tag":"<tag>","facet":"<facet id 或 other>"}}, ...]}}, ...]}}
 
 Facet 說明：
 {facets}
@@ -96,24 +107,51 @@ def normalize(row: dict, assignments: dict[str, str] | None) -> dict[str, list[s
     return out
 
 
-def fetch_pending(conn, limit: int) -> list[dict]:
-    rows = conn.execute(PENDING_SQL, {"limit": limit}).fetchall()
+def fetch_pending(conn, limit: int, skip: list[int]) -> list[dict]:
+    rows = conn.execute(PENDING_SQL, {"limit": limit, "skip": skip}).fetchall()
     return [{"id": r[0], "facet_ids": list(r[1]), "prompt_snippet": r[2]} for r in rows]
+
+
+def ask(client, rows: list[dict], catalog: FacetCatalog) -> dict[int, dict[str, str]]:
+    """送一個 prompt，回 id → {tag: facet}。"""
+    result = client.generate_structured(build_prompt(rows, catalog), BatchOut)
+    return {a.id: {x.tag: x.facet for x in a.assignments} for a in result.items}
+
+
+def assign(client, rows: list[dict], catalog: FacetCatalog, skipped: list[int],
+           log: Callable[..., None]) -> tuple[list[dict], dict[int, dict[str, str]]]:
+    """回 (拿到結果的列, id → {tag: facet})。整批被擋或回壞 JSON 就一筆一筆重送，只犧牲出事的那筆；
+    單筆仍失敗的記進 skipped、留 NULL。"""
+    try:
+        return rows, ask(client, rows, catalog)
+    except (UnusableResponse, ValidationError) as e:
+        if len(rows) == 1:
+            # 單筆不原封不動重送：內容攔截重送到過為止等於規避安全判定（見 gemini_client.UnusableResponse）
+            skipped.append(rows[0]["id"])
+            log(f"  跳過 id={rows[0]['id']}：{type(e).__name__} {e}")
+            return [], {}
+        log(f"  本批 {len(rows)} 筆失敗（{type(e).__name__}），改一筆一筆送")
+    done: list[dict] = []
+    by_id: dict[int, dict[str, str]] = {}
+    for row in rows:
+        ok, got = assign(client, [row], catalog, skipped, log)
+        done += ok
+        by_id.update(got)
+    return done, by_id
 
 
 def run_backfill(conn, client, catalog: FacetCatalog, *, limit: int | None = None, batch_size: int = BATCH_SIZE,
                  dry_run: bool = False, log: Callable[..., None] = print) -> dict:
-    stats: dict = {"rows": 0, "tags": 0, "other": 0, "facets": Counter()}
+    stats: dict = {"rows": 0, "tags": 0, "other": 0, "facets": Counter(), "skipped": []}
     remaining = limit
     while remaining is None or remaining > 0:
         n = batch_size if remaining is None else min(batch_size, remaining)
-        rows = fetch_pending(conn, n)
+        rows = fetch_pending(conn, n, stats["skipped"])
         if not rows:
             break
-        result = client.generate_structured(build_prompt(rows, catalog), BatchOut)
-        by_id = {a.id: a.assignments for a in result.items}
+        done, by_id = assign(client, rows, catalog, stats["skipped"], log)
         with conn.cursor() as cur:
-            for row in rows:
+            for row in done:
                 ft = normalize(row, by_id.get(row["id"]))
                 total = len(split_tags(row["prompt_snippet"]))
                 kept = sum(len(v) for v in ft.values())
@@ -125,13 +163,13 @@ def run_backfill(conn, client, catalog: FacetCatalog, *, limit: int | None = Non
                     cur.execute(UPDATE_SQL, {"id": row["id"], "facet_tags": json.dumps(ft, ensure_ascii=False)})
         if dry_run:
             conn.rollback()
-            for row in rows:
+            for row in done:
                 log(f"[dry-run] {row['id']}: {json.dumps(normalize(row, by_id.get(row['id'])), ensure_ascii=False)}")
             break
         conn.commit()
         if remaining is not None:
-            remaining -= len(rows)
-        log(f"backfill: {stats['rows']} 筆已寫入（本批 {len(rows)}）")
+            remaining -= len(rows)  # 跳過的也算：--limit 是這次最多送幾筆
+        log(f"backfill: {stats['rows']} 筆已寫入（本批 {len(done)}）")
     return stats
 
 
@@ -143,7 +181,6 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
 
     from pipeline.db import connect
-    from pipeline.gemini_client import default_client
 
     catalog = load_facets(FACETS_PATH)
     with connect() as conn:
@@ -153,6 +190,8 @@ def main(argv: list[str] | None = None) -> int:
           f"（{(stats['other'] / stats['tags'] * 100) if stats['tags'] else 0:.1f}%）")
     for facet, n in sorted(stats["facets"].items()):
         print(f"  {facet:<26}{n:>7} 筆有 tag")
+    if stats["skipped"]:
+        print(f"跳過 {len(stats['skipped'])} 筆（留 NULL，下次重跑會再試）：{', '.join(map(str, stats['skipped']))}")
     return 0
 
 

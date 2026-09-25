@@ -3,10 +3,16 @@
 from __future__ import annotations
 
 import json
+import re
+
+import pytest
+from google import genai
 
 from backfill_facet_tags import BatchOut, build_prompt, normalize, run_backfill, split_tags
 from pipeline.config import FACETS_PATH
 from pipeline.facets import load_facets
+from pipeline.gemini_client import GeminiClient, UnusableResponse
+from pipeline.ratelimit import RateLimiter
 
 CAT = load_facets(FACETS_PATH)
 ROW = {"id": 41720, "facet_ids": ["clothing.upper", "clothing.footwear"],
@@ -14,13 +20,18 @@ ROW = {"id": 41720, "facet_ids": ["clothing.upper", "clothing.footwear"],
 
 
 class FakeClient:
+    """payloads 依序吐出；是 Exception 就照丟（模擬 Gemini 擋內容或回壞 JSON）。"""
+
     def __init__(self, payloads):
         self.payloads = list(payloads)
         self.prompts = []
 
     def generate_structured(self, prompt, schema):
         self.prompts.append(prompt)
-        return schema.model_validate(self.payloads.pop(0))
+        payload = self.payloads.pop(0)
+        if isinstance(payload, Exception):
+            raise payload
+        return schema.model_validate(payload)
 
 
 class FakeResult:
@@ -68,6 +79,21 @@ class FakeConn:
         self.rollbacks += 1
 
 
+class TableConn(FakeConn):
+    """照 SQL 語意演：pending＝還沒寫過、不在 skip 裡的列（依 id 排序）取 limit 筆。"""
+
+    def __init__(self, rows):
+        super().__init__([])
+        self.rows = rows
+        self.fetches = []
+
+    def execute(self, sql, params):
+        self.fetches.append({**params, "skip": list(params["skip"])})   # 快照：skip 是同一個會長大的 list
+        written = {p["id"] for _, p in self.writes}
+        pending = [r for r in self.rows if r[0] not in written and r[0] not in params["skip"]]
+        return FakeResult(pending[: params["limit"]])
+
+
 def test_split_tags_strips_dedups_and_drops_empty():
     assert split_tags(ROW["prompt_snippet"]) == ["purple kimono", "sandals", "white socks", "tabi"]
 
@@ -95,7 +121,8 @@ def test_build_prompt_lists_each_row_with_its_own_facets_and_tags():
 def test_run_backfill_writes_one_json_per_row_commits_per_batch_and_stops_when_nothing_pending():
     conn = FakeConn([[(41720, ROW["facet_ids"], ROW["prompt_snippet"]), (7, ["style.genre"], "oil painting")], []])
     client = FakeClient([{"items": [
-        {"id": 41720, "assignments": {"purple kimono": "clothing.upper", "sandals": "clothing.footwear"}},
+        {"id": 41720, "assignments": [{"tag": "purple kimono", "facet": "clothing.upper"},
+                                      {"tag": "sandals", "facet": "clothing.footwear"}]},
     ]}])                                                     # id 7 沒回 → 全 other → {}
     stats = run_backfill(conn, client, CAT, batch_size=20, log=lambda *_: None)
 
@@ -112,7 +139,7 @@ def test_run_backfill_writes_one_json_per_row_commits_per_batch_and_stops_when_n
 def test_run_backfill_dry_run_writes_nothing_and_rolls_back_after_one_batch():
     conn = FakeConn([[(41720, ROW["facet_ids"], ROW["prompt_snippet"])],
                      [(41720, ROW["facet_ids"], ROW["prompt_snippet"])]])
-    client = FakeClient([{"items": [{"id": 41720, "assignments": {}}]}])
+    client = FakeClient([{"items": [{"id": 41720, "assignments": []}]}])
     stats = run_backfill(conn, client, CAT, dry_run=True, log=lambda *_: None)
     assert conn.writes == [] and conn.commits == 0 and conn.rollbacks == 1
     assert stats["rows"] == 1 and len(client.prompts) == 1
@@ -127,5 +154,59 @@ def test_run_backfill_limit_caps_rows_across_batches():
 
 
 def test_batch_out_schema_accepts_other():
-    b = BatchOut.model_validate({"items": [{"id": 1, "assignments": {"x": "other"}}]})
-    assert b.items[0].assignments == {"x": "other"}
+    b = BatchOut.model_validate({"items": [{"id": 1, "assignments": [{"tag": "x", "facet": "other"}]}]})
+    assert b.items[0].assignments[0].tag == "x" and b.items[0].assignments[0].facet == "other"
+
+
+def _one(row_id, tag, facet):
+    return {"items": [{"id": row_id, "assignments": [{"tag": tag, "facet": facet}]}]}
+
+
+def test_failed_batch_retries_row_by_row_and_skips_only_the_row_that_still_fails():
+    rows = [(1, ["style.genre"], "oil painting"), (2, ["style.palette"], "monochrome"), (3, ["style.genre"], "anime")]
+    conn = TableConn(rows)
+    blocked = UnusableResponse("blocked", block_reason="PROHIBITED_CONTENT")
+    client = FakeClient([blocked,                                   # 整批被擋
+                         _one(1, "oil painting", "style.genre"),
+                         blocked,                                   # id 2 單獨送還是被擋
+                         _one(3, "anime", "style.genre")])
+    stats = run_backfill(conn, client, CAT, log=lambda *_: None)
+
+    assert [(p["id"], json.loads(p["facet_tags"])) for _, p in conn.writes] == [
+        (1, {"style.genre": ["oil painting"]}), (3, {"style.genre": ["anime"]}),
+    ]
+    assert [re.findall(r"\[id=(\d+)\]", p) for p in client.prompts] == [["1", "2", "3"], ["1"], ["2"], ["3"]]
+    assert [f["skip"] for f in conn.fetches] == [[], [2]]                  # 下一次查 pending 排除它，然後收工
+    assert stats["skipped"] == [2] and stats["rows"] == 2 and conn.commits == 1
+
+
+def test_lone_failing_row_is_skipped_without_resending_and_the_loop_moves_on():
+    rows = [(1, ["style.genre"], "oil painting"), (2, ["style.genre"], "anime")]
+    conn = TableConn(rows)
+    client = FakeClient([{"items": "not a list"},                   # ValidationError
+                         _one(2, "anime", "style.genre")])
+    stats = run_backfill(conn, client, CAT, batch_size=1, log=lambda *_: None)
+
+    assert [p["id"] for _, p in conn.writes] == [2]
+    assert len(client.prompts) == 2                                  # 單筆批失敗不再原封不動重送
+    assert [f["skip"] for f in conn.fetches] == [[], [1], [1]]
+    assert stats["skipped"] == [1] and stats["rows"] == 1
+
+
+class _ReachedTransport(Exception):
+    pass
+
+
+def test_batch_out_schema_is_accepted_by_gemini_developer_api_mode(monkeypatch):
+    """dict[str, str] 轉成 additionalProperties，Developer API 模式在送出前就 ValueError。
+    走真的 SDK 轉換、只換掉傳輸層：走得到送出那一步，schema 就過關。"""
+    sdk = genai.Client(api_key="offline-test", vertexai=False)
+
+    def refuse(*args, **kwargs):
+        raise _ReachedTransport
+
+    monkeypatch.setattr(sdk._api_client, "request", refuse)
+    client = GeminiClient(sdk, structure_model="gemini-test", embedding_model="unused", dimensions=768,
+                          limiter=RateLimiter(0), sleep=lambda _: None)
+    with pytest.raises(_ReachedTransport):
+        client.generate_structured("x", BatchOut)
