@@ -152,7 +152,7 @@ export function savePrefs(p: Prefs, storage?: StorageLike | null): void
 
 ### 4.6 FinalCard：檢索貢獻
 
-`prefs.showTrace` 開時，在 tips 下方加一區「檢索貢獻」。資料由 `lib/trace.ts` 的純函式算，輸入是 `positiveSources` 與 `negativeSources`：
+`prefs.showTrace` 開、且定稿卡帶 `positiveSources` 或 `negativeSources` 時，在 tips 下方加一區「檢索貢獻」。資料由 `lib/trace.ts` 的純函式算，輸入是 `positiveSources` 與 `negativeSources`：
 
 ```ts
 export interface Contribution { presetId: number; title: string; sourceRef: string | null; tags: string[] }
@@ -162,7 +162,7 @@ export function contributions(positive: TagSource[], negative: TagSource[]): Con
 
 - `counts` 只算正向（與 audit 的 `tagOrigins` 一致）。
 - `byPreset` 依 presetId 分組，一個 tag 對到多個 presetId 時每個都列；負向 tag 加 `-` 前綴列在同一組。依 tag 數多的在前。
-- 畫面：一行 `rag N・llm N・base N`，接著每個片段一列 `標題 → tag, tag, tag`，標題點了開抽屜；`byPreset` 空時只顯示計數。
+- 畫面：一行 `rag N・llm N・base N`，接著每個片段一列 `標題 → tag, tag, tag`，標題點了開抽屜；`byPreset` 空時顯示計數與一句「這次定稿沒有借用知識庫片段。」
 
 ### 4.7 Dashboard：本次對話檢索摘要
 
@@ -178,7 +178,7 @@ export interface RetrievalSummary {
 export function retrievalSummary(transcript: Entry[]): RetrievalSummary
 ```
 
-畫面四個數字一列，`pools` 用維度標籤加數字的小 chip。
+畫面三個數字一列（查詢次數、看過幾筆、借用幾筆），`pools` 用維度標籤加數字的小 chip。
 
 ### 4.8 相容性
 

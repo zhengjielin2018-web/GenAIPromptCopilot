@@ -288,4 +288,4 @@ xUnit（後端）：
 | §4 按鈕文字「儲存至共享知識庫」「已儲存」 | 「存進共享知識庫」「已存進共享知識庫」 | 同一個動作在整個流程用同一個名字 |
 | §5 `404` 時顯示「上次的對話已過期」 | 開新 session 後把提示放在對話流頂端的通知列，原文留在輸入框 | 開新 session 會清掉 transcript，放成失敗條目會跟著被清掉 |
 | §1.3 Node 22，套件未指定版本 | Nuxt 3.21、Pinia 4、vitest 5；TypeScript 釘在 5.x | vue-tsc 3 需要 TS 5 的 JS API，TS 7 會讓 `nuxi typecheck` 起不來 |
-| （2026-09-25 知識庫開關與檢索細節） | `lib/prefs.ts`（localStorage）、`lib/trace.ts`（純函式）、`ToolEntry.detail`、`ChatState.retrieval`；三個元件在 `prefs.showTrace` 開時多畫一區，關時與原設計相同 | 設計見 `2026-09-25-retrieval-switch-and-trace-design.md` |
+| （2026-09-25 知識庫開關與檢索細節） | `lib/prefs.ts`（localStorage）、`lib/trace.ts`（純函式）、`ToolEntry.detail`、`ChatState.retrieval`；三個元件在 `prefs.showTrace` 開時多畫一區（`FinalCard` 另需定稿卡帶 sources），關時與原設計相同 | 設計見 `2026-09-25-retrieval-switch-and-trace-design.md` |

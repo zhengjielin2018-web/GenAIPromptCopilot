@@ -40,7 +40,7 @@
         <p class="mt-1.5 text-xs tabular-nums text-muted">
           查詢 {{ trace.searches }} 次・看過 {{ trace.seen }} 筆片段・借用 {{ trace.borrowed }} 筆
         </p>
-        <div class="mt-1.5 flex flex-wrap gap-1">
+        <div v-if="trace.pools.length" class="mt-1.5 flex flex-wrap gap-1">
           <span v-for="p in trace.pools" :key="p.dimension" class="rounded-[3px] border border-rule px-1.5 py-[3px] text-[11px] leading-4 tabular-nums">
             {{ p.label }} {{ p.poolSize }}
           </span>
