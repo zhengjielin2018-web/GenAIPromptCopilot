@@ -53,13 +53,17 @@ public class KnowledgePluginTests
         }
     }
 
-    private sealed class FakeHistories() : HistoryRepository(null!);
+    private sealed class FakeHistories() : HistoryRepository(null!)
+    {
+        public IReadOnlyList<HistoryHit> Hits { get; set; } = Array.Empty<HistoryHit>();
+        public override Task<IReadOnlyList<HistoryHit>> SearchAsync(float[] query, string profile, int k, CancellationToken ct) => Task.FromResult(Hits);
+    }
 
     private static PresetHit Hit(long id, string title, string facet, double dist, string? sourceRef = null) =>
         new(id, title, "Cat", new[] { facet }, $"tags for {title}", null, null, dist, sourceRef);
 
     private static (KnowledgePlugin plugin, TurnContext turn, Session s, FakeEmbeddings embed, FakePresets presets, ChannelReader<AgentEvent> events)
-        Make(string[]? covered = null, bool profile = true)
+        Make(string[]? covered = null, bool profile = true, FakeHistories? histories = null)
     {
         var s = new Session("s");
         if (profile)
@@ -71,7 +75,7 @@ public class KnowledgePluginTests
         var turn = new TurnContext(s, 1, GuardResult.Ok(false), ToolNames.Always, ch.Writer) { CurrentCallId = "c1" };
         var embed = new FakeEmbeddings();
         var presets = new FakePresets();
-        return (new KnowledgePlugin(turn, Catalog, embed, presets, new FakeHistories()), turn, s, embed, presets, ch.Reader);
+        return (new KnowledgePlugin(turn, Catalog, embed, presets, histories ?? new FakeHistories()), turn, s, embed, presets, ch.Reader);
     }
 
     private static SearchQuery[] Q(params (string d, string q)[] xs) => xs.Select(x => new SearchQuery(x.d, x.q)).ToArray();
@@ -403,5 +407,72 @@ public class KnowledgePluginTests
         Assert.Equal(2, entry.Hits.Count);
         Assert.Contains(entry.Hits, h => h.Dimension == "style" && !h.Grounded);
         Assert.Contains(entry.Hits, h => h.Dimension == "scene" && h.Grounded);
+    }
+
+    /// <summary>設計 §3.5：detail 與回給模型的 JSON 同一份資料；不放 snippet；順序照 queries。</summary>
+    [Fact]
+    public async Task Detail_mirrors_results_without_snippets()
+    {
+        var (p, _, _, _, presets, events) = Make(covered: new[] { "scene.location" });
+        presets.Pools["style.genre"] = 4455; presets.Pools["scene.location"] = 6752;
+        presets.Hits["style.genre"] = new[] { Hit(1, "寫實", "style.genre", 0.2) };
+        presets.Hits["scene.location"] = new[] { Hit(2, "稻田", "scene.location", 0.1234) };
+
+        await p.SearchPresetsAsync(Q(("style", "寫實攝影"), ("scene", "稻田裡面喝茶")), default);
+
+        var ev = Assert.IsType<ToolResultEvent>(Assert.Single(Drain(events)));
+        var d = Assert.IsType<SearchPresetsDetail>(ev.Detail);
+        Assert.Equal(2, d.Items.Count);
+
+        var style = d.Items[0];
+        Assert.Equal("style", style.Dimension); Assert.Null(style.FacetId); Assert.Equal("寫實攝影", style.Query);
+        Assert.False(style.Grounded); Assert.Equal(4455, style.PoolSize); Assert.Equal(KnowledgePlugin.KMissing, style.K); Assert.Null(style.Error);
+        var hit = Assert.Single(style.Hits);
+        Assert.Equal(1, hit.Id); Assert.Equal("寫實", hit.Title); Assert.Equal("高", hit.Band); Assert.Equal(0.2, hit.Dist); Assert.False(hit.Usable);
+        Assert.Equal("missing", hit.Facets["style.genre"]);
+
+        var scene = d.Items[1];
+        Assert.True(scene.Grounded); Assert.Equal(KnowledgePlugin.KCovered, scene.K); Assert.Equal(6752, scene.PoolSize);
+        Assert.True(Assert.Single(scene.Hits).Usable);
+        Assert.Equal(0.123, scene.Hits[0].Dist);                                         // 四捨五入到小數第三位
+        Assert.Equal("covered", scene.Hits[0].Facets["scene.location"]);
+        Assert.DoesNotContain("tags for", System.Text.Json.JsonSerializer.Serialize(d));    // 沒有 snippet
+    }
+
+    [Fact]
+    public async Task Detail_uses_facet_label_for_facet_items_and_dimension_label_otherwise()
+    {
+        var (p, _, _, _, presets, events) = Make(covered: new[] { "clothing.footwear" });
+        presets.Pools["clothing.footwear"] = 300;
+        await p.SearchPresetsAsync(new[] { F("clothing.footwear", "拖鞋"), new SearchQuery("style", "寫實") }, default);
+        var d = Assert.IsType<SearchPresetsDetail>(Assert.IsType<ToolResultEvent>(Assert.Single(Drain(events))).Detail);
+        Assert.Equal("clothing.footwear", d.Items[0].FacetId); Assert.Equal("clothing", d.Items[0].Dimension);
+        Assert.Equal(Catalog.Facets["clothing.footwear"].Label, d.Items[0].Label);
+        Assert.Equal(Catalog.DimensionLabel("style", "portrait"), d.Items[1].Label);
+    }
+
+    /// <summary>全部項目都不合法時沒有 embedding，但 detail 仍要每項一格、帶 error，前端才對得上摘要。</summary>
+    [Fact]
+    public async Task Detail_keeps_invalid_items_in_order_with_error()
+    {
+        var (p, _, _, _, _, events) = Make();
+        await p.SearchPresetsAsync(Q(("hair", "a"), ("style", "  "), ("nope", "b")), default);
+        var d = Assert.IsType<SearchPresetsDetail>(Assert.IsType<ToolResultEvent>(Assert.Single(Drain(events))).Detail);
+        Assert.Equal(3, d.Items.Count);
+        Assert.All(d.Items, i => { Assert.NotNull(i.Error); Assert.Empty(i.Hits); Assert.Equal(0, i.PoolSize); Assert.Equal(0, i.K); Assert.False(i.Grounded); });
+        Assert.Equal("hair", d.Items[0].Label); Assert.Equal("style", d.Items[1].Label); Assert.Equal("nope", d.Items[2].Label);
+        Assert.Contains("query 空白", d.Items[1].Error);
+    }
+
+    [Fact]
+    public async Task Similar_prompts_detail_truncates_intent_to_40_chars()
+    {
+        var longIntent = new string('雨', 45);
+        var histories = new FakeHistories { Hits = new[] { new HistoryHit(Guid.NewGuid(), longIntent, "p", "portrait", 0.1811) } };
+        var (p, _, _, _, _, events) = Make(histories: histories);
+        await p.SearchSimilarPromptsAsync("雨夜", 3, default);
+        var d = Assert.IsType<SearchSimilarDetail>(Assert.IsType<ToolResultEvent>(Assert.Single(Drain(events))).Detail);
+        var h = Assert.Single(d.Hits);
+        Assert.Equal(new string('雨', 40) + "…", h.Intent); Assert.Equal("portrait", h.Profile); Assert.Equal(0.181, h.Dist);
     }
 }

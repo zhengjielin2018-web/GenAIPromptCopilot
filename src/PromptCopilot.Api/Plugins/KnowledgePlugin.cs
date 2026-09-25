@@ -73,8 +73,9 @@ public sealed class KnowledgePlugin(TurnContext turn, FacetCatalog catalog, IEmb
 
         // 候選池計數的快取鍵是實際用的 facetIds 集合：facet 項目與同維度的 dimension 項目池不同，各數一次。
         var pools = new Dictionary<string, long>();
-        var results = new object[queries.Length];
-        var summary = new string[queries.Length];
+        // 先組 detail，摘要與回給模型的 JSON 都從它投影，三邊同一份資料。detail 不放 snippet，原始命中另存給模型用。
+        var items = new SearchPresetsItem[queries.Length];
+        var rawHits = new IReadOnlyList<PresetHit>?[queries.Length];
         var presetsOut = new List<PresetRef>();
         var seen = new HashSet<long>();
 
@@ -88,35 +89,50 @@ public sealed class KnowledgePlugin(TurnContext turn, FacetCatalog catalog, IEmb
                 pools[poolKey] = pool = await presets.PoolSizeAsync(facetIds, ct);
             var hits = await presets.SearchAsync(vectors[vi], facetIds, k, ct);
 
-            var rows = new List<object>();
+            var detailHits = new List<SearchPresetsHit>();
             foreach (var h in hits)
             {
                 s.Ledger.Record(new LedgerEntry { Id = h.Id, Title = h.Title, PromptSnippet = h.PromptSnippet, NegativeSnippet = h.NegativeSnippet, FacetIds = h.FacetIds, ImageUrl = h.ImageUrl, SourceRef = h.SourceRef },
                     new LedgerHit(dimension, h.Dist, isGrounded));
-                rows.Add(new
-                {
-                    id = h.Id, title = h.Title, band = Band(h.Dist), dist = Math.Round(h.Dist, 3),
-                    usable = isGrounded ? "可借入提示詞" : "僅供建議",
-                    facets = h.FacetIds.ToDictionary(f => f, f => FacetStateParser.ToWire(s.FacetStates.GetValueOrDefault(f, FacetState.NotApplicable))),
-                    positive = h.PromptSnippet, negative = h.NegativeSnippet ?? "(無)",
-                });
+                detailHits.Add(new SearchPresetsHit(h.Id, h.Title, Band(h.Dist), Math.Round(h.Dist, 3), isGrounded,
+                    h.FacetIds.ToDictionary(f => f, f => FacetStateParser.ToWire(s.FacetStates.GetValueOrDefault(f, FacetState.NotApplicable)))));
                 if (seen.Add(h.Id)) presetsOut.Add(new PresetRef(h.Id, h.Title, h.ImageUrl, h.SourceRef));
             }
-            results[index] = new { dimension, facetId, query, grounded = isGrounded, poolSize = pool, hits = rows };
             var label = facetId is null ? catalog.DimensionLabel(dimension, s.Profile) : catalog.Facets[facetId].Label;
-            summary[index] = $"{label} 池 {pool} → {rows.Count}";
+            items[index] = new SearchPresetsItem(dimension, facetId, label, query, isGrounded, pool, k, null, detailHits);
+            rawHits[index] = hits;
         }
         foreach (var (i, message) in errors)
         {
             var q = queries[i];
-            results[i] = new { dimension = q.Dimension ?? "", facetId = q.FacetId, query = q.Query ?? "", error = message };
+            // 錯誤項目的 Label 用模型送的原始 facetId 或 dimension，摘要才會照舊顯示「hair 錯誤」
             var raw = string.IsNullOrWhiteSpace(q.FacetId) ? q.Dimension ?? "" : q.FacetId;
-            summary[i] = $"{raw} 錯誤".TrimStart();
+            items[i] = new SearchPresetsItem(q.Dimension ?? "", q.FacetId, raw, q.Query ?? "", false, 0, 0, message, Array.Empty<SearchPresetsHit>());
         }
 
-        turn.Emit(new ToolResultEvent(turn.CurrentCallId ?? Guid.NewGuid().ToString("N"), ToolNames.SearchPresets, string.Join("・", summary), presetsOut));
+        var summary = items.Select(it => it.Error is null ? $"{it.Label} 池 {it.PoolSize} → {it.Hits.Count}" : $"{it.Label} 錯誤".TrimStart());
+        turn.Emit(new ToolResultEvent(turn.CurrentCallId ?? Guid.NewGuid().ToString("N"), ToolNames.SearchPresets, string.Join("・", summary), presetsOut,
+            new SearchPresetsDetail(items)));
+
+        var results = items.Select((it, i) => ModelResult(it, rawHits[i])).ToList();
         return JsonSerializer.Serialize(new { results }, Json);
     }
+
+    /// <summary>detail 的一個項目投影成回給模型的形狀：欄位名、順序與內容與加 detail 之前逐字相同。
+    /// usable 換回中文字串，並補上 detail 不放的 snippet（raw 與 it.Hits 在同一個迴圈裡組成，同序）。</summary>
+    private static object ModelResult(SearchPresetsItem it, IReadOnlyList<PresetHit>? raw) => it.Error is not null
+        ? new { dimension = it.Dimension, facetId = it.FacetId, query = it.Query, error = it.Error }
+        : new
+        {
+            dimension = it.Dimension, facetId = it.FacetId, query = it.Query, grounded = it.Grounded, poolSize = it.PoolSize,
+            hits = it.Hits.Zip(raw!, (h, r) => new
+            {
+                id = h.Id, title = h.Title, band = h.Band, dist = h.Dist,
+                usable = h.Usable ? "可借入提示詞" : "僅供建議",
+                facets = h.Facets,
+                positive = r.PromptSnippet, negative = r.NegativeSnippet ?? "(無)",
+            }).ToList(),
+        };
 
     [KernelFunction(ToolNames.SearchSimilarPrompts)]
     [Description("用整句需求找相似的既有作品，只供風格參考，不要照抄。")]
@@ -129,7 +145,9 @@ public sealed class KnowledgePlugin(TurnContext turn, FacetCatalog catalog, IEmb
         if (s.Profile is null) return "錯誤：請先呼叫 SetProfile";
         var vec = (await embed.EmbedAsync(new[] { intent }, GeminiEmbeddingClient.RetrievalQuery, ct))[0];
         var hits = await histories.SearchAsync(vec, s.Profile, Math.Clamp(topK, 1, 5), ct);
-        turn.Emit(new ToolResultEvent(turn.CurrentCallId ?? Guid.NewGuid().ToString("N"), ToolNames.SearchSimilarPrompts, $"相似作品 {hits.Count}（{s.Profile}）", null));
+        var detail = new SearchSimilarDetail(hits.Select(h => new SearchSimilarHit(
+            h.UserIntent.Length > 40 ? h.UserIntent[..40] + "…" : h.UserIntent, h.SubjectProfile, Math.Round(h.Dist, 3))).ToList());
+        turn.Emit(new ToolResultEvent(turn.CurrentCallId ?? Guid.NewGuid().ToString("N"), ToolNames.SearchSimilarPrompts, $"相似作品 {hits.Count}（{s.Profile}）", null, detail));
         return JsonSerializer.Serialize(hits.Select(h => new { intent = h.UserIntent, positive = h.PositivePrompt, profile = h.SubjectProfile, dist = Math.Round(h.Dist, 3) }), Json);
     }
 }

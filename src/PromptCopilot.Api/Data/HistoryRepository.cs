@@ -24,7 +24,7 @@ public class HistoryRepository(NpgsqlDataSource ds)
         RETURNING id
         """;
 
-    public async Task<IReadOnlyList<HistoryHit>> SearchAsync(float[] query, string profile, int k, CancellationToken ct)
+    public virtual async Task<IReadOnlyList<HistoryHit>> SearchAsync(float[] query, string profile, int k, CancellationToken ct)
     {
         await using var cmd = ds.CreateCommand(SearchSql);
         cmd.Parameters.AddWithValue("q", new Vector(query));
