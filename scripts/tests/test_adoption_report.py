@@ -24,7 +24,7 @@ def ask(session, turn, rec=None):
     return Turn(session, turn, p)
 
 
-def test_adoption_rate_counts_only_the_very_next_turn_of_the_same_session():
+def test_adoption_rate_counts_only_adoptions_in_the_same_session():
     turns = [
         fin("a", 1, rec=REC_CLOTHING), fin("a", 2, adoption=ADOPT_CLOTHING),  # 採用
         fin("b", 1, rec=REC_STYLE), fin("b", 2),                             # 沒採用
@@ -32,6 +32,32 @@ def test_adoption_rate_counts_only_the_very_next_turn_of_the_same_session():
     ]
     text = build_report(turns)
     assert "定稿輪採用率：1/3（33.3%）" in text
+    assert "未對到推薦輪的採用：1" in text  # d 的採用之前沒有卡
+
+
+def test_adoption_after_a_discuss_turn_links_back_to_the_latest_card():
+    turns = [
+        ask("a", 1, rec=REC_CLOTHING),
+        Turn("a", 2, {"outcome": "MessageOutcome"}),  # 中間討論一輪，卡沒換
+        fin("a", 3, adoption=ADOPT_CLOTHING),
+    ]
+    assert "追問輪採用率：1/1（100.0%）" in build_report(turns)
+
+
+def test_a_card_adopted_twice_counts_once():
+    turns = [
+        ask("a", 1, rec=REC_CLOTHING),
+        Turn("a", 2, {"outcome": "MessageOutcome", "adoption": ADOPT_CLOTHING}),  # 採用後模型只回話、沒出新卡
+        fin("a", 3, adoption=ADOPT_CLOTHING),
+    ]
+    text = build_report(turns)
+    assert "追問輪採用率：1/1（100.0%）" in text
+    assert "採用 2 次" in text
+    assert "採用時該維度有錨：2/2" in text
+
+
+def test_zero_denominator_prints_a_dash_not_zero_percent():
+    assert "定稿輪採用率：0/0（—）" in build_report([fin("a", 1)])
 
 
 def test_ask_turns_are_reported_separately():
