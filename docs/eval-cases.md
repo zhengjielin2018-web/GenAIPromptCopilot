@@ -1,7 +1,7 @@
 # 人工 Eval 案例
 
 每次改 `Prompts/system.md` 後手動跑，記錄結果與 `prompt_version`（`audit_logs.prompt_version`，或 `Turn_Completed` 那筆的欄位）。
-1–13 來自主規格 §12.3，14–23 來自多輪對話設計 §8.3。
+1–13 來自主規格 §12.3，14–23 來自多輪對話設計 §8.3，24 之後來自後續的修正與功能設計（見各列預期裡提到的設計文件）。
 
 | # | 輸入 | 預期 | prompt_version | 結果 | 日期 |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -128,7 +128,7 @@ fresh clone 在暫存目錄進行，只放 `.env`；開發用的 stack 先 `dock
 API 層是用 SSE 直接打分支 `feat/set-recommendations` 的 API（本機 5010 埠），沒開前端。session：S1–S3 `5c422dd6…`（prompt_version 依序 7329f17c68b4、0424e1916433、f1c04de38f36），S4 `ec15eb6e…`（82e0ed128450）。全程沒有 `Turn_Failed`、`Protocol_Violation`。
 
 - `facet_tags` 以 `scripts/backfill_facet_tags.py` 回填開發庫。第一輪留下 863 筆 `{}`、other 23.4%：模型常把該筆以「 | 」串起的整行 tag 當成一個 tag 回傳，對不上原字而整筆被丟掉。修正後（tag 改以 JSON 陣列送出、合併回來的 key 拆開比對）用 `--redo-empty` 重送這 863 筆，現在 19,354 筆 NULL 0、`{}` 33 筆（抽查是 tag 確實不屬於該筆提供的 facet），other 約 20.5%。第一輪裡部分 tag 被合併回傳而落進 other 的列不是 `{}`，`--redo-empty` 不會重送；要找回得整表重跑（約 970 次呼叫），這次沒做。
-- seed-v2：dump 已在本機匯出（104.8 MB，`facet_tags` 在內）。⏸ 等 release：Release `seed-v2` 還沒建，`docker-compose.yml` 的 `SEED_URL` 維持 seed-v1，新 volume 起 stack 的那一步也還沒跑。
+- seed-v2：dump 在本機匯出（104.8 MB，`facet_tags` 在內），Release `seed-v2` 已於 2026-09-25 發布，`docker-compose.yml` 的 `SEED_URL` 預設值已改成 seed-v2（`8d9666c`）。⏳ 新 volume 從 seed-v2 起整套 stack 的驗證還沒記錄。
 
 ## 2026-09-25 測試用審查開關（待跑）
 
@@ -142,3 +142,4 @@ API 層是用 SSE 直接打分支 `feat/set-recommendations` 的 API（本機 50
 | T4 | 關掉開關（整組轉洋紅、出現「已關閉（測試用）」），重送同一句 | 不被我們擋（Gemini 自己仍可能 `Blocked_Upstream`）；audit `Turn_Completed` 的 payload 有 `"safety":"off"` | ⏳ |
 | T5 | 開關關著，採用一套含 `see-through` 的穿著組合（如 #41745） | 定稿，不出現 `Blocked_Output`（`Blocked_Upstream` 仍可能） | ⏳ |
 | T6 | 重新整理 | 開關回到開著 | ⏳ |
+| T7 | 開關關著跑到定稿，按「存進共享知識庫」送出 | 顯示「這份定稿是在關閉程式端審查時產生的…」，`save-to-shared` 回 409，`shared_prompt_histories` 沒有新列；打開開關再定稿一次後可以存 | ⏳ |

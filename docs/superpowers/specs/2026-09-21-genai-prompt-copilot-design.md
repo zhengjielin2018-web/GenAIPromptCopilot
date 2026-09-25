@@ -1,7 +1,7 @@
 # GenAI Prompt Copilot — 設計規格
 
 日期：2026-09-21
-狀態：已定案。子專案 1（資料地基）已實作並通過 §14 驗收（2026-09-22）；子專案 2（SK Agent 核心）已實作，以 `manual-tests/chat.py` 手動跑完對話迴圈（2026-09-24），降級檢查點結論見 §4.10；子專案 3（Nuxt 3 前端 + SSE）已實作並通過 §14 驗收（2026-09-24，瀏覽器，結果見 `docs/eval-cases.md`）；子專案 4（收尾與展示）打包驗收通過（2026-09-24：fresh clone 一鍵啟動、種子自 Release 匯入、CI 四個 job 綠，結果見 `docs/eval-cases.md`），瀏覽器展示驗收與截圖待 `docs/known-issues.md` 第 1、2 項修正後補；設計見 [2026-09-24-subproject-4-packaging-design.md](2026-09-24-subproject-4-packaging-design.md)
+狀態：已定案。子專案 1（資料地基）已實作並通過 §14 驗收（2026-09-22）；子專案 2（SK Agent 核心）已實作，以 `manual-tests/chat.py` 手動跑完對話迴圈（2026-09-24），降級檢查點結論見 §4.10；子專案 3（Nuxt 3 前端 + SSE）已實作並通過 §14 驗收（2026-09-24，瀏覽器，結果見 `docs/eval-cases.md`）；子專案 4（收尾與展示）打包驗收通過（2026-09-24：fresh clone 一鍵啟動、種子自 Release 匯入、CI 四個 job 綠，結果見 `docs/eval-cases.md`），瀏覽器展示驗收（P3）與截圖（P7）原本等 `docs/known-issues.md` 第 1、2 項，兩項已修正（2026-09-24），尚未補跑；設計見 [2026-09-24-subproject-4-packaging-design.md](2026-09-24-subproject-4-packaging-design.md)
 前身文件：[docs/初步想法.md](../../初步想法.md)（本文件取代其中的架構與流程章節；技術棧與階段藍圖以本文件為準）
 
 ---
@@ -530,6 +530,8 @@ profiles:
 2. 分類路徑：一次 Gemini Flash 結構化呼叫，回傳 `{ nsfw: bool, realPerson: bool, personName?: string, wantsAutoComplete: bool, reason: string }`。`nsfw` 或 `realPerson` 為 true 即擋；`wantsAutoComplete` 交給 §4.3 的工具清單組裝。
 3. 命中 → 回 `blocked` 事件、寫 `audit_logs`（`Blocked_NSFW` / `Blocked_Celebrity`）、本輪不進 kernel、不計 `AskCount`。
 
+> **測試用的審查開關（2026-09-25）。** `POST /messages` 的 body 可帶 `"safety": "off"`，那一輪不做程式端審查：denylist 不比對；輸入分類器照跑，但只用它的 `wantsAutoComplete`（「你看著辦」只有它判得出來，跳過它等於連流程一起改掉），`nsfw`／`realPerson` 不攔；§6.2 的 `OutputSafetyFilter` 與純文字補救的輸出檢查都跳過。Gemini 自己的攔截（`Blocked_Upstream`）不受影響。後端 `Safety:AllowDisable`（compose 用 `.env` 的 `SAFETY_ALLOW_DISABLE`）預設 `false`，沒開時帶 `off` 回 `403`：誰都能打 API，不能一個欄位就關掉審查。那一輪的 `Turn_Completed` payload 記 `"safety": "off"`；那一輪產生的定稿標成未審查，`save-to-shared` 回 `409`，不讓沒檢過的內容進共享庫。
+
 ### 6.2 輸出側 `OutputSafetyFilter`
 
 **檢查範圍是全部對外輸出面**，不只定稿：
@@ -729,9 +731,10 @@ scripts/
 | :--- | :--- | :--- |
 | `POST` | `/api/sessions` | body 可省略 `{ retrieval?: "on" \| "off" }`（預設 `on`；`off` 不查知識庫，建立後不可改，2026-09-25 起）→ `{ sessionId, retrieval }` |
 | `GET` | `/api/sessions/{id}` | session 目前的權威狀態（status、profile、facetStates、askCount／askLimit、lastFinal，含 tag 來源、retrieval、facetTags）；前端重載重建用；不拿 session 鎖；`404` 表示不存在或已過期 |
-| `POST` | `/api/sessions/{id}/messages` | body `{ text }` 或 `{ adopt: { presetId, dimension, take } }`（2026-09-25 採用推薦組合，伺服器組句）；回 `text/event-stream`；同一 session 已有一輪在跑 → `409`；`adopt` 但 `retrieval: off` 或未判定題材 → `409`；`adopt` 不合法 → `400` |
-| `POST` | `/api/sessions/{id}/save-to-shared` | body `{ intent }`；需 `Finalized`，否則 `409`；寫 `shared_prompt_histories` 並向量化；**唯一的寫入路徑** |
+| `POST` | `/api/sessions/{id}/messages` | body `{ text }` 或 `{ adopt: { presetId, dimension, take } }`（2026-09-25 採用推薦組合，伺服器組句），兩者都可加 `safety: "on" \| "off"`（預設 `on`；`off` 是測試用的審查開關，§6.1）；回 `text/event-stream`；同一 session 已有一輪在跑 → `409`；`adopt` 但 `retrieval: off` 或未判定題材 → `409`；`adopt` 不合法、`safety` 不是 on／off → `400`；`safety: off` 但後端沒開放 → `403` |
+| `POST` | `/api/sessions/{id}/save-to-shared` | body `{ intent }`；需 `Finalized`，否則 `409`；最後一次定稿是在 `safety: off` 時產生的也 `409`；寫 `shared_prompt_histories` 並向量化；**唯一的寫入路徑** |
 | `GET` | `/api/config/facets` | 回 `facets.yaml` 內容供前端渲染 |
+| `GET` | `/api/config/safety` | `{ canDisable }`：後端 `Safety:AllowDisable` 是否開著；前端據此決定顯不顯示審查開關（2026-09-25） |
 | `GET` | `/api/presets/{id}` | preset 詳情（抽屜用）；含 `sourceRef` 與伺服器算的 `sourceUrl`（出處連結，子專案 4）；`facetTags`（2026-09-25，未回填時為 null） |
 | `GET` | `/health` | |
 
@@ -917,9 +920,11 @@ GenAIPromptCopilot/
 │  ├─ 初步想法.md
 │  ├─ eval-cases.md
 │  ├─ 資料來源.md                         # 來源、授權、署名、公開散布與免責聲明
-│  ├─ images/                            # README 截圖
+│  ├─ images/                            # README 截圖（待補，子專案 4 P7）
 │  └─ superpowers/specs/2026-09-21-genai-prompt-copilot-design.md
-├─ db/init/001_schema.sql
+├─ db/
+│  ├─ init/001_schema.sql                # 新建的庫一次到位
+│  └─ migrations/                        # 既有庫升級用（IF NOT EXISTS，seed.sh 每次啟動都套）
 ├─ src/
 │  ├─ PromptCopilot.Api/                 # .NET 10
 │  │  ├─ Endpoints/
@@ -938,7 +943,7 @@ GenAIPromptCopilot/
 │  ├─ PromptCopilot.Api.Tests/
 │  └─ PromptCopilot.Frontend/            # Nuxt 3 SPA（ssr: false）+ Tailwind + Pinia + vitest
 │     ├─ types/api.ts                     # 後端 DTO 與 SSE 事件型別，唯一定義處
-│     ├─ lib/                             # 純函式：sse、reducer、persist、composer、dashboard、copy
+│     ├─ lib/                             # 純函式：sse、reducer、persist、composer、dashboard、copy、options、prefs、trace、adopt、safety
 │     ├─ composables/useApi.ts
 │     ├─ stores/session.ts                # 唯一的 Pinia store，狀態變更全走 lib/reducer
 │     ├─ components/
@@ -947,6 +952,8 @@ GenAIPromptCopilot/
 │  ├─ pipeline/
 │  ├─ seed_data.py
 │  ├─ export_seed.py                     # 匯出公開的知識庫種子 dump（丟棄容器裡過濾，開發庫唯讀）
+│  ├─ backfill_facet_tags.py             # 一次性回填 facet_tags（整套組合推薦用）
+│  ├─ adoption_report.py                 # 由 audit_logs 算推薦採用率
 │  ├─ requirements.txt
 │  └─ data/{raw,clean,structured}/       # git ignore
 ├─ manual-tests/                         # 手動試用：start_api.py 起 API、chat.py 終端機對話
@@ -1040,3 +1047,4 @@ Azure 部署排除。
 | `tool_result.callId` | 等於 `tool_call.callId` | 前端要配對；id 由 `AuditFilter` 算好掛在 `TurnContext` 上（§10.2） |
 | 錯誤 frame 的內容 | 固定句子，不帶例外訊息 | 例外訊息可能帶連線字串、路徑、上游原文；內文留在 audit 與 log |
 | `save-to-shared` 的併發 | 與 `/messages` 共用 session 鎖，拿不到回 409 | 它讀的 `FacetStates`／`LastFinal` 在一輪跑完之前都還可能被回滾（§10.1） |
+| 測試用審查開關 | 逐則帶 `safety: off`，後端 `Safety:AllowDisable` 預設關、沒開回 403；輸入分類器照跑只取 `wantsAutoComplete`；Gemini 的攔截不動；未審查的定稿不能 `save-to-shared` | 要能重現「我們自己的防線誤擋」與「關掉之後上游還擋不擋」；做成逐則而不是 session 屬性，重新整理就回到開著。共享庫會被別的對話檢索到，沒檢過的內容不能從唯一的寫入路徑進去（§6.1） |

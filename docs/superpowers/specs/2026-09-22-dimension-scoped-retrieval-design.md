@@ -1,7 +1,7 @@
 # 分維度檢索與兩段式組裝 — 設計規格
 
 日期：2026-09-22
-狀態：已實作並驗收（`scripts/demo.py`、`scripts/pipeline/retrieval.py`，2026-09-22）；§10 改寫稿已併入主規格 §9，待子專案 2 採用
+狀態：已實作並驗收（`scripts/demo.py`、`scripts/pipeline/retrieval.py`，2026-09-22）；§10 改寫稿已併入主規格 §9，子專案 2 的 `SearchPresets` 依此實作（之後改為批次與 facet 層級，見 `2026-09-24-batch-search-presets-design.md`）
 範圍：`scripts/demo.py` 的檢索與組裝流程；同時改寫主規格 [§9 檢索策略](2026-09-21-genai-prompt-copilot-design.md#9-檢索策略)，供子專案 2 的 `SearchPresets` 遵循。
 
 ---

@@ -4,9 +4,10 @@
 
 用繁體中文描述想要的畫面，系統以六個維度判斷資訊夠不夠、主動追問缺的細節、從知識庫推薦可用片段，最後產出 SD／SDXL tag 風格的英文正／負向提示詞，逐個 tag 標示來源（知識庫片段、採用的組合或模型生成）。每次追問與定稿另外推薦知識庫裡真實存在、有圖的整套組合，使用者可逐項採用。求職作品集專案：每個技術點都有看得見的實證，功能深度其次。
 
+<!-- 截圖待補（子專案 4 設計 §7.2 P7）：docs/images/chat.png（對話流＋六維度儀表板）、docs/images/final.png（定稿卡片）。檔案進版控後換回：
 ![對話流與六維度儀表板](docs/images/chat.png)
-
 ![定稿卡片](docs/images/final.png)
+-->
 
 ## 架構
 
@@ -41,7 +42,7 @@ flowchart LR
     pipe --> histories
 ```
 
-一輪對話：使用者送一句話 → 輸入側安全過濾 → 模型在動態組出的工具清單裡自己決定要查知識庫、更新儀表板、追問、討論還是定稿 → 每個工具呼叫即時以 SSE 推到前端 → 該輪以一個終止型工具收尾。任何一步失敗整輪回滾，跟資料庫交易一樣。細節見 [docs/單輪流程說明.md](docs/單輪流程說明.md)。
+一輪對話：使用者送一句話 → 輸入側安全過濾 → 模型在動態組出的工具清單裡自己決定要查知識庫、更新儀表板、追問、討論還是定稿 → 每個工具呼叫即時以 SSE 推到前端 → 該輪以一個終止型工具收尾。任何一步失敗整輪回滾，跟資料庫交易一樣。細節見[主規格 §4](docs/superpowers/specs/2026-09-21-genai-prompt-copilot-design.md#4-核心編排全-agentic)；檢索與組裝的逐步拆解（以 Python 單輪 demo 實跑）見 [docs/單輪流程說明.md](docs/單輪流程說明.md)。
 
 ## 技術對照
 
@@ -70,6 +71,9 @@ docker compose up
 
 不想灌種子、要自己跑管線：`.env` 加一行 `SEED_URL=`（空字串），再照 [scripts/README.md](scripts/README.md)。
 
+- 沒填 `GEMINI_API_KEY`：整套照樣起來，但每一輪對話都會失敗（`docker compose logs api` 開頭有一行警告）。填好後 `docker compose up -d api` 重建 api 容器即可。
+- 重置知識庫：`docker compose down -v` 刪掉資料庫 volume，下次 `up` 重新建表並灌種子。
+
 ## 本機開發
 
 | 想做什麼 | 看哪裡 |
@@ -90,8 +94,8 @@ docker compose up
 ## 文件
 
 - [主規格](docs/superpowers/specs/2026-09-21-genai-prompt-copilot-design.md)：目標、架構、編排、facet 體系、安全、資料模型、API 協定、測試策略
-- 子專案設計：[語料擴增](docs/superpowers/specs/2026-09-22-corpus-expansion-design.md)、[分維度檢索](docs/superpowers/specs/2026-09-22-dimension-scoped-retrieval-design.md)、[多輪對話](docs/superpowers/specs/2026-09-22-multi-turn-dialogue-design.md)、[前端與 SSE](docs/superpowers/specs/2026-09-24-frontend-sse-design.md)、[整套組合推薦](docs/superpowers/specs/2026-09-25-set-recommendations-design.md)、[收尾與展示](docs/superpowers/specs/2026-09-24-subproject-4-packaging-design.md)
-- [單輪流程說明](docs/單輪流程說明.md)、[eval 案例](docs/eval-cases.md)、[初步想法](docs/初步想法.md)
+- 子專案設計：[語料擴增](docs/superpowers/specs/2026-09-22-corpus-expansion-design.md)、[分維度檢索](docs/superpowers/specs/2026-09-22-dimension-scoped-retrieval-design.md)、[多輪對話](docs/superpowers/specs/2026-09-22-multi-turn-dialogue-design.md)、[批次 SearchPresets](docs/superpowers/specs/2026-09-24-batch-search-presets-design.md)、[前端與 SSE](docs/superpowers/specs/2026-09-24-frontend-sse-design.md)、[收尾與展示](docs/superpowers/specs/2026-09-24-subproject-4-packaging-design.md)、[知識庫開關與檢索細節](docs/superpowers/specs/2026-09-25-retrieval-switch-and-trace-design.md)、[整套組合推薦](docs/superpowers/specs/2026-09-25-set-recommendations-design.md)
+- [單輪流程說明](docs/單輪流程說明.md)、[eval 案例](docs/eval-cases.md)、[資料來源](docs/資料來源.md)、[初步想法](docs/初步想法.md)
 - [已知問題與待修清單](docs/known-issues.md)
 
 ## 授權

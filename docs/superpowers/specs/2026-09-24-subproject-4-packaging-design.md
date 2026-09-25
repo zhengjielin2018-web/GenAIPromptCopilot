@@ -1,7 +1,7 @@
 # 子專案 4：收尾與展示 — 設計規格
 
 日期：2026-09-24
-狀態：§7.1 形狀階段與 §7.2 的 P1、P2、P4–P6、P7 的 CI 部分通過（2026-09-24，結果見 `docs/eval-cases.md`）。P3 瀏覽器 eval 與 P7 截圖延到 `docs/known-issues.md` 第 1、2 項修正後。實作與上文不同處見 §9
+狀態：§7.1 形狀階段與 §7.2 的 P1、P2、P4–P6、P7 的 CI 部分通過（2026-09-24，結果見 `docs/eval-cases.md`）。P3 瀏覽器 eval 與 P7 截圖原本延到 `docs/known-issues.md` 第 1、2 項修正後；兩項已修正（2026-09-24），尚未補跑。預設種子已改為 seed-v2（多了 `facet_tags`，`8d9666c`）。實作與上文不同處見 §9
 主規格：[2026-09-21-genai-prompt-copilot-design.md](2026-09-21-genai-prompt-copilot-design.md) §2.1 第 4 項、§13、§14 第 4 列
 前端設計：[2026-09-24-frontend-sse-design.md](2026-09-24-frontend-sse-design.md) §2.5（nginx 反代同一條路徑）
 資料來源：[docs/資料來源.md](../../資料來源.md)
