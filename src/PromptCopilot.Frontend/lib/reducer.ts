@@ -1,9 +1,10 @@
-import { TERMINAL_TOOLS, type AgentEvent, type FacetState, type FinalData, type FinalizedData, type PresetRef, type RetrievalMode, type SessionSnapshotDto, type SessionStatus, type ToolDetail } from '../types/api'
+import { TERMINAL_TOOLS, type AgentEvent, type FacetState, type FinalData, type FinalizedData, type PresetRef, type Recommendations, type RetrievalMode, type SessionSnapshotDto, type SessionStatus, type ToolDetail } from '../types/api'
 
 export interface UserEntry { kind: 'user'; text: string }
 /** detail 是 2026-09-25 加的：之前存進 sessionStorage 的條目沒有這個鍵。 */
 export interface ToolEntry { kind: 'tool'; callId: string; name: string; argsSummary: string; summary: string | null; presets: PresetRef[]; detail?: ToolDetail | null; done: boolean }
-export interface FinalEntry { kind: 'final'; turnIndex: number; data: FinalData }
+/** recommendations 是 2026-09-25 加的：舊條目沒有這個鍵。 */
+export interface FinalEntry { kind: 'final'; turnIndex: number; data: FinalData; recommendations?: Recommendations | null }
 export interface FailureEntry { kind: 'failure'; source: 'error' | 'blocked' | 'stream_ended' | 'http'; code: string; message: string; originalText: string }
 export type Entry = UserEntry | ToolEntry | FinalEntry | FailureEntry
 
@@ -13,6 +14,8 @@ export interface ChatState {
   status: SessionStatus
   profile: string | null
   facetStates: Record<string, FacetState>
+  /** 模型給每個已涵蓋 facet 的英文 tag；儀表板 chip 的 title 顯示 */
+  facetTags: Record<string, string>
   askCount: number
   askLimit: number
   /** 這段對話建立時定下的知識庫開關；對話中途不會變 */
@@ -27,7 +30,7 @@ export interface ChatState {
 export function initialState(): ChatState {
   return {
     sessionId: null, turnIndex: 0, status: 'Collecting', profile: null,
-    facetStates: {}, askCount: 0, askLimit: 2, retrieval: 'on',
+    facetStates: {}, facetTags: {}, askCount: 0, askLimit: 2, retrieval: 'on',
     transcript: [], lastFinal: null, highlighted: [], pending: null,
   }
 }
@@ -43,6 +46,8 @@ export function hydrate(state: ChatState, dto: SessionSnapshotDto, transcript: E
     ...state,
     sessionId: dto.sessionId, status: dto.status, profile: dto.profile, turnIndex: dto.turnIndex,
     askCount: dto.askCount, askLimit: dto.askLimit, facetStates: { ...dto.facetStates },
+    // 舊後端沒有 facetTags
+    facetTags: { ...(dto.facetTags ?? {}) },
     // 舊後端的回應沒有 retrieval：那時還沒有開關，一律是 on
     retrieval: dto.retrieval ?? 'on',
     lastFinal, transcript: entries, highlighted: [], pending: null,
@@ -59,8 +64,16 @@ export function beginTurn(state: ChatState, text: string): ChatState {
 
 export function applyEvent(state: ChatState, ev: AgentEvent): ChatState {
   switch (ev.type) {
-    case 'session':
-      return { ...state, sessionId: ev.sessionId, turnIndex: ev.turnIndex, status: ev.status, highlighted: [] }
+    case 'session': {
+      const next = { ...state, sessionId: ev.sessionId, turnIndex: ev.turnIndex, status: ev.status, highlighted: [] }
+      // 採用輪：泡泡先放暫代字，這裡換成伺服器組的那句（只換這一輪還在等的那則）
+      if (!ev.text || !state.pending) return next
+      const idx = findLastIndex(state.transcript, e => e.kind === 'user')
+      if (idx < 0) return next
+      const transcript = state.transcript.slice()
+      transcript[idx] = { kind: 'user', text: ev.text }
+      return { ...next, transcript }
+    }
 
     case 'tool_call': {
       if (TERMINAL_TOOLS.has(ev.name)) return state
@@ -84,7 +97,7 @@ export function applyEvent(state: ChatState, ev: AgentEvent): ChatState {
 
     case 'dimensions':
       // 線上省略 null（WhenWritingNull），缺鍵要補回 null，否則 state 裡會出現 undefined
-      return { ...state, profile: ev.profile ?? null, facetStates: { ...ev.facetStates } }
+      return { ...state, profile: ev.profile ?? null, facetStates: { ...ev.facetStates }, facetTags: { ...(ev.facetTags ?? {}) } }
 
     case 'token': {
       const idx = findLastIndex(state.transcript, e => e.kind === 'final' && e.data.kind === 'message')
@@ -108,6 +121,15 @@ export function applyEvent(state: ChatState, ev: AgentEvent): ChatState {
         next = { ...next, lastFinal: data as FinalizedData, status: 'Finalized' }
       }
       return next
+    }
+
+    case 'recommendations': {
+      const idx = findLastIndex(state.transcript, e => e.kind === 'final' && e.turnIndex === ev.turnIndex)
+      if (idx < 0) return state
+      const { type: _t, ...recs } = ev
+      const transcript = state.transcript.slice()
+      transcript[idx] = { ...(transcript[idx] as FinalEntry), recommendations: recs as Recommendations }
+      return { ...state, transcript }
     }
 
     case 'error':

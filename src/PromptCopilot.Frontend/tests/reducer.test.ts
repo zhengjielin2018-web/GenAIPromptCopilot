@@ -8,6 +8,9 @@ const result = (id: string): AgentEvent => ({ type: 'tool_result', callId: id, n
 const dims: AgentEvent = { type: 'dimensions', profile: 'portrait', facetStates: { 'style.genre': 'covered', 'scene.location': 'missing' } }
 const ask: AgentEvent = { type: 'final', kind: 'ask', preamble: 'p', asks: [{ dimension: 'style', question: 'q', missingFacetIds: ['style.genre'], options: [{ label: 'a', tags: 't', presetId: null }] }] }
 const finalized: AgentEvent = { type: 'final', kind: 'finalized', positive: 'P', negative: 'N', tips: 'T', intentSummary: 'I' }
+const recs: AgentEvent = { type: 'recommendations', turnIndex: 1, dimensions: [{ dimension: 'style', label: '風格', anchored: false, anchorTags: [], sets: [
+  { presetId: 7, title: '油畫', imageUrl: 'https://img', sourceRef: 'civitai:1:0', dist: 0.2, facets: [{ facetId: 'style.genre', label: '藝術流派', state: 'missing', tags: ['oil painting'] }] },
+] }] }
 // 線上照 WhenWritingNull：llm／base 的 presetTitle 是 null，整個鍵不會出現
 const POS: TagSource[] = [{ tag: 'neon lights', origin: 'rag', presetIds: [9, 3], presetTitle: '霓虹雨夜' }, { tag: '1girl', origin: 'llm', presetIds: [] }]
 const NEG: TagSource[] = [{ tag: 'lowres', origin: 'base', presetIds: [] }]
@@ -131,6 +134,39 @@ describe('applyEvent', () => {
     const before = started()
     expect(applyEvent(before, { type: 'whatever' } as any)).toEqual(before)
   })
+
+  // 設計 §7.1：推薦掛在該輪的追問卡／定稿卡上，重載後跟著 transcript 一起回來
+  it('recommendations attaches to the final entry of its turn', () => {
+    let s = applyEvent(started(), ask)
+    s = applyEvent(s, recs)
+    const entry = s.transcript.at(-1) as any
+    expect(entry.kind).toBe('final')
+    expect(entry.recommendations.dimensions[0].sets[0].presetId).toBe(7)
+  })
+
+  it('recommendations for a turn without a final entry is ignored', () => {
+    const s = applyEvent(started(), { ...recs, turnIndex: 9 } as AgentEvent)
+    expect(s.transcript.some(e => e.kind === 'final')).toBe(false)
+  })
+
+  // 採用輪：送出當下泡泡是暫代字，session 事件帶伺服器組的那句
+  it('session with text replaces the pending user entry text', () => {
+    let s = beginTurn({ ...initialState(), sessionId: 's1' }, '採用〈油畫〉…')
+    s = applyEvent(s, { type: 'session', sessionId: 's1', turnIndex: 2, status: 'Finalized', text: '採用〈油畫〉（知識庫 #7）：藝術流派照它的（oil painting）。' })
+    expect(s.transcript.at(-1)).toEqual({ kind: 'user', text: '採用〈油畫〉（知識庫 #7）：藝術流派照它的（oil painting）。' })
+  })
+
+  it('session without text leaves the user entry alone', () => {
+    const s = started()
+    expect(s.transcript.at(-1)).toEqual({ kind: 'user', text: '一個女生' })
+  })
+
+  it('dimensions carries facetTags; missing key resets to {}', () => {
+    let s = applyEvent(started(), { ...dims, facetTags: { 'style.genre': 'oil painting' } } as AgentEvent)
+    expect(s.facetTags).toEqual({ 'style.genre': 'oil painting' })
+    s = applyEvent(s, dims)
+    expect(s.facetTags).toEqual({})
+  })
 })
 
 describe('endTurn', () => {
@@ -211,6 +247,14 @@ describe('hydrate', () => {
   it('drops the dangling user entry before appending the synthetic card', () => {
     expect(hydrate(initialState(), dto(), [user('a'), msg(3), user('b')]).transcript)
       .toEqual([user('a'), msg(3), { kind: 'final', turnIndex: 4, data: { kind: 'finalized', ...LAST } }])
+  })
+
+  it('takes facetTags from the dto and defaults to {} for an old backend; old final entries without recommendations survive', () => {
+    const dto = { sessionId: 's1', status: 'Collecting', profile: 'portrait', turnIndex: 1, askCount: 0, askLimit: 2, facetStates: {}, lastFinal: null } as SessionSnapshotDto
+    const old: Entry[] = [{ kind: 'user', text: 'x' }, { kind: 'final', turnIndex: 1, data: { kind: 'ask', preamble: 'p', asks: [] } }]
+    expect(hydrate(initialState(), dto, old).facetTags).toEqual({})
+    expect((hydrate(initialState(), dto, old).transcript[1] as any).recommendations).toBeUndefined()
+    expect(hydrate(initialState(), { ...dto, facetTags: { 'style.genre': 'anime' } }, old).facetTags).toEqual({ 'style.genre': 'anime' })
   })
 })
 

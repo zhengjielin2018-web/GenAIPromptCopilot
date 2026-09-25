@@ -10,7 +10,7 @@ export interface ContributionSummary { counts: { rag: number; llm: number; base:
  *  後面的 presetIds 是字尾相符的其他片段，知識庫裡同名片段常有好幾筆，全列會把同一個標題重複很多次、讀不出誰貢獻了什麼。 */
 export function contributions(positive: TagSource[], negative: TagSource[]): ContributionSummary {
   const counts = { rag: 0, llm: 0, base: 0 }
-  for (const t of positive) counts[t.origin] += 1
+  for (const t of positive) if (t.origin !== 'adopted') counts[t.origin] += 1  // counts 還沒有 adopted 這格
   const groups = new Map<number, Contribution>()
   const add = (t: TagSource, label: string) => {
     if (t.origin !== 'rag' || t.presetIds.length === 0) return

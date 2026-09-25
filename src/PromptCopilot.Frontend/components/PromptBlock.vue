@@ -42,8 +42,9 @@ const SWATCH: Record<TagSource['origin'], string> = {
   rag: 'border-cyan bg-cyan-wash',
   llm: 'border-rule bg-surface',
   base: 'border-rule/60 bg-paper',
+  adopted: '',
 }
-const TEXT: Record<TagSource['origin'], string> = { rag: 'text-ink', llm: 'text-ink', base: 'text-muted' }
+const TEXT: Record<TagSource['origin'], string> = { rag: 'text-ink', llm: 'text-ink', base: 'text-muted', adopted: '' }
 const LEGEND = [
   { origin: 'rag', label: '知識庫片段' },
   { origin: 'llm', label: '模型生成' },
