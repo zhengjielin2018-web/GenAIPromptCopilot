@@ -74,7 +74,7 @@ public static class SessionEndpoints
             if (!await s.Lock.WaitAsync(0)) return Results.Conflict(new ErrorBody("這個 session 還有一輪在跑"));
             try
             {
-                await SseWriter.WriteAsync(http.Response, orchestrator.RunTurnAsync(s, req.Text.Trim(), http.RequestAborted), http.RequestAborted);
+                await SseWriter.WriteAsync(http.Response, orchestrator.RunTurnAsync(s, new TurnInput(req.Text.Trim()), http.RequestAborted), http.RequestAborted);
                 return Results.Empty;
             }
             catch (OperationCanceledException) when (http.RequestAborted.IsCancellationRequested) { return Results.Empty; }

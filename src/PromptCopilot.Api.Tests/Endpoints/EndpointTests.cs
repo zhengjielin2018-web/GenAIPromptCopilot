@@ -20,12 +20,12 @@ public class EndpointTests : IClassFixture<EndpointTests.Factory>
         /// 免得同 class 的其他測試共用這個 singleton 時互相影響。</summary>
         public const string ThrowTrigger = "throw-mid-stream";
 
-        public async IAsyncEnumerable<AgentEvent> RunTurnAsync(Session session, string userMessage, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
+        public async IAsyncEnumerable<AgentEvent> RunTurnAsync(Session session, TurnInput input, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
         {
-            yield return new SessionEvent(session.Id, 1, "Collecting");
+            yield return new SessionEvent(session.Id, 1, "Collecting", input.Adoption is null ? null : input.Text);
             await Task.Delay(10, ct);
-            if (userMessage == ThrowTrigger) throw new InvalidOperationException("boom");
-            yield return new FinalEvent("message", Message: $"echo: {userMessage}");
+            if (input.Text == ThrowTrigger) throw new InvalidOperationException("boom");
+            yield return new FinalEvent("message", Message: $"echo: {input.Text}");
         }
     }
 

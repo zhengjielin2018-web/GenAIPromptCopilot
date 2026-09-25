@@ -743,7 +743,7 @@ scripts/
 
 | `event:` | `data:` | 前端反應 |
 | :--- | :--- | :--- |
-| `session` | `{ sessionId, turnIndex, status }` | 初始化 |
+| `session` | `{ sessionId, turnIndex, status, text? }` | 初始化。`text`（2026-09-25）只在採用輪出現，是伺服器組的採用句，前端用它換掉使用者泡泡 |
 | `tool_call` | `{ callId, name, argsSummary }` | 對話流插入行內卡片 |
 | `tool_result` | `{ callId, name, summary, presets?: [{id, title, imageUrl, sourceRef?}], detail? }` | 展開卡片；餵抽屜。`callId` **等於**對應 `tool_call` 的 `callId`（同一次呼叫的兩個事件），前端據此配對。`sourceRef`（2026-09-25 起）是資料來源識別，縮圖依前綴標來源名（`docs/資料來源.md`「署名機制」）。`detail`（2026-09-25 起）只有 `SearchPresets`（`{ items: [{ dimension, facetId?, label, query, grounded, poolSize, k, error?, hits: [{ id, title, band, dist, usable, facets }] }] }`）與 `SearchSimilarPrompts`（`{ hits: [{ intent, profile, dist }] }`）帶，給「顯示檢索細節」用，不含 snippet 本文；見 `2026-09-25-retrieval-switch-and-trace-design.md` §3.5 |
 | `dimensions` | `{ profile, facetStates: {facetId: state}, facetTags?: {facetId: "sandals"} }` | 儀表板更新 |

@@ -8,7 +8,8 @@ namespace PromptCopilot.Api.Streaming;
 // PropertyOrder：STJ 先列子型別自己的屬性、繼承來的擺最後；type 是判別欄位，用 -1 把它拉回第一個。
 public abstract record AgentEvent([property: JsonPropertyOrder(-1)] string Type);
 
-public sealed record SessionEvent(string SessionId, int TurnIndex, string Status) : AgentEvent("session");
+/// <summary>Text（2026-09-25）：採用輪才有，是伺服器組的「採用〈…〉」句；前端拿它換掉使用者泡泡的暫代文字。</summary>
+public sealed record SessionEvent(string SessionId, int TurnIndex, string Status, string? Text = null) : AgentEvent("session");
 public sealed record ToolCallEvent(string CallId, string Name, string ArgsSummary) : AgentEvent("tool_call");
 /// <summary>SourceRef：資料來源識別，前端縮圖依前綴標來源名（圖片屬於原作者，見 docs/資料來源.md「署名機制」）。</summary>
 public sealed record PresetRef(long Id, string Title, string? ImageUrl, string? SourceRef = null);

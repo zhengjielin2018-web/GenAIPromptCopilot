@@ -155,4 +155,15 @@ public class SystemPromptBuilderTests
         var (prompt, _) = Make().Build(new Session("s", retrievalEnabled: false), ToolsWithoutSearch);
         Assert.Contains("追問或定稿。然後：**只要還有 missing 的維度就 `AskUser`**", prompt);
     }
+
+    /// <summary>設計 §6.4：採用句的處理規則。</summary>
+    [Fact]
+    public void Flow_rule_tells_the_model_how_to_handle_an_adoption_message()
+    {
+        var (prompt, _) = Make().Build(new Session("s"), ToolNames.Always);
+        Assert.Contains("6. 使用者訊息以「採用〈」開頭時", prompt);
+        Assert.Contains("然後直接 `FinalizePrompt`，不要追問", prompt);
+        // off 模式也要有：規則無害，而且 off 的 session 根本不會收到採用句
+        Assert.Contains("6. 使用者訊息以「採用〈」開頭時", Make().Build(new Session("s", retrievalEnabled: false), ToolsWithoutSearch).Prompt);
+    }
 }

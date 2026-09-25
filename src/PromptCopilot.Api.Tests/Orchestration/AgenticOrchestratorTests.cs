@@ -71,12 +71,14 @@ public class AgenticOrchestratorTests
                 });
         }
 
-        public async Task<List<AgentEvent>> RunAsync(string text, CancellationToken ct = default)
+        public Task<List<AgentEvent>> RunAsync(string text, CancellationToken ct = default) => RunAsync(new TurnInput(text), ct);
+
+        public async Task<List<AgentEvent>> RunAsync(TurnInput input, CancellationToken ct = default)
         {
             GuardChat.Then(FakeChatCompletion.Text(OkVerdict));
             ClassifierChat.Then(FakeChatCompletion.Text(OkVerdict));      // 用不到就留在佇列裡
             var events = new List<AgentEvent>();
-            await foreach (var e in Build().RunTurnAsync(Session, text, ct)) events.Add(e);
+            await foreach (var e in Build().RunTurnAsync(Session, input, ct)) events.Add(e);
             return events;
         }
     }
@@ -111,7 +113,7 @@ public class AgenticOrchestratorTests
         var h = new Harness();
         h.GuardChat.Then(FakeChatCompletion.Text("""{"nsfw":true,"realPerson":false,"personName":null,"wantsAutoComplete":false,"reason":"r"}"""));
         var events = new List<AgentEvent>();
-        await foreach (var e in h.Build().RunTurnAsync(h.Session, "x", default)) events.Add(e);
+        await foreach (var e in h.Build().RunTurnAsync(h.Session, new TurnInput("x"), default)) events.Add(e);
         Assert.Contains(events, e => e is BlockedEvent b && b.Reason == "Blocked_NSFW");
         Assert.Empty(h.Chat.Calls);
         Assert.Empty(h.Session.ChatHistory);
@@ -125,7 +127,7 @@ public class AgenticOrchestratorTests
         var h = new Harness { SinkOverride = new ExplodingSink() };
         h.GuardChat.Then(FakeChatCompletion.Text("""{"nsfw":true,"realPerson":false,"personName":null,"wantsAutoComplete":false,"reason":"r"}"""));
         var events = new List<AgentEvent>();
-        await foreach (var e in h.Build().RunTurnAsync(h.Session, "x", default)) events.Add(e);
+        await foreach (var e in h.Build().RunTurnAsync(h.Session, new TurnInput("x"), default)) events.Add(e);
         Assert.Equal("Blocked_NSFW", Assert.Single(events.OfType<BlockedEvent>()).Reason);
         Assert.Empty(h.Chat.Calls);
         Assert.Empty(h.Session.ChatHistory);
@@ -183,7 +185,7 @@ public class AgenticOrchestratorTests
         var h = new Harness();
         h.GuardChat.Throw(new UpstreamBlockedException("SAFETY"));
         var events = new List<AgentEvent>();
-        await foreach (var e in h.Build().RunTurnAsync(h.Session, "一個少女", default)) events.Add(e);
+        await foreach (var e in h.Build().RunTurnAsync(h.Session, new TurnInput("一個少女"), default)) events.Add(e);
 
         var b = Assert.Single(events.OfType<BlockedEvent>());
         Assert.Equal("Blocked_Upstream", b.Reason);
@@ -239,7 +241,7 @@ public class AgenticOrchestratorTests
             throw new InvalidOperationException("boom");
         });
 
-        var e = h.Build().RunTurnAsync(h.Session, "一個少女", default).GetAsyncEnumerator();
+        var e = h.Build().RunTurnAsync(h.Session, new TurnInput("一個少女"), default).GetAsyncEnumerator();
         Assert.True(await e.MoveNextAsync());
         Assert.IsType<SessionEvent>(e.Current);
 
@@ -309,7 +311,7 @@ public class AgenticOrchestratorTests
         h.Chat.Then(FakeChatCompletion.Text("x"));
         await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
         {
-            await foreach (var _ in h.Build().RunTurnAsync(h.Session, "x", cts.Token)) { }
+            await foreach (var _ in h.Build().RunTurnAsync(h.Session, new TurnInput("x"), cts.Token)) { }
         });
         Assert.Empty(h.Chat.Calls);                            // 取消檢查在呼叫 LLM 之前
         Assert.Empty(h.Session.ChatHistory);
@@ -595,9 +597,74 @@ public class AgenticOrchestratorTests
         });
         h.GuardChat.Then(FakeChatCompletion.Text(OkVerdict)); h.ClassifierChat.Then(FakeChatCompletion.Text(OkVerdict));
         var events = new List<AgentEvent>();
-        await foreach (var e in h.Build().RunTurnAsync(off, "一個銀髮少女", default)) events.Add(e);
+        await foreach (var e in h.Build().RunTurnAsync(off, new TurnInput("一個銀髮少女"), default)) events.Add(e);
         Assert.Single(events.OfType<FinalEvent>());
         Assert.Equal(0, stub.Calls);
         Assert.Empty(events.OfType<RecommendationsEvent>());
+    }
+
+    private static TurnInput AdoptInput() => new(
+        "採用〈和風女僕〉（知識庫 #41720）：上半身照它的（purple kimono, detached sleeves）；鞋履保留我的。",
+        new Adoption(0, 41720, "和風女僕", "civitai:9:0", "clothing",
+            new Dictionary<string, IReadOnlyList<string>> { ["clothing.upper"] = new[] { "purple kimono", "detached sleeves" } },
+            new[] { "clothing.footwear" }, new[] { "clothing.upper" }, Array.Empty<string>()),
+        new LedgerEntry { Id = 41720, Title = "和風女僕", PromptSnippet = "purple kimono, detached sleeves, sandals", FacetIds = new[] { "clothing.upper", "clothing.footwear" }, SourceRef = "civitai:9:0" });
+
+    /// <summary>設計 §6.3／§8：採用輪的 session 事件帶伺服器組的句子；記帳、寫 ledger；定稿 tag 標 adopted；audit 記 adoption。</summary>
+    [Fact]
+    public async Task Adoption_turn_records_adoption_marks_ledger_and_audits()
+    {
+        var h = new Harness();
+        h.Session.ApplyProfile("portrait", Catalog);
+        h.Session.RecordFinalize(new FinalPrompt("1girl", "lowres", "t", "i"));   // 採用發生在定稿之後；Finalized 時不掛 AskUser，定稿閘門不會擋
+        h.Chat.ThenAsync(async (hist, k) =>
+        {
+            Assert.StartsWith("採用〈", hist.Last(m => m.Role == AuthorRole.User).Content!);
+            return new[] { await Invoke(hist, k!, "Dialog", "FinalizePrompt", new
+            {
+                positivePrompt = "masterpiece, 1girl, purple kimono, detached sleeves, sandals", negativePrompt = "lowres", tips = "t", intentSummary = "和服少女",
+                facetStates = new[] { new { facetId = "clothing.upper", state = "covered", tags = "purple kimono, detached sleeves" } },
+            }) };
+        });
+        var events = await h.RunAsync(AdoptInput());
+
+        Assert.Equal(AdoptInput().Text, Assert.Single(events.OfType<SessionEvent>()).Text);
+        var a = Assert.Single(h.Session.Adoptions);
+        Assert.Equal(1, a.TurnIndex);                                                   // orchestrator 補上真正的輪次
+        Assert.Equal("採用", Assert.Single(h.Session.Ledger.Get(41720)!.OfferedAs).Label);
+        var final = Assert.Single(events.OfType<FinalEvent>());
+        Assert.Equal(new[] { "base", "llm", "adopted", "adopted", "rag" }, final.PositiveSources!.Select(x => x.Origin));   // sandals 在 ledger 片段裡
+        var completed = Assert.Single(h.Audit.Entries, a2 => a2.EventType == "Turn_Completed");
+        Assert.Contains("""adoption":{"presetId":41720,"dimension":"clothing","take":["clothing.upper"],"filled":["clothing.upper"],"replaced":[]}""", completed.PayloadJson!);
+        Assert.Contains("""tagOrigins":{"rag":1,"adopted":2,"llm":1,"base":1}""", completed.PayloadJson!);
+        Assert.StartsWith("採用〈", completed.RawInput!);
+    }
+
+    [Fact]
+    public async Task Ordinary_turn_session_event_has_no_text_and_no_adoption_in_audit()
+    {
+        var h = new Harness();
+        h.Chat.ThenAsync(async (hist, k) =>
+        {
+            await Invoke(hist, k!, "Session", "SetProfile", new { profile = "portrait" });
+            return new[] { await Invoke(hist, k!, "Dialog", "AskUser", AskArgs()) };
+        });
+        var events = await h.RunAsync("一個銀髮少女");
+        Assert.Null(Assert.Single(events.OfType<SessionEvent>()).Text);
+        Assert.DoesNotContain("adoption", Assert.Single(h.Audit.Entries, a => a.EventType == "Turn_Completed").PayloadJson!);
+    }
+
+    /// <summary>設計 §9：採用那一輪失敗要連 Adoptions 與 ledger 一起回滾。</summary>
+    [Fact]
+    public async Task Failed_adoption_turn_rolls_back_adoptions_and_ledger()
+    {
+        var h = new Harness();
+        h.Session.ApplyProfile("portrait", Catalog);
+        h.Session.RecordFinalize(new FinalPrompt("1girl", "lowres", "t", "i"));
+        h.Chat.Throw(new InvalidOperationException("boom"));
+        var events = await h.RunAsync(AdoptInput());
+        Assert.Single(events.OfType<ErrorEvent>());
+        Assert.Empty(h.Session.Adoptions);
+        Assert.False(h.Session.Ledger.Contains(41720));
     }
 }

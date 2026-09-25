@@ -29,12 +29,12 @@ public sealed class AgenticOrchestrator(
 {
     private static readonly JsonSerializerOptions Json = new() { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
 
-    public async IAsyncEnumerable<AgentEvent> RunTurnAsync(Session session, string userMessage, [EnumeratorCancellation] CancellationToken ct)
+    public async IAsyncEnumerable<AgentEvent> RunTurnAsync(Session session, TurnInput input, [EnumeratorCancellation] CancellationToken ct)
     {
         var channel = Channel.CreateUnbounded<AgentEvent>();
         var work = Task.Run(async () =>
         {
-            try { await ExecuteAsync(session, userMessage, channel.Writer, ct); }
+            try { await ExecuteAsync(session, input, channel.Writer, ct); }
             finally { channel.Writer.Complete(); }
         }, CancellationToken.None);
         var drained = false;
@@ -52,10 +52,11 @@ public sealed class AgenticOrchestrator(
         }
     }
 
-    internal async Task ExecuteAsync(Session session, string text, ChannelWriter<AgentEvent> writer, CancellationToken ct)
+    internal async Task ExecuteAsync(Session session, TurnInput input, ChannelWriter<AgentEvent> writer, CancellationToken ct)
     {
+        var text = input.Text;
         var turnIndex = session.TurnIndex + 1;
-        writer.TryWrite(new SessionEvent(session.Id, turnIndex, session.Status.ToString()));
+        writer.TryWrite(new SessionEvent(session.Id, turnIndex, session.Status.ToString(), input.Adoption is null ? null : text));
 
         // 一輪是一個交易（多輪 §5.6）。快照要在 guard 之前取：guard 自己也會丟例外
         // （上游攔截、分類器壞掉），那些一樣要走下面的攔截／失敗路徑，不能整包飛出去。
@@ -81,6 +82,8 @@ public sealed class AgenticOrchestrator(
             stage = "setup";
             tct.ThrowIfCancellationRequested();
             session.TurnIndex = turnIndex;
+            // 採用：快照已取，這裡記的帳失敗時會一起回滾（設計 §9）。TurnIndex 由這裡補，端點不知道輪次。
+            if (input.Adoption is { } adoption) session.RecordAdoption(adoption with { TurnIndex = turnIndex }, input.AdoptedPreset!);
             var tools = ToolSetBuilder.Build(session, g.WantsAutoComplete, options);
             if (g.WantsAutoComplete) session.AutoFill = true;
             var turn = new TurnContext(session, turnIndex, g, tools, writer, snapshot.FacetStates);
@@ -149,6 +152,11 @@ public sealed class AgenticOrchestrator(
                     ("recommendations", recommended is null ? null : (object)new
                     {
                         dimensions = recommended.Dimensions.Select(d => new { dimension = d.Dimension, anchored = d.Anchored, presetIds = d.Sets.Select(x => x.PresetId).ToArray() }).ToArray(),
+                    }),
+                    ("adoption", input.Adoption is null ? null : (object)new
+                    {
+                        presetId = input.Adoption.PresetId, dimension = input.Adoption.Dimension,
+                        take = input.Adoption.Taken.Keys.ToArray(), filled = input.Adoption.Filled, replaced = input.Adoption.Replaced,
                     })),
                 LatencyMs: (int)sw.ElapsedMilliseconds));
         }
