@@ -105,6 +105,30 @@ def test_normalize_keeps_only_this_rows_facets_and_original_tags_and_defaults_mi
     assert out == {"clothing.upper": ["purple kimono"], "clothing.footwear": ["sandals"]}
 
 
+def test_normalize_splits_an_echoed_pipe_joined_key_and_each_part_keeps_the_facet():
+    out = normalize(ROW, {"purple kimono | sandals": "clothing.upper"})
+    assert out == {"clothing.upper": ["purple kimono", "sandals"]}
+
+
+def test_normalize_splits_a_json_array_key():
+    row = {"id": 1, "facet_ids": ["style.genre"], "prompt_snippet": "a, b, c"}
+    assert normalize(row, {'["a","b"]': "style.genre"}) == {"style.genre": ["a", "b"]}
+
+
+def test_normalize_matches_case_insensitively_after_strip_and_keeps_the_original_spelling():
+    assert normalize(ROW, {" Sandals ": "clothing.footwear"}) == {"clothing.footwear": ["sandals"]}
+
+
+def test_normalize_prefers_a_single_assignment_over_the_same_tag_inside_a_joined_key():
+    out = normalize(ROW, {"purple kimono | sandals": "clothing.upper", "sandals": "clothing.footwear"})
+    assert out == {"clothing.upper": ["purple kimono"], "clothing.footwear": ["sandals"]}
+
+
+def test_normalize_does_not_split_a_key_that_is_itself_an_original_tag():
+    row = {"id": 1, "facet_ids": ["style.genre"], "prompt_snippet": "a | b, c"}
+    assert normalize(row, {"a | b": "style.genre"}) == {"style.genre": ["a | b"]}
+
+
 def test_normalize_all_other_is_empty_dict_not_none():
     assert normalize(ROW, None) == {}
     assert normalize(ROW, {"sandals": "other"}) == {}
@@ -113,7 +137,9 @@ def test_normalize_all_other_is_empty_dict_not_none():
 def test_build_prompt_lists_each_row_with_its_own_facets_and_tags():
     p = build_prompt([ROW, {"id": 7, "facet_ids": ["style.genre"], "prompt_snippet": "oil painting"}], CAT)
     assert "[id=41720]" in p and "clothing.upper, clothing.footwear" in p
-    assert "purple kimono | sandals | white socks | tabi" in p
+    assert 'tags: ["purple kimono", "sandals", "white socks", "tabi"]' in p     # JSON 陣列，不是「 | 」串起的一行
+    assert "purple kimono | sandals" not in p
+    assert "不要把整個陣列合併成一個 tag" in p
     assert "[id=7]" in p and "oil painting" in p
     assert "clothing.footwear：鞋履" in p          # facet 說明
 
@@ -210,3 +236,60 @@ def test_batch_out_schema_is_accepted_by_gemini_developer_api_mode(monkeypatch):
                           limiter=RateLimiter(0), sleep=lambda _: None)
     with pytest.raises(_ReachedTransport):
         client.generate_structured("x", BatchOut)
+
+
+class RedoConn(FakeConn):
+    """照 SQL 語意演 facet_tags 狀態：pending＝NULL，或 redo_empty 時 {}；UPDATE 只寫仍待處理的列。"""
+
+    def __init__(self, rows, state):
+        super().__init__([])
+        self.rows, self.state = rows, dict(state)
+        self.fetches = []
+
+    def _pending(self, row_id, redo_empty):
+        v = self.state.get(row_id)
+        return v is None or (redo_empty and v == {})
+
+    def execute(self, sql, params):
+        self.fetches.append({**params, "skip": list(params["skip"])})
+        pending = [r for r in self.rows if self._pending(r[0], params["redo_empty"]) and r[0] not in params["skip"]]
+        return FakeResult(pending[: params["limit"]])
+
+    def cursor(self):
+        conn = self
+
+        class Cur(FakeCursor):
+            def execute(self, sql, params):
+                super().execute(sql, params)
+                if conn._pending(params["id"], params["redo_empty"]):
+                    conn.state[params["id"]] = json.loads(params["facet_tags"])
+
+        return Cur(self.writes)
+
+
+def test_redo_empty_reprocesses_empty_rows_and_does_not_refetch_a_row_that_stays_empty():
+    rows = [(1, ["style.genre"], "oil painting"), (2, ["style.palette"], "monochrome"), (3, ["style.genre"], "anime")]
+    conn = RedoConn(rows, {1: {}, 2: {}, 3: {"style.genre": ["anime"]}})
+    client = FakeClient([{"items": [{"id": 1, "assignments": [{"tag": "oil painting", "facet": "style.genre"}]}]}])
+    stats = run_backfill(conn, client, CAT, redo_empty=True, log=lambda *_: None)   # id 2 沒回 → 仍是 {}
+
+    assert all(f["redo_empty"] is True for f in conn.fetches)
+    assert [f["skip"] for f in conn.fetches] == [[], [2]]          # 仍是 {} 的不再撈，迴圈收工
+    assert len(client.prompts) == 1
+    assert [(p["id"], json.loads(p["facet_tags"]), p["redo_empty"]) for _, p in conn.writes] == [
+        (1, {"style.genre": ["oil painting"]}, True), (2, {}, True),
+    ]
+    assert all("facet_tags = '{}'::jsonb" in sql for sql, _ in conn.writes)
+    assert conn.state == {1: {"style.genre": ["oil painting"]}, 2: {}, 3: {"style.genre": ["anime"]}}
+    assert stats["still_empty"] == [2] and stats["skipped"] == [] and stats["rows"] == 2
+
+
+def test_without_redo_empty_rows_already_empty_are_left_alone():
+    rows = [(1, ["style.genre"], "oil painting"), (2, ["style.genre"], "anime")]
+    conn = RedoConn(rows, {1: {}, 2: None})
+    client = FakeClient([_one(2, "anime", "style.genre")])
+    stats = run_backfill(conn, client, CAT, log=lambda *_: None)
+
+    assert all(f["redo_empty"] is False for f in conn.fetches)
+    assert [p["id"] for _, p in conn.writes] == [2]
+    assert conn.state[1] == {} and stats["still_empty"] == []

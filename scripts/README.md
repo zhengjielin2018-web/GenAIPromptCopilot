@@ -60,6 +60,7 @@ clean／structure／embed／load 全部五個階段，`--max-records` 預設不�
 
     python backfill_facet_tags.py --dry-run --limit 20   # 先看 20 筆拆得對不對
     python backfill_facet_tags.py                        # 全量
+    python backfill_facet_tags.py --redo-empty           # facet_tags 為 {} 的列也重送（修過 prompt 之後補救；仍是 {} 的照寫）
 
 ## 量測：整套組合推薦的採用率
 
