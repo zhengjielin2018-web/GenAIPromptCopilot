@@ -13,6 +13,19 @@
       <p class="mt-1.5 whitespace-pre-wrap text-sm leading-6 text-ink/90">{{ data.tips }}</p>
     </section>
 
+    <section v-if="s.prefs.showTrace" class="mt-4" data-section="trace">
+      <h4 class="text-xs font-bold">檢索貢獻</h4>
+      <p class="mt-1.5 text-xs tabular-nums text-muted">rag {{ trace.counts.rag }}・llm {{ trace.counts.llm }}・base {{ trace.counts.base }}</p>
+      <ul v-if="trace.byPreset.length" class="mt-1.5 flex flex-col gap-1 text-xs">
+        <li v-for="p in trace.byPreset" :key="p.presetId" class="flex items-baseline gap-2">
+          <button type="button" class="shrink-0 font-medium hover:text-cyan" @click="s.openDrawer(p.presetId)">{{ p.title }}</button>
+          <span class="text-muted">→</span>
+          <span class="font-mono text-[11px]">{{ p.tags.join(', ') }}</span>
+        </li>
+      </ul>
+      <p v-else class="mt-1.5 text-xs text-muted">這次定稿沒有借用知識庫片段。</p>
+    </section>
+
     <footer :id="`save-${turnIndex}`" class="mt-5 border-t border-rule pt-4">
       <p v-if="superseded" class="text-xs text-muted">這份已被後面的定稿取代。要存進共享知識庫，請用最新那張。</p>
       <button v-else-if="!expanded" type="button" :disabled="save.status === 'saved'"
@@ -40,6 +53,7 @@
 
 <script setup lang="ts">
 import type { FinalizedData } from '../types/api'
+import { contributions } from '../lib/trace'
 const props = defineProps<{ data: FinalizedData; turnIndex: number }>()
 const s = useSessionStore()
 const intent = ref(props.data.intentSummary)
@@ -47,4 +61,5 @@ const expanded = computed(() => s.expandedSaveTurn === props.turnIndex)
 const save = computed(() => s.saveState[props.turnIndex] ?? { status: 'idle' as const, error: undefined })
 /** 後端 save-to-shared 永遠存最新一次定稿；舊卡已存過的保留「已存」狀態，沒存過的就不給存。 */
 const superseded = computed(() => s.latestFinalizedTurn !== props.turnIndex && save.value.status !== 'saved')
+const trace = computed(() => contributions(props.data.positiveSources ?? [], props.data.negativeSources ?? []))
 </script>

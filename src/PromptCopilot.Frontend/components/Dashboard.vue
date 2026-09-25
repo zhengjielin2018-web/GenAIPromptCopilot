@@ -35,6 +35,17 @@
     </ul>
 
     <footer class="mt-auto pt-5">
+      <section v-if="s.prefs.showTrace && trace.searches > 0" class="mb-4 border-t border-rule pt-4" data-section="trace">
+        <h3 class="text-xs font-bold">本次對話檢索摘要</h3>
+        <p class="mt-1.5 text-xs tabular-nums text-muted">
+          查詢 {{ trace.searches }} 次・看過 {{ trace.seen }} 筆片段・借用 {{ trace.borrowed }} 筆
+        </p>
+        <div class="mt-1.5 flex flex-wrap gap-1">
+          <span v-for="p in trace.pools" :key="p.dimension" class="rounded-[3px] border border-rule px-1.5 py-[3px] text-[11px] leading-4 tabular-nums">
+            {{ p.label }} {{ p.poolSize }}
+          </span>
+        </div>
+      </section>
       <ul class="grid grid-cols-2 gap-x-3 gap-y-1.5 text-[11px] text-muted" aria-label="圖例">
         <li v-for="st in legend" :key="st" class="flex items-center gap-1.5">
           <span class="inline-block h-3 w-5 rounded-[2px]" :class="chipClass(st)" aria-hidden="true" />{{ stateLabel(st) }}
@@ -46,6 +57,7 @@
 
 <script setup lang="ts">
 import { dashboardRows } from '../lib/dashboard'
+import { retrievalSummary } from '../lib/trace'
 import type { FacetState } from '../types/api'
 
 const s = useSessionStore()
@@ -57,6 +69,7 @@ const coverage = computed(() => {
   return { covered: chips.filter(c => c.state === 'covered').length, total: chips.length }
 })
 const legend: FacetState[] = ['covered', 'missing', 'waived', 'notApplicable']
+const trace = computed(() => retrievalSummary(s.state.transcript))
 
 function stateLabel(st: FacetState) {
   return { covered: '已涵蓋', missing: '還沒提到', waived: '你說不指定', notApplicable: '不適用' }[st]

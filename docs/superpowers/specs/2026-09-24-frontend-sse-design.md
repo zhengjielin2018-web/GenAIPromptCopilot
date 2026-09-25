@@ -114,10 +114,12 @@ sessionId, turnIndex, status, profile
 facetCatalog                 # GET /api/config/facets，開頁載一次
 facetStates: {facetId: state}
 askCount, askLimit           # GET session 拿；輪中不變
+retrieval                    # 'on' | 'off'，建立回應／GET session 拿；只影響畫面提示
 transcript: Entry[]          # 顯示用，每筆是 user | tool | final | failure 之一
 lastFinal | null
 pending: { text, snapshot } | null   # 這一輪送出的原文與送出前的快照
 drawer: presetId | null
+prefs: { retrieval, showTrace }  # localStorage pc.prefs，跨對話
 ```
 
 `Entry` 的四種：
@@ -125,7 +127,7 @@ drawer: presetId | null
 | 種類 | 內容 | 來源 |
 | :--- | :--- | :--- |
 | `user` | `{ text }` | 使用者送出 |
-| `tool` | `{ callId, name, argsSummary, summary?, presets?, done }` | `tool_call` 建立、`tool_result` 以 `callId` 配對填入 |
+| `tool` | `{ callId, name, argsSummary, summary?, presets?, detail?, done }` | `tool_call` 建立、`tool_result` 以 `callId` 配對填入 |
 | `final` | `final` 事件的 `data` 原樣，依 `kind` 分四種 | `final` |
 | `failure` | `{ reason \| code, message, originalText }` | `error`／`blocked`／串流異常結束 |
 
@@ -161,16 +163,16 @@ drawer: presetId | null
 | :--- | :--- |
 | `ChatStream` | 依 `transcript` 逐筆挑元件渲染；自動捲到底 |
 | `UserBubble` | 使用者訊息 |
-| `ToolCallCard` | 行內卡片：「🔍 查詢知識庫：鏡頭 → 池 2147 → 3 筆」。`tool_result` 到之前顯示進行中；完成後摺疊成一行，點開看 `summary` 與 preset 縮圖列，縮圖可開抽屜 |
+| `ToolCallCard` | 行內卡片：「🔍 查詢知識庫：鏡頭 → 池 2147 → 3 筆」。`tool_result` 到之前顯示進行中；完成後摺疊成一行，點開看 `summary` 與 preset 縮圖列，縮圖可開抽屜；「顯示檢索細節」開啟且有 `detail` 時改列每個查詢項目（標籤｜查詢句｜池 → 命中），項目可展開命中清單（標題可開抽屜、分級、距離、可借入／僅供建議） |
 | `AskCard` | `kind: ask`：`preamble` 在上，每則 ask 一區（維度標題、`question`、一排 chip）。該維度在儀表板高亮，直到下一輪 `session` 事件為止 |
 | `MessageBubble` | `kind: message`：氣泡 + 輕量「參考方向」列表（有 `presetId` 的可開抽屜）；儀表板不高亮 |
-| `FinalCard` | `kind: finalized`：正／負向 prompt 各自有複製鈕、`tips`、「儲存至共享知識庫」。按下展開確認區：預填 `intentSummary` 的輸入框 + 「確認儲存」；成功後按鈕變「已儲存」並失效；`save-to-shared` 回 `409`／`400` 時把後端的 `error` 字串顯示在確認區內，按鈕可再按 |
+| `FinalCard` | `kind: finalized`：正／負向 prompt 各自有複製鈕、`tips`、「儲存至共享知識庫」。按下展開確認區：預填 `intentSummary` 的輸入框 + 「確認儲存」；成功後按鈕變「已儲存」並失效；`save-to-shared` 回 `409`／`400` 時把後端的 `error` 字串顯示在確認區內，按鈕可再按；「顯示檢索細節」開啟時多一區「檢索貢獻」：rag／llm／base 計數與片段 → tag 清單 |
 | `SaveConsentNotice` | `kind: save_consent_requested`：一筆短條目，同時把**最近一張** `FinalCard` 的確認區展開並捲過去 |
 | `FailureNotice` | `error`／`blocked`：原因用 `reason`／`code` 對到繁中文案、訊息用後端的 `message`；「重試」把 `originalText` 填回輸入框並聚焦，不自動送 |
 | `Composer` | 輸入框 + 送出；輪次進行中鎖住送出（避免 `409`）；chip 在此累積 |
-| `Dashboard` | 側欄，每維度一列 facet chip，四態照主規格 §11.2（`covered` 實心飽和／`missing` 空心描邊／`notApplicable` 極淡／`waived` 實心去飽和加「略」記號），hover 顯示 label 與狀態。`profile` 為 null 時整面淡化並標「尚未判定題材」；`notApplicable` 整維度整列淡化。頂部顯示題材與「追問 n/askLimit」 |
+| `Dashboard` | 側欄，每維度一列 facet chip，四態照主規格 §11.2（`covered` 實心飽和／`missing` 空心描邊／`notApplicable` 極淡／`waived` 實心去飽和加「略」記號），hover 顯示 label 與狀態。`profile` 為 null 時整面淡化並標「尚未判定題材」；`notApplicable` 整維度整列淡化。頂部顯示題材與「追問 n/askLimit」；「顯示檢索細節」開啟且有查詢過時，圖例上方加「本次對話檢索摘要」 |
 | `PresetDrawer` | 右側滑出蓋住儀表板：`GET /api/presets/{id}`，顯示 `imageUrl`、title、`promptSnippet`、`negativeSnippet`、tags、facet 標籤。圖片是外站 URL，載入失敗顯示佔位不報錯 |
-| `TopBar` | 專案名、「新對話」（清 `sessionStorage`、開新 session；輪次進行中失效） |
+| `TopBar` | 專案名、「新對話」（清 `sessionStorage`、開新 session；輪次進行中失效）；兩個 switch：「使用知識庫」（存偏好，只影響新對話，與目前對話不同時標「新對話後生效」）、「顯示檢索細節」（即時） |
 
 **chip 規則**（`stores/composer.ts`，純函式）：
 
@@ -286,3 +288,4 @@ xUnit（後端）：
 | §4 按鈕文字「儲存至共享知識庫」「已儲存」 | 「存進共享知識庫」「已存進共享知識庫」 | 同一個動作在整個流程用同一個名字 |
 | §5 `404` 時顯示「上次的對話已過期」 | 開新 session 後把提示放在對話流頂端的通知列，原文留在輸入框 | 開新 session 會清掉 transcript，放成失敗條目會跟著被清掉 |
 | §1.3 Node 22，套件未指定版本 | Nuxt 3.21、Pinia 4、vitest 5；TypeScript 釘在 5.x | vue-tsc 3 需要 TS 5 的 JS API，TS 7 會讓 `nuxi typecheck` 起不來 |
+| （2026-09-25 知識庫開關與檢索細節） | `lib/prefs.ts`（localStorage）、`lib/trace.ts`（純函式）、`ToolEntry.detail`、`ChatState.retrieval`；三個元件在 `prefs.showTrace` 開時多畫一區，關時與原設計相同 | 設計見 `2026-09-25-retrieval-switch-and-trace-design.md` |
