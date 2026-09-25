@@ -62,4 +62,29 @@ public class SseWriterTests
         Assert.Contains("\"presets\":[{\"id\":5,\"title\":\"霓虹\",\"imageUrl\":\"u\",\"sourceRef\":\"civitai:12345:0\"},{\"id\":6,\"title\":\"無來源\"}]", text);
         Assert.Contains("\"positiveSources\":[{\"tag\":\"p\",\"origin\":\"rag\",\"presetIds\":[5],\"presetTitle\":\"霓虹\",\"sourceRef\":\"civitai:12345:0\"}]", text);
     }
+
+    /// <summary>前端 types/api.ts 的 SearchPresetsDetail／SearchSimilarDetail 靠這些欄位名；detail 為 null 時整個鍵省略。</summary>
+    [Fact]
+    public async Task Tool_result_detail_is_camelCase_and_omitted_when_null()
+    {
+        var ctx = new DefaultHttpContext();
+        var body = new MemoryStream(); ctx.Response.Body = body;
+        var detail = new SearchPresetsDetail(new[]
+        {
+            new SearchPresetsItem("clothing", "clothing.footwear", "鞋履", "拖鞋", true, 300, 5, null,
+                new[] { new SearchPresetsHit(5, "霓虹", "高", 0.201, true, new Dictionary<string, string> { ["clothing.footwear"] = "covered" }) }),
+            new SearchPresetsItem("hair", "hair", "hair", "捲髮", false, 0, 0, "維度 hair 對 portrait 不適用或不存在", Array.Empty<SearchPresetsHit>()),
+        });
+        await SseWriter.WriteOneAsync(ctx.Response, new ToolResultEvent("c1", "SearchPresets", "s", Array.Empty<PresetRef>(), detail), default);
+        await SseWriter.WriteOneAsync(ctx.Response, new ToolResultEvent("c2", "SearchSimilarPrompts", "s", null,
+            new SearchSimilarDetail(new[] { new SearchSimilarHit("雨夜霓虹街頭的銀髮少女", "portrait", 0.18) })), default);
+        await SseWriter.WriteOneAsync(ctx.Response, new ToolResultEvent("c3", "SearchPresets", "s", null), default);
+        var text = System.Text.Encoding.UTF8.GetString(body.ToArray());
+
+        Assert.Contains("\"detail\":{\"items\":[{\"dimension\":\"clothing\",\"facetId\":\"clothing.footwear\",\"label\":\"鞋履\",\"query\":\"拖鞋\",\"grounded\":true,\"poolSize\":300,\"k\":5,\"hits\":[{\"id\":5,\"title\":\"霓虹\",\"band\":\"高\",\"dist\":0.201,\"usable\":true,\"facets\":{\"clothing.footwear\":\"covered\"}}]}", text);
+        Assert.Contains("\"error\":\"維度 hair 對 portrait 不適用或不存在\",\"hits\":[]", text);
+        Assert.Contains("\"detail\":{\"hits\":[{\"intent\":\"雨夜霓虹街頭的銀髮少女\",\"profile\":\"portrait\",\"dist\":0.18}]}", text);
+        var third = text.Split("event: tool_result\n")[3];
+        Assert.DoesNotContain("\"detail\"", third);
+    }
 }

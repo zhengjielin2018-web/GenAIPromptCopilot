@@ -103,6 +103,8 @@ public sealed record SearchQuery(string Dimension, string Query);
 
 同維度的兩個對比方向各占一段（模型給了兩個方向就顯示兩段）。有 `error` 的項目顯示「人物髮型 錯誤」。
 
+2026-09-25 起，同一個事件另帶結構化的 `detail`（每個項目的查詢句、池、k、命中的分級／距離／可否借入），摘要字串不變；見 `2026-09-25-retrieval-switch-and-trace-design.md` §3.5。
+
 ## 4. 提示、預算、強制定稿
 
 ### 4.1 `Prompts/system.md` 第 1 條

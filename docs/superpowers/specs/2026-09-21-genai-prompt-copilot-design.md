@@ -743,7 +743,7 @@ scripts/
 | :--- | :--- | :--- |
 | `session` | `{ sessionId, turnIndex, status }` | 初始化 |
 | `tool_call` | `{ callId, name, argsSummary }` | 對話流插入行內卡片 |
-| `tool_result` | `{ callId, name, summary, presets?: [{id, title, imageUrl, sourceRef?}] }` | 展開卡片；餵抽屜。`callId` **等於**對應 `tool_call` 的 `callId`（同一次呼叫的兩個事件），前端據此配對。`sourceRef`（2026-09-25 起）是資料來源識別，縮圖依前綴標來源名（`docs/資料來源.md`「署名機制」） |
+| `tool_result` | `{ callId, name, summary, presets?: [{id, title, imageUrl, sourceRef?}], detail? }` | 展開卡片；餵抽屜。`callId` **等於**對應 `tool_call` 的 `callId`（同一次呼叫的兩個事件），前端據此配對。`sourceRef`（2026-09-25 起）是資料來源識別，縮圖依前綴標來源名（`docs/資料來源.md`「署名機制」）。`detail`（2026-09-25 起）只有 `SearchPresets`（`{ items: [{ dimension, facetId?, label, query, grounded, poolSize, k, error?, hits: [{ id, title, band, dist, usable, facets }] }] }`）與 `SearchSimilarPrompts`（`{ hits: [{ intent, profile, dist }] }`）帶，給「顯示檢索細節」用，不含 snippet 本文；見 `2026-09-25-retrieval-switch-and-trace-design.md` §3.5 |
 | `dimensions` | `{ profile, facetStates: {facetId: state} }` | 儀表板更新 |
 | `token` | `{ text }` | 接到最近一則討論訊息後面。**後端現況不發**（回覆內容都是終止型 tool 的參數，一次到位）；前端 reducer 保留處理，但不對一次到位的文字做假的逐字動畫（子專案 3 設計 §1.2） |
 | `final` | 四種 `kind`，見下 | 追問卡／對話氣泡／定稿卡片／高亮入庫按鈕 |
