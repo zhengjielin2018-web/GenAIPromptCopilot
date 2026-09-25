@@ -8,7 +8,8 @@ using PromptCopilot.Api.Streaming;
 
 namespace PromptCopilot.Api.Endpoints;
 
-public sealed record MessageRequest(string Text);
+/// <summary>Adopt（2026-09-25）：採用推薦的一套組合；有它時 Text 忽略（設計 §6.1）。</summary>
+public sealed record MessageRequest(string? Text, AdoptRequest? Adopt = null);
 public sealed record SaveRequest(string Intent);
 public sealed record CreateSessionRequest(string? Retrieval);
 public sealed record SessionCreated(string SessionId, string Retrieval);
@@ -66,15 +67,33 @@ public static class SessionEndpoints
         .Produces<SessionSnapshotDto>(StatusCodes.Status200OK)
         .Produces<ErrorBody>(StatusCodes.Status404NotFound);
 
-        g.MapPost("/{id}/messages", async (string id, MessageRequest req, SessionStore store, IPromptOrchestrator orchestrator, HttpContext http) =>
+        g.MapPost("/{id}/messages", async (string id, MessageRequest req, SessionStore store, IPromptOrchestrator orchestrator,
+            PresetRepository presets, FacetCatalog catalog, HttpContext http) =>
         {
             var s = store.TryGet(id);
             if (s is null) return Results.NotFound(new ErrorBody("session 不存在或已過期"));
-            if (string.IsNullOrWhiteSpace(req.Text)) return Results.BadRequest(new ErrorBody("text 不可為空"));
+            if (req.Adopt is null && string.IsNullOrWhiteSpace(req.Text)) return Results.BadRequest(new ErrorBody("text 不可為空"));
             if (!await s.Lock.WaitAsync(0)) return Results.Conflict(new ErrorBody("這個 session 還有一輪在跑"));
             try
             {
-                await SseWriter.WriteAsync(http.Response, orchestrator.RunTurnAsync(s, new TurnInput(req.Text.Trim()), http.RequestAborted), http.RequestAborted);
+                TurnInput input;
+                if (req.Adopt is { } adopt)
+                {
+                    // 拿著鎖再讀 session：沒鎖時讀到的可能是上一輪回滾中的半途狀態
+                    if (!s.RetrievalEnabled) return Results.Conflict(new ErrorBody("這段對話沒有知識庫，沒有組合可以採用"));
+                    if (s.Profile is null) return Results.Conflict(new ErrorBody("尚未判定題材，還不能採用組合"));
+                    var preset = await presets.GetAsync(adopt.PresetId, http.RequestAborted);
+                    if (preset is null) return Results.BadRequest(new ErrorBody($"找不到 preset #{adopt.PresetId}"));
+                    try
+                    {
+                        var c = AdoptionComposer.Compose(adopt, preset, s, catalog, s.TurnIndex + 1);
+                        input = new TurnInput(c.Text, c.Adoption, c.Preset);
+                    }
+                    catch (AdoptValidationException e) { return Results.BadRequest(new ErrorBody(e.Message)); }
+                }
+                else input = new TurnInput(req.Text!.Trim());
+
+                await SseWriter.WriteAsync(http.Response, orchestrator.RunTurnAsync(s, input, http.RequestAborted), http.RequestAborted);
                 return Results.Empty;
             }
             catch (OperationCanceledException) when (http.RequestAborted.IsCancellationRequested) { return Results.Empty; }
@@ -94,7 +113,7 @@ public static class SessionEndpoints
         })
         .WithSummary("送一句話，跑一輪對話（SSE 串流）")
         .WithDescription("""
-            body：`{"text": "一個銀髮少女站在雨夜的霓虹街頭"}`。回應是 `text/event-stream`，每一筆是 `event: <名稱>` 加一行 `data: <JSON>`。
+            body：`{"text": "一個銀髮少女站在雨夜的霓虹街頭"}`；或採用推薦的一套組合 `{"adopt": {"presetId": 41720, "dimension": "clothing", "take": ["clothing.upper", "clothing.head"]}}`（`take` 是「照它的」facet，其餘該維度的 facet 保留使用者原本的；有 `adopt` 時 `text` 忽略，伺服器會組一句「採用〈標題〉（知識庫 #id）：…照它的（tags）；…保留我的。」當使用者訊息，`session` 事件的 `text` 帶回這句）。回應是 `text/event-stream`，每一筆是 `event: <名稱>` 加一行 `data: <JSON>`。
 
             | 事件 | 內容 |
             | :--- | :--- |
@@ -112,8 +131,8 @@ public static class SessionEndpoints
             Swagger UI 會等整輪跑完才一次顯示所有事件（通常數秒到數十秒）。要逐筆看，用 `curl -N` 或 repo 的 `manual-tests/chat.py`。
 
             - `404`：session 不存在或已過期
-            - `400`：`text` 是空白
-            - `409`：同一個 session 上一輪還沒跑完（一個 session 同時只跑一輪）
+            - `400`：`text` 是空白且沒有 `adopt`；`adopt` 的 preset 不存在、尚未拆分 facet、`take` 為空或含不屬於該維度／這套沒有 tag 的 facet
+            - `409`：同一個 session 上一輪還沒跑完；`adopt` 但這段對話 `retrieval: off` 或尚未判定題材
             """)
         .Produces(StatusCodes.Status200OK, contentType: "text/event-stream")
         .Produces<ErrorBody>(StatusCodes.Status400BadRequest)

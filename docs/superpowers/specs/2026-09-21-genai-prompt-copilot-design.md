@@ -708,7 +708,7 @@ scripts/
 - 不設距離門檻；tool result 帶相似度分級（`<0.25` 高、`<0.30` 中、其餘低），由 agent 判斷。
 - `tags && $2` 決定不做：OR 上 tags 會把候選池撐到維度外，與分維度前提衝突。
 - **跨維度去重：歸屬規則為「grounded 優先、距離次之」，且在定稿時才算，不在檢索時算。** 一筆 preset 的 `facet_ids` 可能橫跨數維（實測 859 筆裡 134 筆、15.6%），會在多個候選池出現，agent 可能從兩個維度分別拿到兩份結果、兩個不同的 `grounded` 值。規則：若有任何 grounded 維度撈到它，歸給這些維度中距離最小的那個；完全沒有才退回全體最小距離。**不能單純比距離**——歸屬決定借用資格，而 `grounded` 是「這個維度使用者講了沒」的屬性，不是片段的屬性；單純比距離會讓一個 grounded 維度正當撈到的片段，因為某個 missing 維度**推想出來**的查詢剛好更近，就被降級成「僅供建議」而失去借用資格。
-- **落地方式：session ledger。** `SearchPresets` 每個項目照實回傳自己維度的結果，不做跨維度去重。session 內維護 `presetId → [(dimension, dist, grounded)]`，每次呼叫累加；歸屬與借用資格到定稿驗證時才套上面的規則。這本 ledger 本來就非有不可——借用來源的驗證（借的 tag 必須真的在片段裡、且真的在提示詞裡，不信 LLM 自述）查的是同一本帳。附帶好處：agent 只呼叫部分維度時自然成立，而且能回報「這片段你在某維度看過了」。
+- **落地方式：session ledger。** `SearchPresets` 每個項目照實回傳自己維度的結果，不做跨維度去重。session 內維護 `presetId → [(dimension, dist, grounded)]`，每次呼叫累加；歸屬與借用資格到定稿驗證時才套上面的規則。這本 ledger 本來就非有不可——借用來源的驗證（借的 tag 必須真的在片段裡、且真的在提示詞裡，不信 LLM 自述）查的是同一本帳。附帶好處：agent 只呼叫部分維度時自然成立，而且能回報「這片段你在某維度看過了」。2026-09-25 起，使用者採用推薦組合時伺服器也把該 preset 寫進 ledger（`Session.RecordAdoption`），定稿 chip 才能開抽屜、offered 區段才會列它。
 - **定稿 tag 來源標示（2026-09-25 實作）。** C# 端不要求模型自述借用，改由伺服器在定稿時以 ledger 片段比對 tag 來源（`Sessions/TagAttribution.cs`，純函式）：positive／negative 以逗號拆段，比對前小寫、底線視同空白、連續空白壓成一個、剝掉外層成對括號與 `:數字` 權重；negative 只比 `NegativeSnippet`。基礎詞（§5.5：`masterpiece, best quality, highly detailed`／`lowres, bad anatomy, worst quality`）標 `base` 且優先，命中 ledger 片段標 `rag`，其餘 `llm`。命中指正規化後整段相等，或以空白為界的字尾相符（2026-09-25 起：片段 `platform sandals` ↔ tag `sandals`、tag `short shorts` ↔ 片段 `shorts`；不做子字串，`top` 不命中 `laptop`，但會命中 `crop top`，是接受的代價）；`presetIds` 整段相等的在前、字尾相符的在後，各依寫進 ledger 的先後，`presetTitle` 取第一筆。結果存進 `LastFinal`，隨 `final` 事件回傳 `positiveSources`／`negativeSources`（§10.2），`GET /api/sessions/{id}` 的 `lastFinal` 也帶；前端以 chip 標示，`rag` 可點開 preset 抽屜。`SearchSimilarPrompts` 的結果不進 ledger（只供參考），不算來源。這一步只**標**來源，不判借用資格：片段可不可以借入仍由 prompt 規則與 `grounded` 管。2026-09-25 起多第四種 `adopted`：使用者採用推薦組合帶進來的 tag（`Session.Adoptions` 的 `Taken`，同一套字尾規則，最近一次採用優先），優先序 base → adopted → rag → llm；只標 positive。見 `2026-09-25-set-recommendations-design.md` §6.5。
 - **`grounded` 由伺服器算，不是 LLM 傳進來的參數。** agent 傳 `facetIds`，伺服器映射到維度後查 `Session.FacetStates`（§4.4）自行判定。與 Python `grounded_dimensions()` 不問 LLM 同一個原則：少一個可被捏造的欄位。
 - **候選池大小要跟著 tool result 一起回。** `池 2 → 2` 這種「這維度過濾後有多少候選、其中命中幾筆」的資訊，是分維度檢索最有價值的副產品：它讓知識庫覆蓋缺口（例如 vehicle 的 pose 只有 2 筆）在使用當下就看得見，不必事後查資料庫才發現。tool result 除了相似度分級，也要帶上 GIN 過濾後的候選池筆數，否則子專案 2 會失去這個可見度。
@@ -727,7 +727,7 @@ scripts/
 | :--- | :--- | :--- |
 | `POST` | `/api/sessions` | body 可省略 `{ retrieval?: "on" \| "off" }`（預設 `on`；`off` 不查知識庫，建立後不可改，2026-09-25 起）→ `{ sessionId, retrieval }` |
 | `GET` | `/api/sessions/{id}` | session 目前的權威狀態（status、profile、facetStates、askCount／askLimit、lastFinal，含 tag 來源、retrieval、facetTags）；前端重載重建用；不拿 session 鎖；`404` 表示不存在或已過期 |
-| `POST` | `/api/sessions/{id}/messages` | body `{ text }`；回 `text/event-stream`；同一 session 已有一輪在跑 → `409` |
+| `POST` | `/api/sessions/{id}/messages` | body `{ text }` 或 `{ adopt: { presetId, dimension, take } }`（2026-09-25 採用推薦組合，伺服器組句）；回 `text/event-stream`；同一 session 已有一輪在跑 → `409`；`adopt` 但 `retrieval: off` 或未判定題材 → `409`；`adopt` 不合法 → `400` |
 | `POST` | `/api/sessions/{id}/save-to-shared` | body `{ intent }`；需 `Finalized`，否則 `409`；寫 `shared_prompt_histories` 並向量化；**唯一的寫入路徑** |
 | `GET` | `/api/config/facets` | 回 `facets.yaml` 內容供前端渲染 |
 | `GET` | `/api/presets/{id}` | preset 詳情（抽屜用）；含 `sourceRef` 與伺服器算的 `sourceUrl`（出處連結，子專案 4）；`facetTags`（2026-09-25，未回填時為 null） |
@@ -762,7 +762,7 @@ scripts/
 { kind: "save_consent_requested" }
 ```
 
-`options` 的每筆是 `{ label, tags, presetId? }`（§4.2）。`positiveSources`／`negativeSources` 的每筆是 `{ tag, origin, presetIds, presetTitle?, sourceRef? }`，依 tag 在提示詞裡的順序；`origin` 為 `rag`（知識庫片段）／`llm`（模型生成）／`base`（基礎詞），由伺服器比對 ledger 算出（§9）；`sourceRef`（2026-09-25 起）跟 `presetTitle` 取同一筆命中片段，只有 `rag` 有。`dimensions` 事件不變，`Discuss` 一樣會發（帶 `facetStates`）。
+`options` 的每筆是 `{ label, tags, presetId? }`（§4.2）。`positiveSources`／`negativeSources` 的每筆是 `{ tag, origin, presetIds, presetTitle?, sourceRef? }`，依 tag 在提示詞裡的順序；`origin` 為 `rag`（知識庫片段）／`adopted`（採用的組合帶進來的，2026-09-25）／`llm`（模型生成）／`base`（基礎詞），由伺服器比對 ledger 算出（§9）；`sourceRef`（2026-09-25 起）跟 `presetTitle` 取同一筆命中片段，`rag` 與 `adopted` 有。`dimensions` 事件不變，`Discuss` 一樣會發（帶 `facetStates`）。
 
 `Discuss.message` 不會有打字機效果：它是 tool call 的參數，一次到位。這跟 `AskUser` / `FinalizePrompt` 現況一致，不是新問題；前端不要對 `message` 期待 `token` 事件。
 

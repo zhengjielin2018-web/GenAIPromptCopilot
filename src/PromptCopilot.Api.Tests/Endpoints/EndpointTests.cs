@@ -42,13 +42,17 @@ public class EndpointTests : IClassFixture<EndpointTests.Factory>
         public override Task<Guid> InsertAsync(HistoryInsert h, CancellationToken ct) => Task.FromResult(Guid.NewGuid());
     }
 
-    /// <summary>不打 DB。id 1 是一筆 civitai 的 preset，其他都不存在。</summary>
+    /// <summary>不打 DB。id 1 是一筆已拆分 facet 的 civitai preset；id 2 尚未拆分；其他都不存在。</summary>
     private sealed class FakePresets() : PresetRepository(null!)
     {
-        public override Task<PresetDetail?> GetAsync(long id, CancellationToken ct) => Task.FromResult(id == 1
-            ? new PresetDetail(1, "霓虹雨夜街頭", "Scene", "昏暗雨夜的賽博龐克街道", ["neon", "rain"], ["scene.location"],
-                "neon city street, rain, night", null, null, "civitai:12345:0", SourceAttribution.UrlFor("civitai:12345:0"))
-            : null);
+        public override Task<PresetDetail?> GetAsync(long id, CancellationToken ct) => Task.FromResult(id switch
+        {
+            1 => new PresetDetail(1, "霓虹雨夜街頭", "Scene", "昏暗雨夜的賽博龐克街道", ["neon", "rain"], ["scene.location", "scene.weather"],
+                "neon city street, rain, night", null, null, "civitai:12345:0", SourceAttribution.UrlFor("civitai:12345:0"),
+                new Dictionary<string, IReadOnlyList<string>> { ["scene.location"] = new[] { "neon city street" }, ["scene.weather"] = new[] { "rain" } }),
+            2 => new PresetDetail(2, "未拆分", "Scene", "d", ["x"], ["scene.location"], "x", null, null, null, null),
+            _ => null,
+        });
     }
 
     public sealed class ExplodingAudit : IAuditSink
@@ -86,6 +90,21 @@ public class EndpointTests : IClassFixture<EndpointTests.Factory>
             PositiveSources: new[] { new TagSource("1girl", "rag", new long[] { 1 }, "霓虹雨夜街頭") },
             NegativeSources: new[] { new TagSource("lowres", "base", Array.Empty<long>(), null) }));
         return s;
+    }
+
+    private Session PortraitSession(bool retrieval = true)
+    {
+        var store = _factory.Services.GetRequiredService<SessionStore>();
+        var s = store.Create(retrieval);
+        s.ApplyProfile("portrait", _factory.Services.GetRequiredService<PromptCopilot.Api.Configuration.FacetCatalog>());
+        return s;
+    }
+
+    /// <summary>串流裡 session frame 的 data 那一行。</summary>
+    private static string SessionFrameData(string sse)
+    {
+        var lines = sse.Split('\n');
+        return lines[Array.IndexOf(lines, "event: session") + 1];
     }
 
     [Fact]
@@ -144,6 +163,7 @@ public class EndpointTests : IClassFixture<EndpointTests.Factory>
         Assert.StartsWith("text/event-stream", r.Content.Headers.ContentType!.ToString());
         var text = await r.Content.ReadAsStringAsync();
         Assert.Contains("event: session", text); Assert.Contains("echo: hi", text);
+        Assert.DoesNotContain("\"text\"", SessionFrameData(text));      // 一般的一輪 session 事件不帶 text（只有 adopt 才帶）
 
         Assert.Equal(HttpStatusCode.NotFound, (await _client.PostAsJsonAsync("/api/sessions/nope/messages", new { text = "hi" })).StatusCode);
         Assert.Equal(HttpStatusCode.BadRequest, (await _client.PostAsJsonAsync($"/api/sessions/{id}/messages", new { text = " " })).StatusCode);
@@ -170,6 +190,45 @@ public class EndpointTests : IClassFixture<EndpointTests.Factory>
         var again = await _client.PostAsJsonAsync($"/api/sessions/{id}/messages", new { text = "hi" });
         Assert.Equal(HttpStatusCode.OK, again.StatusCode);
         Assert.Contains("echo: hi", await again.Content.ReadAsStringAsync());
+    }
+
+    /// <summary>設計 §6.1／§6.2：伺服器組句、串流第一個事件帶那句。</summary>
+    [Fact]
+    public async Task Adopt_composes_the_user_sentence_and_streams_it()
+    {
+        var s = PortraitSession();
+        var r = await _client.PostAsJsonAsync($"/api/sessions/{s.Id}/messages", new { adopt = new { presetId = 1, dimension = "scene", take = new[] { "scene.location" } } });
+        Assert.Equal(HttpStatusCode.OK, r.StatusCode);
+        var body = await r.Content.ReadAsStringAsync();
+        Assert.Contains("\"text\":\"採用〈霓虹雨夜街頭〉（知識庫 #1）：地點類型照它的（neon city street）；前景元素、中景／主體周邊、背景與遠景、光源與時間、天氣氛圍保留我的。\"", body);
+        Assert.Contains("\"text\":", SessionFrameData(body));
+        Assert.Contains("echo: 採用〈霓虹雨夜街頭〉", body);
+    }
+
+    [Theory]
+    [InlineData("""{"adopt":{"presetId":99,"dimension":"scene","take":["scene.location"]}}""", HttpStatusCode.BadRequest, "找不到")]
+    [InlineData("""{"adopt":{"presetId":2,"dimension":"scene","take":["scene.location"]}}""", HttpStatusCode.BadRequest, "尚未拆分")]
+    [InlineData("""{"adopt":{"presetId":1,"dimension":"scene","take":[]}}""", HttpStatusCode.BadRequest, "take 不可為空")]
+    [InlineData("""{"adopt":{"presetId":1,"dimension":"scene","take":["clothing.upper"]}}""", HttpStatusCode.BadRequest, "不屬於維度")]
+    [InlineData("""{}""", HttpStatusCode.BadRequest, "text 不可為空")]
+    public async Task Adopt_rejects_bad_requests(string json, HttpStatusCode status, string message)
+    {
+        var s = PortraitSession();
+        var r = await _client.PostAsync($"/api/sessions/{s.Id}/messages", new StringContent(json, System.Text.Encoding.UTF8, "application/json"));
+        Assert.Equal(status, r.StatusCode);
+        Assert.Contains(message, (await r.Content.ReadFromJsonAsync<Dictionary<string, string>>())!["error"]);
+    }
+
+    [Fact]
+    public async Task Adopt_is_409_when_retrieval_is_off_or_profile_is_unset()
+    {
+        var off = PortraitSession(retrieval: false);
+        var r1 = await _client.PostAsJsonAsync($"/api/sessions/{off.Id}/messages", new { adopt = new { presetId = 1, dimension = "scene", take = new[] { "scene.location" } } });
+        Assert.Equal(HttpStatusCode.Conflict, r1.StatusCode);
+        var fresh = _factory.Services.GetRequiredService<SessionStore>().Create();
+        var r2 = await _client.PostAsJsonAsync($"/api/sessions/{fresh.Id}/messages", new { adopt = new { presetId = 1, dimension = "scene", take = new[] { "scene.location" } } });
+        Assert.Equal(HttpStatusCode.Conflict, r2.StatusCode);
+        Assert.Contains("題材", (await r2.Content.ReadFromJsonAsync<Dictionary<string, string>>())!["error"]);
     }
 
     [Fact]
@@ -265,7 +324,7 @@ public class EndpointTests : IClassFixture<EndpointTests.Factory>
 
         Assert.Equal("civitai:12345:0", d.GetProperty("sourceRef").GetString());
         Assert.Equal("https://civitai.com/images/12345", d.GetProperty("sourceUrl").GetString());
-        Assert.Equal(HttpStatusCode.NotFound, (await _client.GetAsync("/api/presets/2")).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await _client.GetAsync("/api/presets/99")).StatusCode);
     }
 
     /// <summary>Swagger 上寫的回應碼要等於端點真的會回的。沒標就只剩框架預設的 200：
