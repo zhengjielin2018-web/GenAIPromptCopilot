@@ -64,7 +64,7 @@ public sealed record SearchQuery(string Dimension, string Query);
 | :--- | :--- |
 | `Profile` 尚未設定 | 整包回 `錯誤：請先呼叫 SetProfile`（同現行） |
 | `queries` 為空 | 整包回錯誤 |
-| 項目數超過 12 | 整包回錯誤，訊息說明上限（6 個維度 × 2 個對比方向） |
+| 項目數超過 12（§8.2 改為 24） | 整包回錯誤，訊息說明上限（6 個維度 × 2 個對比方向） |
 | 某項目的維度對此 profile 不適用或不存在 | 只有該項目的結果帶 `error`，其餘照跑 |
 | 某項目的 `query` 空白 | 同上，只標該項目 |
 
@@ -108,6 +108,8 @@ public sealed record SearchQuery(string Dimension, string Query);
 ## 4. 提示、預算、強制定稿
 
 ### 4.1 `Prompts/system.md` 第 1 條
+
+（下面是本案當時的文字。之後又改過兩次：先 `SetFacetStates` 再檢索、有缺就追問（known-issues #9），以及 facet 層級的項目（§8.3）。現行文字見 `Prompts/system.md` 與 `SystemPromptBuilder.RetrievalStepOn`。）
 
 改成：
 

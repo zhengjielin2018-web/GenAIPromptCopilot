@@ -1,7 +1,7 @@
 # 分維度檢索與兩段式組裝 — 設計規格
 
 日期：2026-09-22
-狀態：已實作並驗收（`scripts/demo.py`、`scripts/pipeline/retrieval.py`，2026-09-22）；§10 改寫稿已併入主規格 §9，子專案 2 的 `SearchPresets` 依此實作（之後改為批次與 facet 層級，見 `2026-09-24-batch-search-presets-design.md`）
+狀態：已實作並驗收（`scripts/demo.py`、`scripts/pipeline/retrieval.py`，2026-09-22）。§1–§9 仍與 Python 端一致。§10 改寫稿已併入主規格 §9，但 C# 端之後改為批次與 facet 層級，也沒有實作 §5.3 的跨維度去重；C# 的現況以主規格 §9 為準，與本文件的差異見 §13。
 範圍：`scripts/demo.py` 的檢索與組裝流程；同時改寫主規格 [§9 檢索策略](2026-09-21-genai-prompt-copilot-design.md#9-檢索策略)，供子專案 2 的 `SearchPresets` 遵循。
 
 ---
@@ -32,7 +32,7 @@ Appearance 那筆同時給了 `twintails` 與 `green eyes`（皆正確）、只�
 
 同時暴露知識庫覆蓋缺口：pose「坐在橋的扶手上，拿攝影機」最近的是 `sitting on the mushroom, holding a laptop`（0.299）；vehicle 的 pose 候選池只有 2 筆；object 的 appearance 池只有 51 筆。這些不在本任務範圍，但畫面必須讓它們看得見（§7）。
 
-分級門檻跨題材驗證：landscape / object / vehicle / portrait 的可用命中都落在 0.18–0.25。
+分級門檻跨題材驗證：landscape / object / vehicle / portrait 的可用命中都落在 0.18–0.28（初稿寫 0.25；實作計畫與 `retrieval.py` 的 `band()` 註解寫 0.28，上表 camera 的 0.254 也是可用命中，以 0.28 為準）。
 
 ## 2. 目標與非目標
 
@@ -303,6 +303,8 @@ ORDER BY dist LIMIT %(k)s
 
 ## 10. 主規格 §9 改寫稿
 
+> **歷史稿。** 下面是 2026-09-22 併入主規格時的原文。之後主規格 §9 改寫過多次：`SearchPresets` 一次呼叫帶多個項目、項目可縮到單一 facet、跨維度去重在 C# 沒有實作。現況以主規格 §9 為準，差異見 §13。
+
 以下取代 [2026-09-21-genai-prompt-copilot-design.md](2026-09-21-genai-prompt-copilot-design.md) 的 §9 全文：
 
 > ## 9. 檢索策略
@@ -332,7 +334,7 @@ ORDER BY dist LIMIT %(k)s
 - **知識庫覆蓋缺口**：vehicle pose 池 2 筆、object appearance 池 51 筆、「坐欄杆＋拿相機」類 pose 無命中。畫面會暴露，補資料另案。
 - **分級門檻是絕對值**，跨四種 profile 驗過但只有數個題目。若之後發現漂移，改成池內相對分位。
 - **missing 維度的推想子查詢已隱含創作決定**（推想「動漫」就只撈動漫）。兩句對比方向是緩解不是解決；子專案 2 的追問流程才是正解。
-- **本檔的去重是「一次看得到全部維度」的模型**，子專案 2 的 `SearchPresets` 逐維度各自呼叫，看不到全局。對應作法見主規格 §9：不在檢索時去重，改由 session ledger 累積 `presetId → [(dimension, dist, grounded)]`，到定稿驗證時才套 §5.3 的歸屬規則。
+- **本檔的去重是「一次看得到全部維度」的模型**，子專案 2 的 `SearchPresets` 逐維度各自呼叫，看不到全局。當時的對應作法是：不在檢索時去重，改由 session ledger 累積 `presetId → [(dimension, dist, grounded)]`，到定稿驗證時才套 §5.3 的歸屬規則。**C# 最後沒有這樣做**：ledger 照記這三個欄位，但沒有程式讀它們，定稿也不套歸屬規則，見 §13。
 
 ## 12. 實作偏差與後記
 
@@ -358,3 +360,37 @@ ORDER BY dist LIMIT %(k)s
 **`SearchSimilarPrompts` 也受影響**：它用 `subject_profile` 過濾，vehicle 只佔 histories 的 1.9%。唯讀實測：拿 200 筆 portrait 紀錄的向量去查其他 profile 各取 3 筆，關掉 iterative scan 時有 155–198 筆不足 3，`strict_order` 下 0 筆。同一個資料庫設定一起修掉，不另外改程式。
 
 **回歸測試**：C# `RepositoryIntegrationTests`（`SHOW hnsw.iterative_scan` 必須是 `strict_order`；id 最小、帶 scene facet 但不帶 style facet 的片段向量對風格池取 3 筆，必須剛好 3 筆、都在池內、距離遞增）；Python `test_retrieval.py` 用同一個情境走 `retrieve_presets`。兩條在修正前都是 0 筆。
+
+## 13. C# 端現況與本文件的差異（2026-09-26）
+
+本文件是 Python demo 的設計，§2 明寫「不動 C# 端」。C# 的檢索由子專案 2 起逐步實作，權威描述在主規格 §9；這一節只記兩邊哪裡相同、哪裡不同，免得讀者以為 §5、§6 的規則在 C# 上也成立。
+
+### 13.1 相同的部分
+
+- 片段檢索的 SQL 形狀：`WHERE facet_ids && @facets ORDER BY preset_embedding <=> @q LIMIT @k`，不設距離門檻（C# 多取 `image_url`、`source_ref`）。
+- 候選池大小隨結果回報；`k`：該維度 grounded 取 5，否則 3；分級門檻 `< 0.25` 高、`< 0.30` 中、其餘低（`KnowledgePlugin` 的常數註明與 `retrieval.py` 一致）。
+- `grounded` 由伺服器從 facet 狀態推出（該維度任一 facet 為 covered），不問模型。
+- 每筆命中標出它涉及的每個 facet 對本次使用者的狀態（C# 多一種 `waived`）。
+- 查詢向量一次 batch 算完；embedding 的 `taskType`、768 維與 L2 正規化和管線一致。
+- §12.1 的 `hnsw.iterative_scan = strict_order` 是資料庫層級設定，兩邊都吃到。
+
+### 13.2 不同的部分
+
+| 項目 | 本文件（Python demo） | C# 現況 |
+| :--- | :--- | :--- |
+| 誰決定查什麼 | ① 分析階段產出每維度的子查詢，Python 整理 | 模型呼叫 `SearchPresets`，一次帶 `queries[]`（最多 24 項）；項目可用 `facetId` 把候選池縮到單一 facet（批次設計 §3、§8） |
+| 每維度句數上限、漏答頂上（§6.1） | grounded 1 句、missing 2 句；grounded 維度沒句子就用整句頂上 | 沒有；只限總數 24，其餘由 `system.md` 第 1 條指示模型 |
+| 跨維度去重（§5.3） | 檢索後去重，grounded 優先、距離次之 | **不去重**。同一筆片段被兩個項目撈到，模型看到兩份，`usable` 可能一份「可借入」一份「僅供建議」 |
+| 借用資格（§6.2 的閘門） | Python 驗證：歸屬維度不 grounded 的借用整筆移除 | **只有提示詞約束**：每筆命中標「可借入提示詞／僅供建議」，`system.md` 的規則要模型遵守，伺服器不強制 |
+| 借用來源驗證（§6.2） | 模型申報 `borrowed`，tag 必須大小寫無關地同時出現在片段與提示詞（子字串） | 模型不申報。定稿時 `TagAttribution` 對整本 ledger 比對每個 tag，標 `base`／`adopted`／`rag`／`llm`；比對是正規化後整段相等或以空白為界的字尾，不做子字串；不看片段當初屬於哪個維度、可不可借 |
+| 建議來源不在候選裡（§6.3） | 該選項丟掉 | `AskUser`／`Discuss` 選項的 `presetId` 不在 ledger 時改成 null，選項保留 |
+| 相似作品（§5.2） | 每次都跑，整句向量取 3 筆 | `SearchSimilarPrompts` 由模型選用，查詢句由模型給，取 1–5 筆（預設 3）；結果不進 ledger，不算 tag 來源 |
+| ledger 的 `(dimension, dist, grounded)` | —（一次看得到全部，不需要） | 每筆命中都記，但目前沒有程式讀；ledger 實際用在 tag 來源比對、選項 `presetId` 驗證、system prompt 的「先前提供過的選項」 |
+
+C# 還有本文件沒有的第三條檢索：整套組合推薦（`RecommendationService`、`PresetRepository.RecommendAsync`）。它由伺服器在每輪以追問或定稿結束後自動跑，結果直接給使用者、不進模型的 context；見主規格 §9 與 `2026-09-25-set-recommendations-design.md` §4.4、§5.3。
+
+### 13.3 C# 的借用資格實際怎麼管
+
+只有兩層，都不在伺服器端強制：檢索當下每筆命中照實標「可借入提示詞／僅供建議」（依該項目的維度當下是否 grounded）；`system.md` 的規則要模型遵守這個標記，以及「標 missing 的 facet 對應的詞不可借入」。定稿時 `TagAttribution` 只**標**來源、不判資格（主規格 §9「定稿 tag 來源標示」），所以「僅供建議」的片段若被模型借了，照樣標 `rag`。這跟 §6.4 的 facet 級約束是同一個性質：提示詞約束，不是程式保證。
+
+要在 C# 補上伺服器端的閘門，得先決定一件本文件不需要處理的事：多輪對話裡 grounded 會變。第一輪 missing 的風格，使用者在第二輪從追問卡選了某個片段的方向，就變成 covered；檢索當下標的「僅供建議」到定稿時可能已經不成立。要以檢索當下還是定稿當下的狀態判斷、同一筆片段在不同輪的標記怎麼合併，都要先有規則。
