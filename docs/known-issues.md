@@ -10,7 +10,7 @@
 | 7 | log 不足：看不出被擋的原因，一輪的經過只在資料庫裡 | 可觀測性 | 中（#4 要靠它確認） |
 | 8 | `HistoryTrimmer` 對 Gemini 的工具結果從未生效 | 可觀測性／成本 | 中 |
 | 5 | eval #5、#18 行為不符預期；§14 端到端要在新 HEAD 重跑 | 調整 | 低 |
-| 9 | 整套組合推薦的已知限制：錨靠模型翻譯、同義詞抓不到、SQL 的錨比對比 C# 粗、換了內容沒重給 `tags` 時舊錨留著；採用輪失敗後重試是純文字，HTTP 層就失敗時填回的是佔位字 | 限制 | 低 |
+| 10 | 整套組合推薦的已知限制：錨靠模型翻譯、同義詞抓不到、SQL 的錨比對比 C# 粗、換了內容沒重給 `tags` 時舊錨留著；採用輪失敗後重試是純文字，HTTP 層就失敗時填回的是佔位字 | 限制 | 低 |
 | 6 | 子專案 4 全分支審查留下的小項目 | 整理 | 低 |
 
 ---
@@ -72,7 +72,9 @@
 - **§14 端到端驗收**是在 `fc449f7` 跑的，之後改過輪次流程、重試分類、輸出安全，要在新 HEAD 重跑。
 - **eval #21／#22** 的故障注入方式（改 `Llm:Model`）測不到：404 不重試，session 在記憶體裡、重啟就沒了。要換一種注入方式，例如可設定的 fake 失敗次數。
 
-## 9. 整套組合推薦的已知限制（2026-09-25）
+## 10. 整套組合推薦的已知限制（2026-09-25）
+
+（原本也編成 9，跟文末已修正的 #9 撞號，2026-09-25 改為 10。）
 
 - **錨靠模型翻譯**：追問階段的錨是模型在 `SetFacetStates` 給的英文 `tags`，翻錯或沒給就退回無錨（「最接近你描述的組合」），不報錯。定稿後多了 positive 的 tag 當錨，會好一些。
 - **同義詞抓不到**：錨比對是整段相等或空白為界的字尾（`platform sandals` ↔ `sandals`），`slippers` 對 `sandals` 不會命中。後續的 facet 向量案（子表 `preset_facet_embeddings`）用「該 facet 向量最近的」補這個缺口，排在本案之後。
@@ -84,6 +86,7 @@
 ## 6. 子專案 4 全分支審查留下的小項目
 
 都不影響功能，順手時再做。
+（2026-09-25 清掉兩項：`PresetDrawer.vue` 的 `sourceName()` 在圖片來源說明改版時已改成 `sourceNotice()` 只算一次；README 的「重置知識庫」與「沒填 key」已補。）
 
 - `scripts/export_seed.py` 的 `run()` 收下 stderr，失敗時只看得到指令，看不到 PostgreSQL 的錯誤原文。
 - `export_seed.pipe()` 先檢查 pg_dump 的結束碼再檢查 pg_restore，還原失敗可能被報成來源端的 broken pipe。
@@ -91,9 +94,7 @@
 - `docker/Dockerfile.api` 執行階段是 root，aspnet image 內建 `app` 使用者。
 - `.gitattributes` 只把 `*.sh` 固定成 LF；`nginx.conf` 與 `001_schema.sql` 在 Windows checkout 是 CRLF，目前靠兩者容忍 CRLF 才沒事。
 - CI 的 docker job 沒跑 `docker compose config --quiet`。
-- README 缺「重置知識庫：`docker compose down -v`」與「沒填 key 會是什麼樣子」。
 - 四個服務都寫死 `container_name`，兩套 stack 不能並存（fresh clone 測試要先 `docker compose down` 開發用的那套）。
-- `PresetDrawer.vue` 在模板裡算了兩次 `sourceName()`。
 - `PresetRepository` 為了測試 fake 拿掉了 `sealed`（沿用 `FakeHistories` 的既有做法）。
 
 ---

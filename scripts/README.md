@@ -102,9 +102,9 @@ clean／structure／embed／load 全部五個階段，`--max-records` 預設不�
 在丟棄庫裡刪掉使用者自己存的紀錄（`source = 'user'`），再從丟棄庫匯出，最後停掉容器。
 開發庫只被讀，API 開著也沒關係；灌進全新 schema 這一步順便證明 dump 灌得回去。約 2 分鐘。
 
-    python export_seed.py --version 1        # 產出 data/seed/prompt_copilot_seed_v1.dump（不進版控）
+    python export_seed.py --version 3        # 產出 data/seed/prompt_copilot_seed_v3.dump（不進版控）
 
-它會印出 `gh release create seed-v1 …` 指令，上傳是手動的。語料擴增或換 embedding 模型後
+它會印出 `gh release create seed-v3 …` 指令，上傳是手動的。目前 Release 上是 seed-v1 與 seed-v2，compose 預設用 seed-v2（多了 `facet_tags`）。語料擴增或換 embedding 模型後
 版本號 +1，並同步 `docker-compose.yml` 的 `SEED_URL` 預設值與 `db/init/001_schema.sql` 的維度。
 授權與免責聲明見 [docs/資料來源.md](../docs/資料來源.md)。
 
@@ -236,8 +236,8 @@ NSFW 過濾實際上分三層：
 - 其他語言（例如中文、日文的對應詞彙）
 - 清單之外的新造詞、俚語
 
-規劃中真正可靠的防線是在 API 層做「執行期安全控管」——對使用者輸入與最終合成的 prompt
-各跑一次以 LLM 為基礎的檢查（見子專案後續計畫），而不是靠這份清單。**這個資料管線的
+真正的防線在 API 層的執行期安全控管——輸入側的 `SafetyGuard`（denylist＋Gemini 分類器）與
+輸出側的 `OutputSafetyFilter`（定稿、討論、追問的文字與選項），見主規格 §6，而不是靠這份清單。**這個資料管線的
 `nsfw_filter.py` 只是語料庫的衛生層（corpus hygiene），不是安全保證**，不應被誤解為
 已經解決 NSFW 過濾問題。
 

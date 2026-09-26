@@ -83,14 +83,15 @@ public class EndpointTests : IClassFixture<EndpointTests.Factory>
     public EndpointTests(Factory f) { _factory = f; _client = f.CreateClient(); }
 
     /// <summary>直接從 store 拿 session 佈置成已定稿：走 HTTP 的話得先跑完一輪真的對話。</summary>
-    private Session FinalizedSession()
+    private Session FinalizedSession(bool reviewed = true)
     {
         var store = _factory.Services.GetRequiredService<SessionStore>();
         var s = store.Create();
         s.ApplyProfile("portrait", _factory.Services.GetRequiredService<PromptCopilot.Api.Configuration.FacetCatalog>());
         s.RecordFinalize(new FinalPrompt("1girl", "lowres", "tips", "一個女生",
             PositiveSources: new[] { new TagSource("1girl", "rag", new long[] { 1 }, "霓虹雨夜街頭") },
-            NegativeSources: new[] { new TagSource("lowres", "base", Array.Empty<long>(), null) }));
+            NegativeSources: new[] { new TagSource("lowres", "base", Array.Empty<long>(), null) },
+            Reviewed: reviewed));
         return s;
     }
 
@@ -305,7 +306,7 @@ public class EndpointTests : IClassFixture<EndpointTests.Factory>
         Assert.Equal(System.Text.Json.JsonValueKind.Null, doc.GetProperty("profile").ValueKind);
         Assert.Equal(0, doc.GetProperty("askCount").GetInt32());
         Assert.Equal(2, doc.GetProperty("askLimit").GetInt32());
-        Assert.Equal(0, doc.GetProperty("facetStates").EnumerateObject().Count());
+        Assert.Empty(doc.GetProperty("facetStates").EnumerateObject());
         Assert.Equal(System.Text.Json.JsonValueKind.Null, doc.GetProperty("lastFinal").ValueKind);
         Assert.Equal("on", doc.GetProperty("retrieval").GetString());
     }
@@ -366,6 +367,18 @@ public class EndpointTests : IClassFixture<EndpointTests.Factory>
             Assert.Equal(HttpStatusCode.Conflict, r.StatusCode);
         }
         finally { s.Lock.Release(); }
+    }
+
+    /// <summary>審查開關關著產生的定稿沒經過輸出側檢查。共享庫會被別的對話的 SearchSimilarPrompts 撈到，不能讓它進去。</summary>
+    [Fact]
+    public async Task Save_rejects_a_final_produced_with_review_off()
+    {
+        var s = FinalizedSession(reviewed: false);
+        var r = await _client.PostAsJsonAsync($"/api/sessions/{s.Id}/save-to-shared", new { intent = "雨夜霓虹" });
+
+        Assert.Equal(HttpStatusCode.Conflict, r.StatusCode);
+        Assert.Contains("審查", (await r.Content.ReadFromJsonAsync<Dictionary<string, string>>())!["error"]);
+        Assert.Equal(1, s.Lock.CurrentCount);
     }
 
     /// <summary>稽核寫在資料列插入之後。讓它把回應弄成 500，使用者一重試就多一筆重複的資料。</summary>

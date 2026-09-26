@@ -172,6 +172,14 @@ class Chat:
             print(json.dumps(ev, ensure_ascii=False))
         print()
 
+    def on_recommendations(self, ev):
+        print(self.ui.cyan("  參考組合"))
+        for d in ev.get("dimensions") or []:
+            anchor = f"含 {', '.join(d.get('anchorTags') or [])}" if d.get("anchored") else "最接近你描述的"
+            sets = "、".join(f"#{s['presetId']} {s['title']}" for s in d.get("sets") or [])
+            print(f"    {d.get('label') or d['dimension']:<4} " + self.ui.dim(f"（{anchor}）{sets}"))
+        print()
+
     def on_blocked(self, ev):
         print(self.ui.red(f"\n⛔ 被攔下（{ev['reason']}）：{ev['message']}\n"))
 

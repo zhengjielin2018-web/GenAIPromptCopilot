@@ -13,7 +13,7 @@ devProxy 不會緩衝 SSE：2026-09-24 實測，一輪的事件在 12 秒內逐�
 
 ## 測試
 
-    npm test             # vitest：lib/ 底下的純函式（SSE 解析、reducer、persist、composer、dashboard）
+    npm test             # vitest：lib/ 底下的純函式（SSE 解析、reducer、persist、composer、dashboard、options、prefs、trace、adopt、safety、copy）
 
 `lib/` 不依賴 Nuxt，測試在 node 環境跑，不需要瀏覽器或 API。
 
@@ -24,9 +24,11 @@ devProxy 不會緩衝 SSE：2026-09-24 實測，一輪的事件在 12 秒內逐�
 ## 結構
 
 - `types/api.ts`：後端 DTO 與 SSE 事件型別，唯一定義處
-- `lib/`：純函式（reducer、SSE 解析、persist、composer、dashboard、copy）
+- `lib/`：純函式（reducer、SSE 解析、persist、composer、dashboard、copy、options、prefs、trace、adopt、safety）
 - `composables/useApi.ts`：HTTP 呼叫
 - `stores/session.ts`：唯一的 Pinia store
 - `components/`：畫面元件
 
-設計：`docs/superpowers/specs/2026-09-24-frontend-sse-design.md`。
+頂列的三個開關：「使用知識庫」（下一段新對話生效，存 localStorage）、「顯示檢索細節」（即時，存 localStorage）、「程式端審查」（後端 `GET /api/config/safety` 回 `canDisable: true` 才出現，不保存，重新整理回到開著）。
+
+設計：`docs/superpowers/specs/2026-09-24-frontend-sse-design.md`；開關與檢索細節見 `2026-09-25-retrieval-switch-and-trace-design.md`，參考組合與採用見 `2026-09-25-set-recommendations-design.md`。

@@ -160,6 +160,8 @@ public static class SessionEndpoints
             try
             {
                 if (s.Status != SessionStatus.Finalized || s.LastFinal is null || s.Profile is null) return Results.Conflict(new ErrorBody("尚未定稿"));
+                // 審查關著產生的定稿沒經過輸出側檢查；共享庫會被別的對話檢索到，不能從這裡進去
+                if (!s.LastFinal.Reviewed) return Results.Conflict(new ErrorBody("這份定稿是在關閉程式端審查時產生的，不能存進共享知識庫；打開審查後重新定稿再存"));
                 if (string.IsNullOrWhiteSpace(req.Intent)) return Results.BadRequest(new ErrorBody("intent 不可為空"));
                 var vec = (await embed.EmbedAsync(new[] { req.Intent }, GeminiEmbeddingClient.RetrievalDocument, ct))[0];
                 var scores = JsonSerializer.Serialize(s.FacetStates.ToDictionary(kv => kv.Key, kv => FacetStateParser.ToWire(kv.Value)));
@@ -181,7 +183,7 @@ public static class SessionEndpoints
             模型不會自己存：使用者說要存時，`messages` 只會回 `final.kind = save_consent_requested`，要由客戶端在使用者同意後呼叫這支。**這是真的寫入資料庫。**
 
             - `404`：session 不存在或已過期
-            - `409`：還沒定稿，或這個 session 還有一輪在跑
+            - `409`：還沒定稿、這個 session 還有一輪在跑，或最後一次定稿是在關閉程式端審查（`safety: off`）時產生的
             - `400`：`intent` 是空白
             """)
         .Produces<SavedToShared>(StatusCodes.Status200OK)

@@ -116,7 +116,7 @@ LIMIT @take
 
 有錨時要用 `MATERIALIZED`。不這樣寫的話，規劃器會走 HNSW iterative scan，把錨當 Filter 邊掃邊丟；掃到 `hnsw.max_scan_tuples`（預設 20,000，全表已近兩萬筆）就停。罕見的錨（例如涼鞋只有 20 筆，穿著有 2,357 筆）會在表變大後被默默漏掉，但錨的結果必須精確。先把命中的列整批撈出來再排序，走的是 `facet_ids` 的 GIN 索引加排序，跟掃描上限無關。沒錨的池子大，HNSW 取向量前 N 正是要的，維持原路。
 
-`@anchorTags` 是全部錨 tag，`@anchorSuffixes` 是每個錨跳脫 LIKE 的 `\`、`%`、`_` 之後前面加 `'% '`（字尾相符，與 `TagAttribution.EndsWithWord` 同義）。`@anchorFacets` 是該維度全部 covered facet（定稿時 positive 的 tag 歸到每個 covered facet，所以不只有 `FacetTags` 的那幾個）；facet 與 tag 的配對放寬成「該維度任一 covered facet 命中任一錨」，錨本來就是該維度的詞，跨 facet 誤中的機率低，SQL 也簡單得多。資料庫這一側只做小寫與底線換空白，不剝權重與括號（`docs/known-issues.md` §9）。
+`@anchorTags` 是全部錨 tag，`@anchorSuffixes` 是每個錨跳脫 LIKE 的 `\`、`%`、`_` 之後前面加 `'% '`（字尾相符，與 `TagAttribution.EndsWithWord` 同義）。`@anchorFacets` 是該維度全部 covered facet（定稿時 positive 的 tag 歸到每個 covered facet，所以不只有 `FacetTags` 的那幾個）；facet 與 tag 的配對放寬成「該維度任一 covered facet 命中任一錨」，錨本來就是該維度的詞，跨 facet 誤中的機率低，SQL 也簡單得多。資料庫這一側只做小寫與底線換空白，不剝權重與括號（`docs/known-issues.md` §10）。
 
 回 `PresetCandidate(Id, Title, FacetIds, FacetTags: IReadOnlyDictionary<string, IReadOnlyList<string>>, ImageUrl, SourceRef, Dist)`。
 
@@ -125,6 +125,8 @@ LIMIT @take
 ## 5. 推薦的產生
 
 ### 5.1 觸發
+
+推薦由伺服器自己跑，不是模型的工具：結果以事件直接給前端，不進模型的 context；使用者按「採用」之後，伺服器組的採用句才以使用者訊息進入對話（§6）。這跟 `SearchPresets`（檢索結果交給模型借 tag）是兩條不同的路。
 
 `AgenticOrchestrator` 在 `apply` 階段之後、`Turn_Completed` audit 之前：本輪 `Outcome` 是 `AskOutcome` 或 `FinalizedOutcome`，且 `session.RetrievalEnabled`，就呼叫 `RecommendationService.BuildAsync(session, outcome, turnIndex, ct)`，結果非空就 `writer.TryWrite(new RecommendationsEvent(...))`。推薦失敗（DB／embedding 例外，或超過推薦自己的逾時 `Orchestrator:RecommendationTimeoutSeconds`，預設 20 秒）只記 log 與 audit `Recommendation_Failed`，不影響本輪結果——推薦是附加的。
 
@@ -137,7 +139,7 @@ LIMIT @take
 
 1. **查詢向量**：本 session 所有使用者訊息原文（不含伺服器組的採用句）依序串接、取最後 500 字，用 `RetrievalQuery` 任務嵌入。一輪只嵌入一次，各維度共用。
 2. **錨**：該維度每個 **covered** facet 的錨 tag ＝ `session.FacetTags[facetId]` 拆出的 tag（5.5）；`FinalizedOutcome` 時再加上本次定稿 `positive` 拆出的 tag（歸到該維度所有 covered facet；基礎畫質詞以 `TagAttribution.IsBase` 排除，它們每次定稿都有、不屬於任何 facet）。拆與正規化用 `TagAttribution.Split`＋`Normalize`（這兩個與 `EndsWithWord` 原本是 private，改 public，規則只有一份）。沒有 covered facet、或 covered facet 都沒有 tag 的維度，錨為空。
-3. **候選**：`RecommendAsync(vec, facets, covered, anchors, take)`，`take` 是 `Orchestrator:RecommendationTake`（預設 3）。有錨且回 ≥ 2 筆：`anchored=true`，`anchorTags` 是候選 covered facet 底下實際命中的錨（C# 照 SQL 的規則算：資料庫 tag 等於錨，或以「空白＋錨」結尾；不算反方向，列出來的就是過濾用到的錨。例外：C# 對資料庫 tag 用完整的 `Normalize`，`facet_tags` 保留權重或括號時可能多列一個 SQL 沒比中的錨，見 `docs/known-issues.md` §9）。有錨但回 < 2 筆：兩個錨清單都傳空再查一次，`anchored=false`。沒錨：直接查一次，`anchored=false`。
+3. **候選**：`RecommendAsync(vec, facets, covered, anchors, take)`，`take` 是 `Orchestrator:RecommendationTake`（預設 3）。有錨且回 ≥ 2 筆：`anchored=true`，`anchorTags` 是候選 covered facet 底下實際命中的錨（C# 照 SQL 的規則算：資料庫 tag 等於錨，或以「空白＋錨」結尾；不算反方向，列出來的就是過濾用到的錨。例外：C# 對資料庫 tag 用完整的 `Normalize`，`facet_tags` 保留權重或括號時可能多列一個 SQL 沒比中的錨，見 `docs/known-issues.md` §10）。有錨但回 < 2 筆：兩個錨清單都傳空再查一次，`anchored=false`；有錨那次查到的 0–1 筆整批丟掉，不跟這次的結果合併（那一筆只有剛好也排進前 `take` 名才會再出現）。沒錨：直接查一次，`anchored=false`。兩種查法都依第 1 步的同一個向量排序，錨只決定排序前要不要先縮小範圍。
 4. 追問與定稿走同一條邏輯，差別只在定稿多了 positive 的 tag 當錨。
 5. 候選少於 1 筆的維度不列。
 

@@ -1,7 +1,7 @@
 # GenAI Prompt Copilot — 設計規格
 
 日期：2026-09-21
-狀態：已定案。子專案 1（資料地基）已實作並通過 §14 驗收（2026-09-22）；子專案 2（SK Agent 核心）已實作，以 `manual-tests/chat.py` 手動跑完對話迴圈（2026-09-24），降級檢查點結論見 §4.10；子專案 3（Nuxt 3 前端 + SSE）已實作並通過 §14 驗收（2026-09-24，瀏覽器，結果見 `docs/eval-cases.md`）；子專案 4（收尾與展示）打包驗收通過（2026-09-24：fresh clone 一鍵啟動、種子自 Release 匯入、CI 四個 job 綠，結果見 `docs/eval-cases.md`），瀏覽器展示驗收與截圖待 `docs/known-issues.md` 第 1、2 項修正後補；設計見 [2026-09-24-subproject-4-packaging-design.md](2026-09-24-subproject-4-packaging-design.md)
+狀態：已定案。子專案 1（資料地基）已實作並通過 §14 驗收（2026-09-22）；子專案 2（SK Agent 核心）已實作，以 `manual-tests/chat.py` 手動跑完對話迴圈（2026-09-24），降級檢查點結論見 §4.10；子專案 3（Nuxt 3 前端 + SSE）已實作並通過 §14 驗收（2026-09-24，瀏覽器，結果見 `docs/eval-cases.md`）；子專案 4（收尾與展示）打包驗收通過（2026-09-24：fresh clone 一鍵啟動、種子自 Release 匯入、CI 四個 job 綠，結果見 `docs/eval-cases.md`），瀏覽器展示驗收（P3）與截圖（P7）原本等 `docs/known-issues.md` 第 1、2 項，兩項已修正（2026-09-24），尚未補跑；設計見 [2026-09-24-subproject-4-packaging-design.md](2026-09-24-subproject-4-packaging-design.md)
 前身文件：[docs/初步想法.md](../../初步想法.md)（本文件取代其中的架構與流程章節；技術棧與階段藍圖以本文件為準）
 
 ---
@@ -530,6 +530,8 @@ profiles:
 2. 分類路徑：一次 Gemini Flash 結構化呼叫，回傳 `{ nsfw: bool, realPerson: bool, personName?: string, wantsAutoComplete: bool, reason: string }`。`nsfw` 或 `realPerson` 為 true 即擋；`wantsAutoComplete` 交給 §4.3 的工具清單組裝。
 3. 命中 → 回 `blocked` 事件、寫 `audit_logs`（`Blocked_NSFW` / `Blocked_Celebrity`）、本輪不進 kernel、不計 `AskCount`。
 
+> **測試用的審查開關（2026-09-25）。** `POST /messages` 的 body 可帶 `"safety": "off"`，那一輪不做程式端審查：denylist 不比對；輸入分類器照跑，但只用它的 `wantsAutoComplete`（「你看著辦」只有它判得出來，跳過它等於連流程一起改掉），`nsfw`／`realPerson` 不攔；§6.2 的 `OutputSafetyFilter` 與純文字補救的輸出檢查都跳過。Gemini 自己的攔截（`Blocked_Upstream`）不受影響。後端 `Safety:AllowDisable`（compose 用 `.env` 的 `SAFETY_ALLOW_DISABLE`）預設 `false`，沒開時帶 `off` 回 `403`：誰都能打 API，不能一個欄位就關掉審查。那一輪的 `Turn_Completed` payload 記 `"safety": "off"`；那一輪產生的定稿標成未審查，`save-to-shared` 回 `409`，不讓沒檢過的內容進共享庫。
+
 ### 6.2 輸出側 `OutputSafetyFilter`
 
 **檢查範圍是全部對外輸出面**，不只定稿：
@@ -701,6 +703,7 @@ scripts/
 | :--- | :--- | :--- |
 | `SearchPresets` | **分維度**：一次呼叫帶多個維度的查詢，每項用該維度專屬的查詢語句，`facetIds` 依維度過濾後向量排序 | `WHERE facet_ids && $facetIdsOfDimension ORDER BY preset_embedding <=> $dimensionQueryVec LIMIT k` |
 | `SearchSimilarPrompts` | 向量 Top-K + profile 過濾 | `WHERE subject_profile = $1 ORDER BY intent_embedding <=> $2 LIMIT k` |
+| 整套組合推薦（伺服器自動，不是模型的工具） | 每個維度：有錨先以錨過濾再向量排序，不足 2 筆整批改用純向量排序（2026-09-25） | 見本節末「整套組合推薦」 |
 
 **GIN 過濾本身不夠。** 實測（2026-09-22）：同樣過濾到 Style 候選池，用使用者整句描述的向量排序撈回無關片段（dist 0.354），用該維度專屬的查詢語句撈回正確風格（0.229–0.234）。單一整句向量是六維度的模糊平均，只會貼近最泛用的片段，且使用者沒提到的維度永遠撈不到。因此 agent 呼叫 `SearchPresets` 時：
 
@@ -709,11 +712,22 @@ scripts/
 - 使用者未描述的維度撈到的片段只可用於追問與建議，不得直接寫入提示詞。
 - 不設距離門檻；tool result 帶相似度分級（`<0.25` 高、`<0.30` 中、其餘低），由 agent 判斷。
 - `tags && $2` 決定不做：OR 上 tags 會把候選池撐到維度外，與分維度前提衝突。
-- **跨維度去重：歸屬規則為「grounded 優先、距離次之」，且在定稿時才算，不在檢索時算。** 一筆 preset 的 `facet_ids` 可能橫跨數維（實測 859 筆裡 134 筆、15.6%），會在多個候選池出現，agent 可能從兩個維度分別拿到兩份結果、兩個不同的 `grounded` 值。規則：若有任何 grounded 維度撈到它，歸給這些維度中距離最小的那個；完全沒有才退回全體最小距離。**不能單純比距離**——歸屬決定借用資格，而 `grounded` 是「這個維度使用者講了沒」的屬性，不是片段的屬性；單純比距離會讓一個 grounded 維度正當撈到的片段，因為某個 missing 維度**推想出來**的查詢剛好更近，就被降級成「僅供建議」而失去借用資格。
-- **落地方式：session ledger。** `SearchPresets` 每個項目照實回傳自己維度的結果，不做跨維度去重。session 內維護 `presetId → [(dimension, dist, grounded)]`，每次呼叫累加；歸屬與借用資格到定稿驗證時才套上面的規則。這本 ledger 本來就非有不可——借用來源的驗證（借的 tag 必須真的在片段裡、且真的在提示詞裡，不信 LLM 自述）查的是同一本帳。附帶好處：agent 只呼叫部分維度時自然成立，而且能回報「這片段你在某維度看過了」。2026-09-25 起，使用者採用推薦組合時伺服器也把該 preset 寫進 ledger（`Session.RecordAdoption`），定稿 chip 才能開抽屜、offered 區段才會列它。
+- **跨維度去重：C# 不做。** 一筆 preset 的 `facet_ids` 可能橫跨數維（實測 859 筆裡 134 筆、15.6%），會在多個候選池出現。Python demo 在檢索後去重，歸屬規則是「grounded 優先、距離次之」（分維度檢索設計 §5.3：單純比距離會讓 grounded 維度正當撈到的片段，因為某個 missing 維度推想出來的查詢剛好更近，就被降級成「僅供建議」）。C# 的 `SearchPresets` 每個項目照實回傳自己的結果，同一筆片段被兩個項目撈到，模型就看到兩份，`usable` 可能一份「可借入提示詞」、一份「僅供建議」；原本規劃「到定稿時才套這條規則」，**沒有實作**。借用資格因此只靠每筆命中的標記加上 `system.md` 的規則（`{{RETRIEVAL_RULE}}`），是提示詞約束，伺服器不強制（分維度檢索設計 §13）。
+- **session ledger。** session 內維護一本 `PresetLedger`：`SearchPresets` 撈到的每筆片段連同 `(dimension, dist, grounded)` 累加進去。實際用到它的有三處：定稿時比對 tag 來源（下一條）、`AskUser`／`Discuss` 選項的 `presetId` 驗證（不在 ledger 就改成 null）、system prompt 的「你先前提供過的選項」。`(dimension, dist, grounded)` 三個欄位照記，但目前沒有程式讀。2026-09-25 起，使用者採用推薦組合時伺服器也把該 preset 寫進 ledger（`Session.RecordAdoption`），定稿 chip 才能開抽屜、offered 區段才會列它。
 - **定稿 tag 來源標示（2026-09-25 實作）。** C# 端不要求模型自述借用，改由伺服器在定稿時以 ledger 片段比對 tag 來源（`Sessions/TagAttribution.cs`，純函式）：positive／negative 以逗號拆段，比對前小寫、底線視同空白、連續空白壓成一個、剝掉外層成對括號與 `:數字` 權重；negative 只比 `NegativeSnippet`。基礎詞（§5.5：`masterpiece, best quality, highly detailed`／`lowres, bad anatomy, worst quality`）標 `base` 且優先，命中 ledger 片段標 `rag`，其餘 `llm`。命中指正規化後整段相等，或以空白為界的字尾相符（2026-09-25 起：片段 `platform sandals` ↔ tag `sandals`、tag `short shorts` ↔ 片段 `shorts`；不做子字串，`top` 不命中 `laptop`，但會命中 `crop top`，是接受的代價）；`presetIds` 整段相等的在前、字尾相符的在後，各依寫進 ledger 的先後，`presetTitle` 取第一筆。結果存進 `LastFinal`，隨 `final` 事件回傳 `positiveSources`／`negativeSources`（§10.2），`GET /api/sessions/{id}` 的 `lastFinal` 也帶；前端以 chip 標示，`rag` 可點開 preset 抽屜。`SearchSimilarPrompts` 的結果不進 ledger（只供參考），不算來源。這一步只**標**來源，不判借用資格：片段可不可以借入仍由 prompt 規則與 `grounded` 管。2026-09-25 起多第四種 `adopted`：使用者採用推薦組合帶進來的 tag（`Session.Adoptions` 的 `Taken`，同一套字尾規則，最近一次採用優先），優先序 base → adopted → rag → llm；只標 positive。見 `2026-09-25-set-recommendations-design.md` §6.5。
 - **`grounded` 由伺服器算，不是 LLM 傳進來的參數。** agent 傳 `facetIds`，伺服器映射到維度後查 `Session.FacetStates`（§4.4）自行判定。與 Python `grounded_dimensions()` 不問 LLM 同一個原則：少一個可被捏造的欄位。
 - **候選池大小要跟著 tool result 一起回。** `池 2 → 2` 這種「這維度過濾後有多少候選、其中命中幾筆」的資訊，是分維度檢索最有價值的副產品：它讓知識庫覆蓋缺口（例如 vehicle 的 pose 只有 2 筆）在使用當下就看得見，不必事後查資料庫才發現。tool result 除了相似度分級，也要帶上 GIN 過濾後的候選池筆數，否則子專案 2 會失去這個可見度。
+- **`SearchSimilarPrompts` 是選用的。** `system.md` 只寫「需要風格參考時呼叫」；查詢句由模型給（使用者的整句需求），取 1–5 筆（預設 3），以 `subject_profile` 過濾。結果只給模型參考，不進 ledger，不算 tag 來源。
+
+**整套組合推薦（2026-09-25，伺服器自動跑，結果不經過模型）。** 跟 `SearchPresets` 不同，檢索結果不進模型的 context 讓它借 tag，而是直接攤給使用者看。每輪以追問結束時查被問的維度、以定稿結束時查本 profile 全部維度；模型看不到結果，使用者按「採用」之後，伺服器組的採用句才進對話。`retrieval: off` 的對話不跑。每個維度：
+
+1. **查詢向量**：本 session 使用者說過的話（不含伺服器組的採用句）依序串接、取最後 500 字，一輪只嵌入一次，各維度共用。
+2. **候選必須是整套**：已回填 `facet_tags`，且該維度至少 2 個 facet 有 tag。
+3. **錨**：該維度 covered facet 的 `FacetTags`（模型在 `SetFacetStates` 附的英文 tag，如涼鞋 → `sandals`）；定稿時再加 positive 的 tag（基礎畫質詞除外）。
+4. **有錨**：只留 covered facet 底下有 tag 等於錨、或以「空白＋錨」結尾的片段，再依距離取 3 筆（`MATERIALIZED` CTE 精確排序，不走 HNSW，罕見的錨不會被掃描上限漏掉）。**不足 2 筆就整批丟掉**，改成不過濾、依距離取 3 筆（HNSW），不跟有錨的結果合併。
+5. **沒錨**：直接走第 4 步的「不過濾」那條。
+
+兩條都依同一個向量排序；錨只決定排序前要不要先縮小範圍。卡片上有錨的顯示「含你講的 sandals」，退回的顯示「最接近你描述的組合」。細節見 [整套組合推薦設計](2026-09-25-set-recommendations-design.md) §4.4、§5.3。
 
 查詢向量於 runtime 以同一 embedding 模型計算；多個維度的查詢語句合併為單次 `embed_batch` 呼叫（2026-09-24 起 C# 端也是：批次簽名的緣由見 [批次 SearchPresets 設計](2026-09-24-batch-search-presets-design.md)）。
 
@@ -729,9 +743,10 @@ scripts/
 | :--- | :--- | :--- |
 | `POST` | `/api/sessions` | body 可省略 `{ retrieval?: "on" \| "off" }`（預設 `on`；`off` 不查知識庫，建立後不可改，2026-09-25 起）→ `{ sessionId, retrieval }` |
 | `GET` | `/api/sessions/{id}` | session 目前的權威狀態（status、profile、facetStates、askCount／askLimit、lastFinal，含 tag 來源、retrieval、facetTags）；前端重載重建用；不拿 session 鎖；`404` 表示不存在或已過期 |
-| `POST` | `/api/sessions/{id}/messages` | body `{ text }` 或 `{ adopt: { presetId, dimension, take } }`（2026-09-25 採用推薦組合，伺服器組句）；回 `text/event-stream`；同一 session 已有一輪在跑 → `409`；`adopt` 但 `retrieval: off` 或未判定題材 → `409`；`adopt` 不合法 → `400` |
-| `POST` | `/api/sessions/{id}/save-to-shared` | body `{ intent }`；需 `Finalized`，否則 `409`；寫 `shared_prompt_histories` 並向量化；**唯一的寫入路徑** |
+| `POST` | `/api/sessions/{id}/messages` | body `{ text }` 或 `{ adopt: { presetId, dimension, take } }`（2026-09-25 採用推薦組合，伺服器組句），兩者都可加 `safety: "on" \| "off"`（預設 `on`；`off` 是測試用的審查開關，§6.1）；回 `text/event-stream`；同一 session 已有一輪在跑 → `409`；`adopt` 但 `retrieval: off` 或未判定題材 → `409`；`adopt` 不合法、`safety` 不是 on／off → `400`；`safety: off` 但後端沒開放 → `403` |
+| `POST` | `/api/sessions/{id}/save-to-shared` | body `{ intent }`；需 `Finalized`，否則 `409`；最後一次定稿是在 `safety: off` 時產生的也 `409`；寫 `shared_prompt_histories` 並向量化；**唯一的寫入路徑** |
 | `GET` | `/api/config/facets` | 回 `facets.yaml` 內容供前端渲染 |
+| `GET` | `/api/config/safety` | `{ canDisable }`：後端 `Safety:AllowDisable` 是否開著；前端據此決定顯不顯示審查開關（2026-09-25） |
 | `GET` | `/api/presets/{id}` | preset 詳情（抽屜用）；含 `sourceRef` 與伺服器算的 `sourceUrl`（出處連結，子專案 4）；`facetTags`（2026-09-25，未回填時為 null） |
 | `GET` | `/health` | |
 
@@ -917,9 +932,11 @@ GenAIPromptCopilot/
 │  ├─ 初步想法.md
 │  ├─ eval-cases.md
 │  ├─ 資料來源.md                         # 來源、授權、署名、公開散布與免責聲明
-│  ├─ images/                            # README 截圖
+│  ├─ images/                            # README 截圖（待補，子專案 4 P7）
 │  └─ superpowers/specs/2026-09-21-genai-prompt-copilot-design.md
-├─ db/init/001_schema.sql
+├─ db/
+│  ├─ init/001_schema.sql                # 新建的庫一次到位
+│  └─ migrations/                        # 既有庫升級用（IF NOT EXISTS，seed.sh 每次啟動都套）
 ├─ src/
 │  ├─ PromptCopilot.Api/                 # .NET 10
 │  │  ├─ Endpoints/
@@ -938,7 +955,7 @@ GenAIPromptCopilot/
 │  ├─ PromptCopilot.Api.Tests/
 │  └─ PromptCopilot.Frontend/            # Nuxt 3 SPA（ssr: false）+ Tailwind + Pinia + vitest
 │     ├─ types/api.ts                     # 後端 DTO 與 SSE 事件型別，唯一定義處
-│     ├─ lib/                             # 純函式：sse、reducer、persist、composer、dashboard、copy
+│     ├─ lib/                             # 純函式：sse、reducer、persist、composer、dashboard、copy、options、prefs、trace、adopt、safety
 │     ├─ composables/useApi.ts
 │     ├─ stores/session.ts                # 唯一的 Pinia store，狀態變更全走 lib/reducer
 │     ├─ components/
@@ -947,6 +964,8 @@ GenAIPromptCopilot/
 │  ├─ pipeline/
 │  ├─ seed_data.py
 │  ├─ export_seed.py                     # 匯出公開的知識庫種子 dump（丟棄容器裡過濾，開發庫唯讀）
+│  ├─ backfill_facet_tags.py             # 一次性回填 facet_tags（整套組合推薦用）
+│  ├─ adoption_report.py                 # 由 audit_logs 算推薦採用率
 │  ├─ requirements.txt
 │  └─ data/{raw,clean,structured}/       # git ignore
 ├─ manual-tests/                         # 手動試用：start_api.py 起 API、chat.py 終端機對話
@@ -995,7 +1014,7 @@ Azure 部署排除。
 | Nuxt SSR | 關閉 | 單頁、無 SEO，避免 hydration 問題 |
 | LLM provider | Gemini 主、OpenAI 備 | DeepSeek 無 embedding 且 function calling 較弱，排除 |
 | Embedding 換模型 | 需全庫 re-index | 向量空間不相容 |
-| 跨維度去重歸屬 | grounded 優先、距離次之；定稿時才算 | 歸屬決定借用資格，不能讓推想查詢抹掉「使用者講過」這個事實（§9） |
+| 跨維度去重歸屬 | Python demo：grounded 優先、距離次之，檢索後去重。C#：不去重（原規劃定稿時才算，未實作），借用資格靠每筆命中的標記與 `system.md` 規則 | 歸屬決定借用資格，不能讓推想查詢抹掉「使用者講過」這個事實（§9）；C# 多輪下 grounded 會變，要在伺服器端強制得先定出以哪一輪的狀態為準（分維度檢索設計 §13） |
 | `modelId`／`tags` 針對性抓取 | 已實測不可行，不採用 | `modelId` 反查圖片回傳內容 100% 無 `meta.prompt`；`tags` 查詢參數回 400 Bad Request。見 `docs/superpowers/specs/2026-09-22-corpus-expansion-design.md` §4.3 |
 | 使用者提問時重設或豁免 `AskCount` | **否決**，改加 `Discuss` | 重設把「系統的打斷額度」跟「使用者的參與度」綁在一起，兩者沒有因果關係；使用者要的是「能繼續對話」，不是「讓 LLM 多問我兩次」。豁免則要靠分類器判斷「這句是提問還是回答」，邊界模糊（「你覺得寫實比較好嗎？我選寫實」兩者皆是），把閘門建在分類器上等於把硬保證降級成猜測——跟 §4.3 拒絕關鍵詞比對是同一個理由 |
 | `Discuss` 帶不帶選項 | 帶「參考方向」，不帶 `missingFacetIds` | 純文字的討論體驗差（「再多給我幾個方向」只能收到散文）；界線靠「索取 vs 回應」的語意與 streak 護欄守住 |
@@ -1040,3 +1059,4 @@ Azure 部署排除。
 | `tool_result.callId` | 等於 `tool_call.callId` | 前端要配對；id 由 `AuditFilter` 算好掛在 `TurnContext` 上（§10.2） |
 | 錯誤 frame 的內容 | 固定句子，不帶例外訊息 | 例外訊息可能帶連線字串、路徑、上游原文；內文留在 audit 與 log |
 | `save-to-shared` 的併發 | 與 `/messages` 共用 session 鎖，拿不到回 409 | 它讀的 `FacetStates`／`LastFinal` 在一輪跑完之前都還可能被回滾（§10.1） |
+| 測試用審查開關 | 逐則帶 `safety: off`，後端 `Safety:AllowDisable` 預設關、沒開回 403；輸入分類器照跑只取 `wantsAutoComplete`；Gemini 的攔截不動；未審查的定稿不能 `save-to-shared` | 要能重現「我們自己的防線誤擋」與「關掉之後上游還擋不擋」；做成逐則而不是 session 屬性，重新整理就回到開著。共享庫會被別的對話檢索到，沒檢過的內容不能從唯一的寫入路徑進去（§6.1） |

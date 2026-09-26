@@ -1,7 +1,7 @@
 # 批次 `SearchPresets` 與工具預算 — 設計規格
 
 日期：2026-09-24
-狀態：已實作（分支 `fix/batch-search-presets`），待瀏覽器驗收（§7）；facetId 擴充見 §8
+狀態：已實作並 merge（`abf8a6e`，2026-09-24），待瀏覽器驗收（§7）；facetId 擴充見 §8（`824faeb`）
 起因：[docs/known-issues.md](../../known-issues.md) #1「人像題材第一輪常被強制定稿，整個 session 不再追問」
 主規格：[2026-09-21-genai-prompt-copilot-design.md](2026-09-21-genai-prompt-copilot-design.md) §4.2 工具表、§4.5 `ToolBudgetFilter`、§4.6 強制定稿、§9 檢索策略、§15 決定紀錄
 前置：known-issues #2（HNSW 過濾後回 0 筆）已在分支 `fix/hnsw-iterative-scan` 修正。#2 的 0 筆結果會讓模型換說法重搜、多吃預算，本設計的驗收以 #2 已合併為前提。
@@ -64,7 +64,7 @@ public sealed record SearchQuery(string Dimension, string Query);
 | :--- | :--- |
 | `Profile` 尚未設定 | 整包回 `錯誤：請先呼叫 SetProfile`（同現行） |
 | `queries` 為空 | 整包回錯誤 |
-| 項目數超過 12 | 整包回錯誤，訊息說明上限（6 個維度 × 2 個對比方向） |
+| 項目數超過 12（§8.2 改為 24） | 整包回錯誤，訊息說明上限（6 個維度 × 2 個對比方向） |
 | 某項目的維度對此 profile 不適用或不存在 | 只有該項目的結果帶 `error`，其餘照跑 |
 | 某項目的 `query` 空白 | 同上，只標該項目 |
 
@@ -108,6 +108,8 @@ public sealed record SearchQuery(string Dimension, string Query);
 ## 4. 提示、預算、強制定稿
 
 ### 4.1 `Prompts/system.md` 第 1 條
+
+（下面是本案當時的文字。之後又改過兩次：先 `SetFacetStates` 再檢索、有缺就追問（known-issues #9），以及 facet 層級的項目（§8.3）。現行文字見 `Prompts/system.md` 與 `SystemPromptBuilder.RetrievalStepOn`。）
 
 改成：
 
