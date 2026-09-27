@@ -615,7 +615,7 @@ CREATE TABLE shared_prompt_histories (
     subject_profile     VARCHAR(20) NOT NULL,     -- portrait | landscape | object | vehicle
     source              VARCHAR(20) NOT NULL,     -- user | civitai
     image_url           TEXT,
-    completeness_scores JSONB,                    -- 六維度 + facet 四態快照
+    completeness_scores JSONB,                    -- 定稿當下各 facet 的四態快照：{facetId: covered|missing|waived|notApplicable}；只有使用者紀錄有值
     intent_embedding    VECTOR(768),
     created_at          TIMESTAMPTZ DEFAULT NOW()
 );
@@ -626,7 +626,7 @@ CREATE INDEX idx_shared_profile ON shared_prompt_histories (subject_profile);
 -- 知識包片段；RAG 2 來源
 CREATE TABLE prompt_knowledge_presets (
     id               BIGSERIAL PRIMARY KEY,
-    source_ref       VARCHAR(64) UNIQUE,          -- 'civitai:<imageId>:<idx>'，供管線 upsert
+    source_ref       VARCHAR(64) UNIQUE,          -- 'civitai:<imageId>:<idx>' | 'kisegae:<stem>'，供管線 upsert
     title            VARCHAR(100) NOT NULL,
     category         VARCHAR(50) NOT NULL,        -- Style | Scene | Camera | Appearance | Pose | Clothing | Combined
     description      TEXT NOT NULL,               -- 繁中模糊敘述（LLM 生成，供語意檢索）
