@@ -12,7 +12,8 @@ public sealed class AdoptValidationException(string message) : Exception(message
 
 public sealed record ComposedAdoption(string Text, Adoption Adoption, LedgerEntry Preset);
 
-/// <summary>採用句由伺服器組（設計 §6.2）：模型每次看到的形狀一致、tag 一定是資料庫的原字。純函式，不動 session。</summary>
+/// <summary>採用句由伺服器組（設計 §6.2）：模型每次看到的形狀一致、tag 一定是資料庫的原字。
+/// 換掉的 facet（原本 covered／waived）若 session 記有模型給的舊 tag，括號裡接「，取代原本的 …」。純函式，不動 session。</summary>
 public static class AdoptionComposer
 {
     public const string Prefix = "採用〈";
@@ -40,7 +41,9 @@ public static class AdoptionComposer
         var filled = ordered.Where(f => StateOf(f) is FacetState.Missing or FacetState.NotApplicable).ToList();
         var replaced = ordered.Where(f => !filled.Contains(f)).ToList();
 
-        var takeText = string.Join("、", ordered.Select(f => $"{catalog.Facets[f].Label}照它的（{string.Join(", ", taken[f])}）"));
+        // 換掉 covered facet 時點名舊 tag：只說「照它的」，模型會把新 tag 加在舊的旁邊（2026-09-29 驗收 T5）
+        string Old(string f) => replaced.Contains(f) && s.FacetTags.GetValueOrDefault(f) is { Length: > 0 } old ? $"，取代原本的 {old}" : "";
+        var takeText = string.Join("、", ordered.Select(f => $"{catalog.Facets[f].Label}照它的（{string.Join(", ", taken[f])}{Old(f)}）"));
         var keptText = kept.Count == 0 ? "" : $"；{string.Join("、", kept.Select(f => catalog.Facets[f].Label))}保留我的";
         var text = $"{Prefix}{preset.Title}〉（知識庫 #{preset.Id}）：{takeText}{keptText}。";
 

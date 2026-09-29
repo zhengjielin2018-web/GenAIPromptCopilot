@@ -167,6 +167,10 @@ public class SystemPromptBuilderTests
         Assert.Contains("不要再問剛採用的那些 facet", prompt);
         Assert.Contains("否則直接 `FinalizePrompt`", prompt);
         Assert.DoesNotContain("不要追問", prompt);
+        // 「照它的」是取代：沒講明時模型把新 tag 加在舊的旁邊（2026-09-29 驗收 T5）
+        Assert.Contains("「照它的」是**取代**", prompt);
+        Assert.Contains("原本的 tag 全部拿掉", prompt);
+        Assert.Contains("「取代原本的」後面列的", prompt);
         // off 模式也要有：規則無害，而且 off 的 session 根本不會收到採用句
         Assert.Contains("6. 使用者訊息以「採用〈」開頭時", Make().Build(new Session("s", retrievalEnabled: false), ToolsWithoutSearch).Prompt);
     }

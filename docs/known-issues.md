@@ -71,10 +71,12 @@
 - **eval #18**：追問偏少，一次只問 1–2 個維度，回答後就定稿，服裝整組留空。#1 修好後要重測，預算可能是原因之一。→ 追問政策已在 `fix/ask-all-missing` 反轉，重測。
 - **§14 端到端驗收**是在 `fc449f7` 跑的，之後改過輪次流程、重試分類、輸出安全，要在新 HEAD 重跑。
 - **eval #21／#22** 的故障注入方式（改 `Llm:Model`）測不到：404 不重試，session 在記憶體裡、重啟就沒了。要換一種注入方式，例如可設定的 fake 失敗次數。
+- **facet 檢索「過濾準、排序不準」在穿著上看得到**（2026-09-29 瀏覽器驗收 R2 觀察）：「一個銀髮少女穿涼鞋站在雨夜街頭」的 `SearchPresets`，鞋履項目「涼鞋」池 396 → 5，前 5 名的鞋履 tag 依序是 `sandals`、`cowboy boots`、`sandals`、`wearing Nike sneakers`、`sneakers`（前 3 名 2 筆對），而知識庫鞋履 facet 含 sandal 的有 18 筆。同一次的髮型髮色「銀髮少女」5/5、地點類型「雨夜街頭」5/5 都對。穿著片段涵蓋頭到腳，整套向量被上下身主導，鞋履這種小 facet 排序就不準；髮型、地點的片段本身就以那個 facet 為主，不受影響。這支持 facet 向量子表案（`preset_facet_embeddings`）。
 
 ## 10. 整套組合推薦的已知限制（2026-09-25）
 
 （原本也編成 9，跟文末已修正的 #9 撞號，2026-09-25 改為 10。）
+（2026-09-29：「照它的」取代 covered facet 時舊 tag 沒被拿掉的那一條已修正，移到文末「已修正」的 #10。）
 
 - **錨靠模型翻譯**：追問階段的錨是模型在 `SetFacetStates` 給的英文 `tags`，翻錯或沒給就退回無錨（「最接近你描述的組合」），不報錯。定稿後多了 positive 的 tag 當錨，會好一些。
 - **同義詞抓不到**：錨比對是整段相等或空白為界的字尾（`platform sandals` ↔ `sandals`），`slippers` 對 `sandals` 不會命中。後續的 facet 向量案（子表 `preset_facet_embeddings`）用「該 facet 向量最近的」補這個缺口，排在本案之後。
@@ -194,3 +196,24 @@ prompt_version 都是 `8c10dcfe1f16`，跟子專案 3 驗收時能正常追問�
 **修正**（分支 `fix/ask-all-missing`，merge commit `b9290e4`；定稿閘門在 `ee3887f`）：system.md 第 1 條改為 `SetProfile` → `SetFacetStates` → `SearchPresets`；同時把追問政策反轉為問滿 missing 維度：該維度底下只要還有任何 facet 是 missing（waived 與有委託 note 的不算）就要問，只講一部分的維度也問剩下的 facet，使用者接受完整描述也可能先被追問（eval #2）。起因是使用者 2026-09-25 實測回饋「描述缺很多面向，但追問很少」，見 #5 的 eval #18。`SetFacetStates` 與 `AskUser` 的工具描述、主規格 §4.2 與 §15、批次設計 §3.4 同步。主規格 §9「grounded 由伺服器算」原則不變，只是讓伺服器有資料可算。
 
 **驗收**：重跑 eval #1、#18、#24，看第一輪 `SearchPresets` 對使用者講過的維度是否 `grounded: true`、追問是否把 missing 維度問滿。
+
+### 10. 「照它的」取代 covered facet 時，舊 tag 沒被拿掉
+
+（原本是 §10 整套組合推薦已知限制的其中一條，修正後移來這裡。）
+
+**現象**（2026-09-29 瀏覽器驗收 T5）：使用者先講了「紫色短版連帽外套、發光比基尼、透視乳膠材質」，採用 #41745 按「全部照它的」，伺服器正確記 `adoption.replaced=["clothing.upper","clothing.material"]`，但定稿同時留著 `purple cropped hoodie`、`cyberpunk glowing bikini`、`translucent latex material`、`glossy latex` 與這套的 `purple hoodie`、`cropped hoodie`、`glowing bikini`、`see-through`、`latex clothes`，互相重複。另外 `purple cropped hoodie` 被標成 `adopted`，實際上是使用者原本的詞。
+
+**根因**：system prompt 第 6 條只說「照它的 facet 寫入括號內的 tag」，沒說要拿掉該 facet 原本的 tag，模型就把新 tag 加在舊的旁邊。`adopted` 的比對沿用 rag 的字尾規則，`purple cropped hoodie` 以空白為界結尾是 `cropped hoodie`，所以算成採用帶進來的。
+
+**修正**（分支 `fix/adopt-replace`，commit `8bbc964`、`6a10255`）：
+
+- 伺服器組句時，換掉的 facet（`replaced`）若 `session.FacetTags` 有模型先前給的英文 tag，括號裡接「，取代原本的 …」點名要拿掉的舊 tag（`AdoptionComposer`）。
+- system.md 第 6 條改成「照它的」是**取代**：定稿時該 facet 只留括號內的 tag，原本的 tag 全部拿掉——從使用者先前描述翻的、上一版定稿裡屬於這個 facet 的、「取代原本的」後面列的都算。
+- `adopted` 只認正規化後整段相等，不再用字尾規則（`TagAttribution.AdoptedBy`）；沒命中的照常走 rag → llm。
+- 設計 `2026-09-25-set-recommendations-design.md` §6.2、§6.4、§6.5 與 `docs/單輪流程說明.md` 同步。
+
+**驗收**：單元測試（`AdoptionComposerTests`、`SystemPromptBuilderTests`、`TagAttributionTests`）；瀏覽器重跑 T5，看定稿裡上半身／材質只剩這套的 tag、`adopted` chip 只標這套的原字。
+
+2026-09-29 實測（`fix/adopt-replace` 建的 compose，前端操作）：不用 T5 的內容（開著審查會被 `Blocked_Output`），改用「一個少女穿紫色連帽外套和牛仔短褲、白色運動鞋」→ 定稿 `purple hoodie`、`denim shorts`、`white sneakers` → 採用 #41618「率性秋季日常裝」全部照它的。組句是「上半身照它的（crop top, white shirt, brown overcoat, open coat, long sleeves，取代原本的 purple hoodie）、下半身照它的（denim shorts, blue shorts，取代原本的 denim shorts）…；鞋履、配件飾品保留我的」；新定稿沒有 `purple hoodie`，上半身、下半身、頭部配件、材質只剩這套的 9 個 tag（全是 adopted），留我的 `white sneakers` 仍是 rag。儀表板「借用 3 筆」與定稿卡「檢索貢獻」的 3 列一致。小瑕疵：新舊 tag 相同時仍會寫「取代原本的 denim shorts」。
+
+**備註**：同一輪也把儀表板「借用」改成跟定稿卡「檢索貢獻」同一個歸屬（每個 rag tag 只算 `presetIds[0]`，commit `2d82451`）：驗收 R2 儀表板寫「借用 9 筆」、定稿卡只列 5 筆。

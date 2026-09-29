@@ -182,7 +182,13 @@ LIMIT @take
 採用〈{title}〉（知識庫 #{id}）：{facet 中文名}照它的（{tags 以「, 」相接}）、{…}；{facet 中文名}、{…}保留我的。
 ```
 
-沒有保留項時省略分號後半段。這句同時是使用者泡泡顯示的文字、模型看到的訊息與 audit 的 `raw_input`。
+沒有保留項時省略分號後半段。換掉的 facet（6.3 的 `Replaced`，採用前是 covered／waived）若 `session.FacetTags` 有模型給的舊 tag，該 facet 的括號裡接「，取代原本的 {舊 tags}」（2026-09-29 起，驗收 T5：只說「照它的」，模型把新 tag 加在使用者原本的 tag 旁邊，定稿互相重複）：
+
+```
+採用〈賽博夜行緊身衣〉（知識庫 #41745）：上半身照它的（shrug (clothing), glowing bikini, purple hoodie，取代原本的 purple cropped hoodie, cyberpunk glowing bikini）、…；配件飾品保留我的。
+```
+
+補上的 facet（採用前 missing／notApplicable）與沒有 `FacetTags` 的換掉 facet 不加這段。這句同時是使用者泡泡顯示的文字、模型看到的訊息與 audit 的 `raw_input`。
 
 ### 6.3 Session 記帳
 
@@ -200,13 +206,15 @@ public sealed record Adoption(int TurnIndex, long PresetId, string Dimension,
 
 `system.md`「## 流程」加第 6 條：
 
-> 6. 使用者訊息以「採用〈」開頭時，那是他從推薦的組合裡挑了一套：「照它的」facet 寫入括號內的 tag（原字，不改寫）、狀態設 `covered`、`tags` 填同樣的字、note 記「採用知識庫 #編號」；「保留我的」facet 維持原狀。然後照第 1 條判斷：工具清單裡有 `AskUser` 而且還有 missing 的維度就 `AskUser`（不要再問剛採用的那些 facet），否則直接 `FinalizePrompt`。
+> 6. 使用者訊息以「採用〈」開頭時，那是他從推薦的組合裡挑了一套。「照它的」是**取代**：定稿時該 facet 只留括號內的 tag（原字，不改寫），原本的 tag 全部拿掉——從使用者先前的描述翻的、上一版定稿裡屬於這個 facet 的、括號內「取代原本的」後面列的都算；狀態設 `covered`、`tags` 填留下的那些字、note 記「採用知識庫 #編號」。「保留我的」facet 維持原狀。然後照第 1 條判斷：工具清單裡有 `AskUser` 而且還有 missing 的維度就 `AskUser`（不要再問剛採用的那些 facet），否則直接 `FinalizePrompt`。
 
-本案的 prompt 改動只有這一條加上 5.5 的半句。`SystemPromptBuilderTests` 各加一條驗證存在。
+本案的 prompt 改動只有這一條加上 5.5 的半句。`SystemPromptBuilderTests` 各加一條驗證存在。「是取代、原本的 tag 全部拿掉」是 2026-09-29 補的（驗收 T5）：原本只說「寫入括號內的 tag」，模型把新 tag 加在舊的旁邊。
 
 ### 6.5 tag 來源 `adopted`
 
-`TagAttribution.Attribute` 多收 `IReadOnlyList<Adoption> adoptions`。優先序：base → **adopted** → rag → llm。adopted 比對：tag 與任一 `Adoption.Taken` 的 tag 整段相等或字尾相符（同 rag 規則），命中就 `TagSource(tag, "adopted", [presetId], title)`。多筆 adoption 命中時取最近一輪的。`TagOrigins` 計數加 `adopted`。
+`TagAttribution.Attribute` 多收 `IReadOnlyList<Adoption> adoptions`。優先序：base → **adopted** → rag → llm。adopted 比對：tag 與任一 `Adoption.Taken` 的 tag 正規化後整段相等，命中就 `TagSource(tag, "adopted", [presetId], title)`。多筆 adoption 命中時取最近一輪的。`TagOrigins` 計數加 `adopted`。
+
+2026-09-29 起不再用字尾規則（原本同 rag，整段相等或以空白為界的字尾相符）：驗收 T5 裡使用者原本的 `purple cropped hoodie` 因字尾相符這套的 `cropped hoodie` 被標成 `adopted`。採用句給的是資料庫原字、第 6 條要模型照抄，整段相等就夠；沒命中的 tag 照常走 rag → llm（ledger 裡有這套，字尾相符仍會標 rag）。
 
 ## 7. 前端
 
@@ -264,8 +272,8 @@ public sealed record Adoption(int TurnIndex, long PresetId, string Dimension,
 - `RecommendationServiceTests`：`AskOutcome` 只查被問的維度；`FinalizedOutcome` 查全部維度；錨來自 `FacetTags`（追問）與 `FacetTags`＋positive（定稿）；有錨命中 ≥2 取前 3 且 `anchorTags` 正確；命中 <2 退回無錨查詢並 `anchored=false`；沒有 covered facet 或沒有 tags 的維度不加錨；候選為 0 的維度不列；`retrieval` off 不呼叫；查詢向量只嵌入一次；例外不外拋。
 - `PresetRepositoryTests`（既有整合測試風格）：`RecommendAsync` 的 ≥2 facet 與 `facet_tags IS NOT NULL` 過濾；錨的整段相等與字尾相符（`white sandals` 命中 `sandals`）；錨為空不加條件。
 - `SessionPluginTests`：`tags` 寫入／狀態改非 covered 時移除／`SetProfile` 清空；snapshot／restore。
-- `TagAttributionTests`：adopted 優先於 rag、次於 base；字尾規則；多筆 adoption 取最近。
-- `SessionEndpointsTests`：`adopt` 的每一種 400／409；組句格式（含無保留項）；`Text` 被忽略。
+- `TagAttributionTests`：adopted 優先於 rag、次於 base；只認整段相等（字尾相符的落到 rag／llm）；多筆 adoption 取最近。
+- `SessionEndpointsTests`：`adopt` 的每一種 400／409；組句格式（含無保留項；換掉的 facet 有舊 tag 時接「取代原本的」，`AdoptionComposerTests`）；`Text` 被忽略。
 - `SessionTests`：`Adoptions` 進 snapshot／restore；`Filled`／`Replaced` 分類。
 - `SystemPromptBuilderTests`：第 6 條存在（採用後照第 1 條判斷追問或定稿）且 off 模式也存在（規則無害）。
 - `AgenticOrchestratorTests`：`Turn_Completed` 的 `recommendations`／`adoption` payload；推薦失敗寫 `Recommendation_Failed`；在追問卡上採用、以 ask 收尾的輪照樣記採用。
