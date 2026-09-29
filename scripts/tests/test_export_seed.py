@@ -118,10 +118,10 @@ def test_export_filters_inside_a_throwaway_and_dumps_from_it(rec, tmp_path):
 
     src, dst = r.pipes[0]
     assert src[src.index("-d") + 1] == "prompt_copilot"
-    assert "--data-only" in src and "-Fc" in src and src.count("-t") == 2
+    assert "--data-only" in src and "-Fc" in src and src.count("-t") == 3
     assert dst[:4] == ["docker", "exec", "-i", EXPORT_CONTAINER]
     assert "pg_restore" in dst and "--single-transaction" in dst and dst[dst.index("-d") + 1] == EXPORT_DB
-    assert "--data-only" in c[dump] and c[dump].count("-t") == 2
+    assert "--data-only" in c[dump] and c[dump].count("-t") == 3
     assert c[copy][2] == f"{EXPORT_CONTAINER}:/tmp/{asset_name(1)}"
 
 
@@ -158,3 +158,14 @@ def test_pipe_raises_when_the_source_fails():
     with pytest.raises(subprocess.CalledProcessError) as e:
         pipe(src, dst)
     assert e.value.returncode == 3
+
+
+def test_export_dumps_the_facet_embeddings_subtable_after_the_presets_it_references():
+    """子表對片段有外鍵：pg_dump --data-only 依外鍵順序輸出，但 -t 清單裡要有它才會被帶上"""
+    from export_seed import TABLES
+    assert TABLES == ("prompt_knowledge_presets", "preset_facet_embeddings", "shared_prompt_histories")
+
+
+def test_count_sql_reports_the_subtable():
+    from export_seed import COUNT_SQL
+    assert "'facet_embeddings', count(*) FROM preset_facet_embeddings" in COUNT_SQL
