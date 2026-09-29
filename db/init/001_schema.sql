@@ -53,6 +53,17 @@ CREATE INDEX idx_presets_facet_ids ON prompt_knowledge_presets USING gin (facet_
 CREATE INDEX idx_presets_embedding ON prompt_knowledge_presets
     USING hnsw (preset_embedding vector_cosine_ops);
 
+-- facet 層級向量（2026-09-29，facet 向量設計 §4.1）：每個片段在每個有 tag 的 facet 各一列，向量算自該 facet 的英文 tag。
+-- 不建向量索引：池小、要去重、精確排序才可重現；理由見設計 §7。既有資料庫用 db/migrations/003_preset_facet_embeddings.sql。
+CREATE TABLE IF NOT EXISTS preset_facet_embeddings (
+    preset_id  BIGINT NOT NULL REFERENCES prompt_knowledge_presets(id) ON DELETE CASCADE,
+    facet_id   TEXT   NOT NULL,
+    tag_key    TEXT   NOT NULL,
+    embedding  VECTOR(768) NOT NULL,
+    PRIMARY KEY (preset_id, facet_id)
+);
+CREATE INDEX IF NOT EXISTS idx_pfe_facet ON preset_facet_embeddings (facet_id);
+
 -- 稽核：API 寫入每輪結局、工具呼叫、攔截、存進共享庫
 CREATE TABLE audit_logs (
     id                BIGSERIAL PRIMARY KEY,

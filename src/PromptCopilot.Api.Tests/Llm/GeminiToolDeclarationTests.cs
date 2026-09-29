@@ -37,6 +37,7 @@ public class GeminiToolDeclarationTests
         public override Task<IReadOnlyList<PresetHit>> SearchAsync(float[] q, IReadOnlyList<string> f, int k, CancellationToken ct)
             => Task.FromResult<IReadOnlyList<PresetHit>>(Array.Empty<PresetHit>());
         public override Task<long> PoolSizeAsync(IReadOnlyList<string> f, CancellationToken ct) => Task.FromResult(10L);
+        public override Task<long> FacetPoolSizeAsync(string f, CancellationToken ct) => Task.FromResult(0L);
     }
 
     private sealed class His() : HistoryRepository(null!);
@@ -69,7 +70,7 @@ public class GeminiToolDeclarationTests
         AgentKernelFactory.AddFiltered(kernel, "Knowledge", new KnowledgePlugin(turn, catalog, embed, presets, new His()), ToolNames.Always);
 
         var bodies = new List<string>();
-        var reply = Call("Knowledge_SearchPresets", """{"queries":[{"dimension":"style","query":"寫實攝影"},{"facetId":"clothing.footwear","query":"拖鞋"}]}""");
+        var reply = Call("Knowledge_SearchPresets", """{"queries":[{"dimension":"style","query":"寫實攝影"},{"facetId":"clothing.footwear","query":"拖鞋","tags":"slippers"}]}""");
         var chat = new GoogleAIGeminiChatCompletionService("gemini-x", "fake", GoogleAIVersion.V1_Beta,
             new HttpClient(new GeminiRoleFixHandler(new Canned(new Queue<string>(new[] { reply, Text }), bodies))));
 
@@ -95,7 +96,8 @@ public class GeminiToolDeclarationTests
         Assert.Equal(new[] { "query" }, required);
         var props = items.GetProperty("properties");
         Assert.Equal("string", props.GetProperty("query").GetProperty("type").GetString());
-        foreach (var optional in new[] { "dimension", "facetId" })
+        // tags 同理（2026-09-29）：它是 init 屬性，不進建構子，否則 SK 會把它列成 required。
+        foreach (var optional in new[] { "dimension", "facetId", "tags" })
         {
             Assert.Equal("string", props.GetProperty(optional).GetProperty("type").GetString());
             Assert.True(props.GetProperty(optional).GetProperty("nullable").GetBoolean());
@@ -103,6 +105,6 @@ public class GeminiToolDeclarationTests
 
         // (2) connector 把 Gemini 回的兩項 functionCall（一項只帶 facetId）綁到同一次 KnowledgePlugin 呼叫，embedding 一次 batch 帶兩個 query。
         var call = Assert.Single(embed.Calls);
-        Assert.Equal(new[] { "寫實攝影", "拖鞋" }, call);
+        Assert.Equal(new[] { "寫實攝影", "拖鞋（slippers）" }, call);
     }
 }

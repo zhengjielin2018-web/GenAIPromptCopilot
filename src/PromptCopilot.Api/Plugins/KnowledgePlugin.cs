@@ -12,19 +12,38 @@ namespace PromptCopilot.Api.Plugins;
 
 public sealed class KnowledgePlugin(TurnContext turn, FacetCatalog catalog, IEmbeddingClient embed, PresetRepository presets, HistoryRepository histories)
 {
-    // 與 scripts/pipeline/retrieval.py 一致
+    // 與 scripts/pipeline/retrieval.py 一致（維度項目、以及子表沒資料時的退路）
     public const int KCovered = 5;
     public const int KMissing = 3;
     public const double HighMax = 0.25;
     public const double MidMax = 0.30;
+    // facet 項目走 facet 向量（facet 向量設計 §5.4）：距離分布不同，門檻另訂。實驗 V4d 前 10 名正解中位數 0.221、非正解 0.278。
+    public const double FacetHighMax = 0.22;
+    public const double FacetMidMax = 0.27;
     private static readonly JsonSerializerOptions Json = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, WriteIndented = false, Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
 
-    public static string Band(double dist) => dist < HighMax ? "高" : dist < MidMax ? "中" : "低";
+    public static string Band(double dist) => Band(dist, facetVector: false);
+    public static string Band(double dist, bool facetVector)
+    {
+        var (high, mid) = facetVector ? (FacetHighMax, FacetMidMax) : (HighMax, MidMax);
+        return dist < high ? "高" : dist < mid ? "中" : "低";
+    }
+
+    /// <summary>facet 項目的查詢句（設計 §5.2）：「原話（英文 tag）」。實驗：只用中文 73、帶英文 81（滿分 85）；帶著原話是為了翻譯偏掉時還有東西撐著。</summary>
+    public static string QueryText(string query, string? tags) => tags is null ? query : $"{query}（{tags}）";
+
+    /// <summary>模型填的 tags 去頭尾空白；只有空白或逗號的當沒給。</summary>
+    public static string? CleanTags(string? tags)
+    {
+        if (tags is null) return null;
+        var t = string.Join(", ", TagAttribution.Split(tags));
+        return t.Length == 0 ? null : t;
+    }
 
     /// <summary>使用者講到的每個 facet 各一項，加上沒講的維度各兩項。</summary>
     public const int MaxQueries = 24;
 
-    private const string ItemsHelp = "每項：query（該項專屬的繁中查詢語句）加上 facetId（單一 facet，例如 clothing.footwear）或 dimension（整個維度，style | scene | camera | appearance | pose | clothing）。使用者講到的每個 facet 各一項用 facetId 與他的原話；使用者沒講的維度用 dimension 給兩個對比方向。最多 24 項。";
+    private const string ItemsHelp = "每項：query（該項專屬的繁中查詢語句）加上 facetId（單一 facet，例如 clothing.footwear）或 dimension（整個維度，style | scene | camera | appearance | pose | clothing）。使用者講到的每個 facet 各一項用 facetId 與他的原話，並附 tags（該描述翻成的英文 SD tag，逗號分隔，寫法同 SetFacetStates 的 tags）；使用者沒講的維度用 dimension 給兩個對比方向。最多 24 項。";
 
     [KernelFunction(ToolNames.SearchPresets)]
     [Description("檢索知識庫片段。一次呼叫帶上本輪所有要查的項目，不要一個項目一次呼叫。" + ItemsHelp + "每個項目各自回傳候選池大小、每筆的相似度分級、可否借入提示詞、每個 facet 對本次使用者是 covered/missing。")]
@@ -41,7 +60,7 @@ public sealed class KnowledgePlugin(TurnContext turn, FacetCatalog catalog, IEmb
         var profileFacets = catalog.IdsForProfile(s.Profile);
         // 每個項目先驗證；合法的才進 embedding batch。index 對應回 queries 的位置，結果要照原順序回。
         // facetId 優先於 dimension：候選池縮到單一 facet，維度取 facet 所屬的（同時給了不一致的 dimension 也以 facetId 為準）。
-        var valid = new List<(int index, string dimension, string? facetId, string query, IReadOnlyList<string> facetIds)>();
+        var valid = new List<(int index, string dimension, string? facetId, string query, string? tags, IReadOnlyList<string> facetIds)>();
         var errors = new Dictionary<int, string>();
         for (var i = 0; i < queries.Length; i++)
         {
@@ -64,12 +83,12 @@ public sealed class KnowledgePlugin(TurnContext turn, FacetCatalog catalog, IEmb
             }
             else { errors[i] = "每個項目要有 dimension 或 facetId"; continue; }
             if (string.IsNullOrWhiteSpace(q.Query)) { errors[i] = facetId is null ? $"維度 {dimension} 的 query 空白" : $"facet {facetId} 的 query 空白"; continue; }
-            valid.Add((i, dimension, facetId, q.Query, facetIds));
+            valid.Add((i, dimension, facetId, q.Query, facetId is null ? null : CleanTags(q.Tags), facetIds));
         }
 
         var vectors = valid.Count == 0
             ? Array.Empty<float[]>()
-            : await embed.EmbedAsync(valid.Select(v => v.query).ToList(), GeminiEmbeddingClient.RetrievalQuery, ct);
+            : await embed.EmbedAsync(valid.Select(v => QueryText(v.query, v.tags)).ToList(), GeminiEmbeddingClient.RetrievalQuery, ct);
 
         // 候選池計數的快取鍵是實際用的 facetIds 集合：facet 項目與同維度的 dimension 項目池不同，各數一次。
         var pools = new Dictionary<string, long>();
@@ -81,25 +100,35 @@ public sealed class KnowledgePlugin(TurnContext turn, FacetCatalog catalog, IEmb
 
         for (var vi = 0; vi < valid.Count; vi++)
         {
-            var (index, dimension, facetId, query, facetIds) = valid[vi];
+            var (index, dimension, facetId, query, tags, facetIds) = valid[vi];
             var isGrounded = grounded.Contains(dimension);          // grounded 仍以維度判定
             var k = isGrounded ? KCovered : KMissing;
-            var poolKey = string.Join(",", facetIds);
-            if (!pools.TryGetValue(poolKey, out var pool))
-                pools[poolKey] = pool = await presets.PoolSizeAsync(facetIds, ct);
-            var hits = await presets.SearchAsync(vectors[vi], facetIds, k, ct);
+            long pool; IReadOnlyList<PresetHit> hits; var method = SearchPresetsItem.MethodPreset;
+            // facet 項目先看子表有沒有這個 facet 的向量：池計數同時就是退路判斷（設計 §5.3），0 筆就走整套向量。
+            var facetPool = facetId is null ? 0L : await CachedAsync(pools, "facet:" + facetId, () => presets.FacetPoolSizeAsync(facetId, ct));
+            if (facetId is not null && facetPool > 0)
+            {
+                pool = facetPool; method = SearchPresetsItem.MethodFacet;
+                hits = await presets.SearchFacetAsync(vectors[vi], facetId, k, ct);
+            }
+            else
+            {
+                pool = await CachedAsync(pools, string.Join(",", facetIds), () => presets.PoolSizeAsync(facetIds, ct));
+                hits = await presets.SearchAsync(vectors[vi], facetIds, k, ct);
+            }
+            var facetVector = method == SearchPresetsItem.MethodFacet;
 
             var detailHits = new List<SearchPresetsHit>();
             foreach (var h in hits)
             {
                 s.Ledger.Record(new LedgerEntry { Id = h.Id, Title = h.Title, PromptSnippet = h.PromptSnippet, NegativeSnippet = h.NegativeSnippet, FacetIds = h.FacetIds, ImageUrl = h.ImageUrl, SourceRef = h.SourceRef },
                     new LedgerHit(dimension, h.Dist, isGrounded));
-                detailHits.Add(new SearchPresetsHit(h.Id, h.Title, Band(h.Dist), Math.Round(h.Dist, 3), isGrounded,
+                detailHits.Add(new SearchPresetsHit(h.Id, h.Title, Band(h.Dist, facetVector), Math.Round(h.Dist, 3), isGrounded,
                     h.FacetIds.ToDictionary(f => f, f => FacetStateParser.ToWire(s.FacetStates.GetValueOrDefault(f, FacetState.NotApplicable)))));
                 if (seen.Add(h.Id)) presetsOut.Add(new PresetRef(h.Id, h.Title, h.ImageUrl, h.SourceRef));
             }
             var label = facetId is null ? catalog.DimensionLabel(dimension, s.Profile) : catalog.Facets[facetId].Label;
-            items[index] = new SearchPresetsItem(dimension, facetId, label, query, isGrounded, pool, k, null, detailHits);
+            items[index] = new SearchPresetsItem(dimension, facetId, label, query, isGrounded, pool, k, null, detailHits, tags, method);
             rawHits[index] = hits;
         }
         foreach (var (i, message) in errors)
@@ -116,6 +145,12 @@ public sealed class KnowledgePlugin(TurnContext turn, FacetCatalog catalog, IEmb
 
         var results = items.Select((it, i) => ModelResult(it, rawHits[i])).ToList();
         return JsonSerializer.Serialize(new { results }, Json);
+    }
+
+    private static async Task<long> CachedAsync(Dictionary<string, long> cache, string key, Func<Task<long>> compute)
+    {
+        if (!cache.TryGetValue(key, out var v)) cache[key] = v = await compute();
+        return v;
     }
 
     /// <summary>detail 的一個項目投影成回給模型的形狀：欄位名、順序與內容與加 detail 之前逐字相同。

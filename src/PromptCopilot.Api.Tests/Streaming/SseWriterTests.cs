@@ -72,7 +72,8 @@ public class SseWriterTests
         var detail = new SearchPresetsDetail(new[]
         {
             new SearchPresetsItem("clothing", "clothing.footwear", "鞋履", "拖鞋", true, 300, 5, null,
-                new[] { new SearchPresetsHit(5, "霓虹", "高", 0.201, true, new Dictionary<string, string> { ["clothing.footwear"] = "covered" }) }),
+                new[] { new SearchPresetsHit(5, "霓虹", "高", 0.201, true, new Dictionary<string, string> { ["clothing.footwear"] = "covered" }) },
+                "slippers", SearchPresetsItem.MethodFacet),
             new SearchPresetsItem("hair", "hair", "hair", "捲髮", false, 0, 0, "維度 hair 對 portrait 不適用或不存在", Array.Empty<SearchPresetsHit>()),
         });
         await SseWriter.WriteOneAsync(ctx.Response, new ToolResultEvent("c1", "SearchPresets", "s", Array.Empty<PresetRef>(), detail), default);
@@ -81,8 +82,10 @@ public class SseWriterTests
         await SseWriter.WriteOneAsync(ctx.Response, new ToolResultEvent("c3", "SearchPresets", "s", null), default);
         var text = System.Text.Encoding.UTF8.GetString(body.ToArray());
 
-        Assert.Contains("\"detail\":{\"items\":[{\"dimension\":\"clothing\",\"facetId\":\"clothing.footwear\",\"label\":\"鞋履\",\"query\":\"拖鞋\",\"grounded\":true,\"poolSize\":300,\"k\":5,\"hits\":[{\"id\":5,\"title\":\"霓虹\",\"band\":\"高\",\"dist\":0.201,\"usable\":true,\"facets\":{\"clothing.footwear\":\"covered\"}}]}", text);
-        Assert.Contains("\"error\":\"維度 hair 對 portrait 不適用或不存在\",\"hits\":[]", text);
+        Assert.Contains("\"detail\":{\"items\":[{\"dimension\":\"clothing\",\"facetId\":\"clothing.footwear\",\"label\":\"鞋履\",\"query\":\"拖鞋\",\"grounded\":true,\"poolSize\":300,\"k\":5,\"hits\":[{\"id\":5,\"title\":\"霓虹\",\"band\":\"高\",\"dist\":0.201,\"usable\":true,\"facets\":{\"clothing.footwear\":\"covered\"}}]", text);
+        Assert.Contains("\"tags\":\"slippers\",\"method\":\"facet\"", text);
+        // 第二項沒給 Tags/Method：tags 因 null 被省略，method 落回預設值 preset。
+        Assert.Contains("\"error\":\"維度 hair 對 portrait 不適用或不存在\",\"hits\":[],\"method\":\"preset\"}", text);
         Assert.Contains("\"detail\":{\"hits\":[{\"intent\":\"雨夜霓虹街頭的銀髮少女\",\"profile\":\"portrait\",\"dist\":0.18}]}", text);
         var third = text.Split("event: tool_result\n")[3];
         Assert.DoesNotContain("\"detail\"", third);

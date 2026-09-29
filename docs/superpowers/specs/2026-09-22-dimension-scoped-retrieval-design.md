@@ -367,8 +367,8 @@ ORDER BY dist LIMIT %(k)s
 
 ### 13.1 相同的部分
 
-- 片段檢索的 SQL 形狀：`WHERE facet_ids && @facets ORDER BY preset_embedding <=> @q LIMIT @k`，不設距離門檻（C# 多取 `image_url`、`source_ref`）。
-- 候選池大小隨結果回報；`k`：該維度 grounded 取 5，否則 3；分級門檻 `< 0.25` 高、`< 0.30` 中、其餘低（`KnowledgePlugin` 的常數註明與 `retrieval.py` 一致）。
+- 片段檢索的 SQL 形狀：`WHERE facet_ids && @facets ORDER BY preset_embedding <=> @q LIMIT @k`，不設距離門檻（C# 多取 `image_url`、`source_ref`）（維度項目；C# 的 facet 項目 2026-09-29 起改走 `preset_facet_embeddings`，見 [facet 向量設計](2026-09-29-facet-vector-retrieval-design.md)）。
+- 候選池大小隨結果回報；`k`：該維度 grounded 取 5，否則 3；分級門檻 `< 0.25` 高、`< 0.30` 中、其餘低（`KnowledgePlugin` 的常數註明與 `retrieval.py` 一致）（facet 項目另有 0.22／0.27）。
 - `grounded` 由伺服器從 facet 狀態推出（該維度任一 facet 為 covered），不問模型。
 - 每筆命中標出它涉及的每個 facet 對本次使用者的狀態（C# 多一種 `waived`）。
 - 查詢向量一次 batch 算完；embedding 的 `taskType`、768 維與 L2 正規化和管線一致。
@@ -386,6 +386,7 @@ ORDER BY dist LIMIT %(k)s
 | 建議來源不在候選裡（§6.3） | 該選項丟掉 | `AskUser`／`Discuss` 選項的 `presetId` 不在 ledger 時改成 null，選項保留 |
 | 相似作品（§5.2） | 每次都跑，整句向量取 3 筆 | `SearchSimilarPrompts` 由模型選用，查詢句由模型給，取 1–5 筆（預設 3）；結果不進 ledger，不算 tag 來源 |
 | ledger 的 `(dimension, dist, grounded)` | —（一次看得到全部，不需要） | 每筆命中都記，但目前沒有程式讀；ledger 實際用在 tag 來源比對、選項 `presetId` 驗證、system prompt 的「先前提供過的選項」 |
+| facet 項目的向量 | 沒有 facet 項目 | facet 項目以該 facet 的英文 tag 向量排序、依 tag 組合去重、查詢句帶模型給的英文 tag；Python 端沒有對應實作 |
 
 C# 還有本文件沒有的第三條檢索：整套組合推薦（`RecommendationService`、`PresetRepository.RecommendAsync`）。它由伺服器在每輪以追問或定稿結束後自動跑，結果直接給使用者、不進模型的 context；見主規格 §9 與 `2026-09-25-set-recommendations-design.md` §4.4、§5.3。
 

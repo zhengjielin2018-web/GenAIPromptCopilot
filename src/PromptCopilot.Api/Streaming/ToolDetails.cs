@@ -4,11 +4,16 @@ namespace PromptCopilot.Api.Streaming;
 /// 與回給模型的 JSON 同一份資料，不放 snippet 本文（抽屜已有）。audit 截 200 字，不能當來源，所以走事件。</summary>
 public sealed record SearchPresetsDetail(IReadOnlyList<SearchPresetsItem> Items);
 
-/// <summary>一個查詢項目。驗證失敗的項目 Error 有值、Hits 空、PoolSize 與 K 為 0、Label 是模型送的原始 facetId 或 dimension。</summary>
+/// <summary>一個查詢項目。驗證失敗的項目 Error 有值、Hits 空、PoolSize 與 K 為 0、Label 是模型送的原始 facetId 或 dimension。
+/// Tags／Method（2026-09-29）：facet 項目這次用了什麼英文（沒有就 null）、走的是 facet 向量（facet）還是整套向量（preset：維度項目，或子表沒資料的退路）。</summary>
 public sealed record SearchPresetsItem(
     string Dimension, string? FacetId, string Label, string Query,
     bool Grounded, long PoolSize, int K, string? Error,
-    IReadOnlyList<SearchPresetsHit> Hits);
+    IReadOnlyList<SearchPresetsHit> Hits, string? Tags = null, string Method = SearchPresetsItem.MethodPreset)
+{
+    public const string MethodFacet = "facet";
+    public const string MethodPreset = "preset";
+}
 
 /// <summary>Usable 對應回給模型的「可借入提示詞」（true）／「僅供建議」（false）；Facets 是 facetId → wire 字串。</summary>
 public sealed record SearchPresetsHit(

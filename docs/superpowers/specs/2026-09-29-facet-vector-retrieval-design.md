@@ -118,11 +118,11 @@ WITH d AS (
     SELECT DISTINCT ON (tag_key) preset_id, embedding <=> @q AS dist
     FROM preset_facet_embeddings
     WHERE facet_id = @facet
-    ORDER BY tag_key, dist          -- 每種 tag 組合只留最近的一筆
+    ORDER BY tag_key, dist, preset_id   -- 每種 tag 組合只留最近的一筆；preset_id 當 tie-breaker，dist 打平時結果穩定可重現
 )
 SELECT p.id, p.title, p.facet_ids, p.prompt_snippet, p.negative_snippet, p.image_url, d.dist, p.source_ref
 FROM d JOIN prompt_knowledge_presets p ON p.id = d.preset_id
-ORDER BY d.dist
+ORDER BY d.dist, d.preset_id
 LIMIT @k
 ```
 
@@ -171,7 +171,7 @@ JOIN prompt_knowledge_presets p ON p.id = e.preset_id
 WHERE e.facet_id = @facet
   AND e.embedding <=> @a <= @maxDist
   AND <組合條件>                        -- 同 set-recommendations 設計 §4.4：這個維度至少 2 個採得到 tag 的 facet
-ORDER BY dist
+ORDER BY dist, p.id                    -- p.id 當 tie-breaker，理由同 §5.3 的 SearchFacetSql
 LIMIT @take
 ```
 

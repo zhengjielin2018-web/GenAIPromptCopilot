@@ -1,7 +1,8 @@
 """把知識庫匯出成公開的種子 dump（給 docker compose 的 seed 服務用）。
 
-做法：開一個用完即丟的 pgvector 容器、套上 db/init/001_schema.sql → 從開發庫 pg_dump 兩張知識表
-（唯讀，data-only）直接串流灌進去 → 在丟棄庫裡刪掉使用者自己存的紀錄 → 從丟棄庫 pg_dump → 停掉容器。
+做法：開一個用完即丟的 pgvector 容器、套上 db/init/001_schema.sql → 從開發庫 pg_dump 三張知識表（片段、
+facet 向量子表、共享紀錄）（唯讀，data-only）直接串流灌進去 → 在丟棄庫裡刪掉使用者自己存的紀錄 → 從丟棄庫
+pg_dump → 停掉容器。
 
 開發庫只被讀，不建庫、不刪列，API 開著也沒關係。灌進全新 schema 這一步順便證明
 dump 灌得回去（跟 seed 服務走同一條 pg_restore）。
@@ -22,12 +23,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 SEED_DIR = ROOT / "scripts" / "data" / "seed"
 SCHEMA = ROOT / "db" / "init" / "001_schema.sql"
-TABLES = ("prompt_knowledge_presets", "shared_prompt_histories")
+TABLES = ("prompt_knowledge_presets", "preset_facet_embeddings", "shared_prompt_histories")
 EXPORT_IMAGE = "pgvector/pgvector:pg16"        # 跟 docker-compose.yml 的 db 同一個
 EXPORT_CONTAINER = "prompt-copilot-seed-export"
 EXPORT_DB = "seed_export"
 COUNT_SQL = (
     "SELECT 'presets:' || split_part(source_ref, ':', 1), count(*) FROM prompt_knowledge_presets GROUP BY 1 "
+    "UNION ALL SELECT 'facet_embeddings', count(*) FROM preset_facet_embeddings "
     "UNION ALL SELECT 'histories:' || source, count(*) FROM shared_prompt_histories GROUP BY 1"
 )
 sleep = time.sleep
@@ -146,7 +148,7 @@ def main(argv: list[str] | None = None) -> int:
     user = env.get("POSTGRES_USER", "postgres")
     db = env.get("POSTGRES_DB", "prompt_copilot")
 
-    print(f"開丟棄容器 {EXPORT_CONTAINER}，從 {db} 串流兩張知識表進去、刪除使用者紀錄、再匯出（約 2 分鐘）…")
+    print(f"開丟棄容器 {EXPORT_CONTAINER}，從 {db} 串流三張知識表進去、刪除使用者紀錄、再匯出（約 2 分鐘）…")
     out, counts = export(args.version, user, db)
 
     print("匯出完成：")

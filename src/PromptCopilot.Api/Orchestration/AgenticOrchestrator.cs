@@ -186,7 +186,7 @@ public sealed class AgenticOrchestrator(
                     ("tagOrigins", turn.Outcome is FinalizedOutcome fin ? TagOrigins(fin.Final.PositiveSources) : null),
                     ("recommendations", recommended is null ? null : (object)new
                     {
-                        dimensions = recommended.Dimensions.Select(d => new { dimension = d.Dimension, anchored = d.Anchored, presetIds = d.Sets.Select(x => x.PresetId).ToArray() }).ToArray(),
+                        dimensions = recommended.Dimensions.Select(d => new { dimension = d.Dimension, anchored = d.Anchored, similar = d.Similar, presetIds = d.Sets.Select(x => x.PresetId).ToArray() }).ToArray(),
                     }),
                     ("adoption", input.Adoption is null ? null : (object)new
                     {

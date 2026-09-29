@@ -18,7 +18,8 @@
               <button type="button" class="flex w-full items-baseline gap-2 text-left hover:bg-surface" :class="it.grounded ? 'text-ink' : 'text-muted'"
                       :aria-expanded="openItems.has(i)" @click="toggleItem(i)">
                 <span class="shrink-0 font-medium">{{ it.label }}</span>
-                <span class="truncate">{{ it.query }}</span>
+                <span class="truncate">{{ queryLabel(it) }}</span>
+                <span v-if="methodLabel(it)" class="shrink-0 text-[10px] text-muted">{{ methodLabel(it) }}</span>
                 <span class="ml-auto shrink-0 tabular-nums">池 {{ it.poolSize }} → {{ it.hits.length }}</span>
                 <span v-if="!it.grounded" class="shrink-0 text-[10px]">僅供建議</span>
               </button>
@@ -64,7 +65,7 @@
 
 <script setup lang="ts">
 import type { ToolEntry } from '../lib/reducer'
-import { sourceName } from '../lib/copy'
+import { methodLabel, queryLabel, sourceName } from '../lib/copy'
 import { isPresetsDetail, isSimilarDetail } from '../types/api'
 const props = defineProps<{ entry: ToolEntry }>()
 const s = useSessionStore()
