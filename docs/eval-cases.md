@@ -156,4 +156,4 @@ API 層是用 SSE 直接打分支 `feat/set-recommendations` 的 API（本機 50
 | F2 | 多送 5 句不同描述（含穿著、髮型、場景、風格），查 audit `Tool_Invoked` 的 `SearchPresets` args | facet 項目帶 `tags` 的比例；低於一半就要回頭加強工具說明 | |
 | F3 | 送「一個女生穿拖鞋在海邊」，等追問／定稿的推薦 | 穿著維度若字面錨 `slippers` 命中不到 2 筆，出現「接近你講的 slippers」；audit `recommendations.dimensions[]` 有 `similar:true`；看前 3 套的鞋履 tag 是否合理（門檻 0.23） | |
 | F4 | 對一個 `preset_facet_embeddings` 為空的庫（或暫時 `TRUNCATE` 後還原）送 F1 那句 | 鞋履項目標「整套向量」、池 396、照常回結果 | |
-| F5 | `EXPLAIN ANALYZE` `SearchFacetSql`，`facet_id = 'scene.location'` | Execution Time 個位數毫秒級 | |
+| F5 | `EXPLAIN ANALYZE` `SearchFacetSql`，`facet_id = 'scene.location'`；`EXPLAIN ANALYZE` `RecommendSimilarSql`，`facet_id = 'clothing.upper'`（衣著類最大的 facet） | 兩者 Execution Time 都是個位數毫秒級 | |
