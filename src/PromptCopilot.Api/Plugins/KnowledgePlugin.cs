@@ -43,7 +43,7 @@ public sealed class KnowledgePlugin(TurnContext turn, FacetCatalog catalog, IEmb
     /// <summary>使用者講到的每個 facet 各一項，加上沒講的維度各兩項。</summary>
     public const int MaxQueries = 24;
 
-    private const string ItemsHelp = "每項：query（該項專屬的繁中查詢語句）加上 facetId（單一 facet，例如 clothing.footwear）或 dimension（整個維度，style | scene | camera | appearance | pose | clothing）。使用者講到的每個 facet 各一項用 facetId 與他的原話；使用者沒講的維度用 dimension 給兩個對比方向。最多 24 項。";
+    private const string ItemsHelp = "每項：query（該項專屬的繁中查詢語句）加上 facetId（單一 facet，例如 clothing.footwear）或 dimension（整個維度，style | scene | camera | appearance | pose | clothing）。使用者講到的每個 facet 各一項用 facetId 與他的原話，並附 tags（該描述翻成的英文 SD tag，逗號分隔，寫法同 SetFacetStates 的 tags）；使用者沒講的維度用 dimension 給兩個對比方向。最多 24 項。";
 
     [KernelFunction(ToolNames.SearchPresets)]
     [Description("檢索知識庫片段。一次呼叫帶上本輪所有要查的項目，不要一個項目一次呼叫。" + ItemsHelp + "每個項目各自回傳候選池大小、每筆的相似度分級、可否借入提示詞、每個 facet 對本次使用者是 covered/missing。")]

@@ -125,6 +125,16 @@ public class SystemPromptBuilderTests
         Assert.Contains("標 `covered`，並在 `tags` 附上那一項的英文 tag（例：涼鞋 → `sandals`）", prompt);
     }
 
+    /// <summary>2026-09-29 facet 向量：facet 項目要附英文 tag，查詢句才會是「原話（英文）」（設計 §5.1）。</summary>
+    [Fact]
+    public void Flow_rule_asks_for_english_tags_on_each_facet_item()
+    {
+        var (prompt, _) = Make().Build(new Session("s"), ToolNames.Always);
+        Assert.Contains("`clothing.footwear`＋「拖鞋」＋`slippers`", prompt);
+        Assert.Contains("`appearance.hair`＋「銀色雙馬尾」＋`silver hair, twintails`", prompt);
+        Assert.Contains("寫法跟 `SetFacetStates` 的 `tags` 一樣", prompt);
+    }
+
     private static readonly IReadOnlySet<string> ToolsWithoutSearch =
         ToolNames.Always.Except(new[] { ToolNames.SearchPresets, ToolNames.SearchSimilarPrompts }).ToHashSet();
 
