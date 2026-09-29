@@ -71,6 +71,7 @@
 - **eval #18**：追問偏少，一次只問 1–2 個維度，回答後就定稿，服裝整組留空。#1 修好後要重測，預算可能是原因之一。→ 追問政策已在 `fix/ask-all-missing` 反轉，重測。
 - **§14 端到端驗收**是在 `fc449f7` 跑的，之後改過輪次流程、重試分類、輸出安全，要在新 HEAD 重跑。
 - **eval #21／#22** 的故障注入方式（改 `Llm:Model`）測不到：404 不重試，session 在記憶體裡、重啟就沒了。要換一種注入方式，例如可設定的 fake 失敗次數。
+- **facet 檢索「過濾準、排序不準」在穿著上看得到**（2026-09-29 瀏覽器驗收 R2 觀察）：「一個銀髮少女穿涼鞋站在雨夜街頭」的 `SearchPresets`，鞋履項目「涼鞋」池 396 → 5，前 5 名的鞋履 tag 依序是 `sandals`、`cowboy boots`、`sandals`、`wearing Nike sneakers`、`sneakers`（前 3 名 2 筆對），而知識庫鞋履 facet 含 sandal 的有 18 筆。同一次的髮型髮色「銀髮少女」5/5、地點類型「雨夜街頭」5/5 都對。穿著片段涵蓋頭到腳，整套向量被上下身主導，鞋履這種小 facet 排序就不準；髮型、地點的片段本身就以那個 facet 為主，不受影響。這支持 facet 向量子表案（`preset_facet_embeddings`）。
 
 ## 10. 整套組合推薦的已知限制（2026-09-25）
 
@@ -82,6 +83,7 @@
 - **錨的 SQL 比對只做小寫與底線換空白**：`RecommendAsync` 對資料庫的 tag 只做 `replace(lower(tag), '_', ' ')`，沒有 `TagAttribution.Normalize` 剝 `:數字` 權重、外層括號、連續空白那幾步，比 C# 端的比對粗。`facet_tags` 保留原始 SD 語法（如 `(sandals:1.2)`）時有兩個後果：一是錨會漏配，漏到不足 2 筆就退回無錨，卡片照樣有推薦，所以不容易被發現；二是被別的錨撈進來的候選，回報的 `anchorTags` 由 C# 以完整的 `Normalize` 算，可能多列一個 SQL 沒真正比中的錨。
 - **covered facet 換了內容、模型沒重給 `tags` 時舊錨留著**：`Session.ApplyFacetStates` 只在 `tags` 非空時覆寫、狀態改成非 covered 時才移除。使用者把涼鞋改成靴子，模型維持 covered 卻沒附新的 `tags`，推薦仍以 `sandals` 當錨。
 - **採用在 HTTP 層就失敗時，重試填回的是佔位字**：上一條「重試」指的是 `session` 事件之後才失敗（泡泡已換成伺服器組的整句）。若採用在 HTTP 層就被擋（`400`／`409`，或在 `session` 事件之前斷線），失敗條目的原文還是前端的佔位字「採用〈標題〉…」，按「重試」會把這串佔位字填回輸入框；照送只是一般訊息，而且沒有任何 tag。要重新採用請再按一次卡片上的「採用」。
+- **「照它的」取代 covered facet 時，舊 tag 沒被拿掉**（2026-09-29 瀏覽器驗收 T5 發現）：使用者先講了「紫色短版連帽外套、發光比基尼、透視乳膠材質」，採用 #41745 按「全部照它的」，伺服器正確記 `adoption.replaced=["clothing.upper","clothing.material"]`，但定稿同時留著 `purple cropped hoodie`、`cyberpunk glowing bikini`、`translucent latex material`、`glossy latex` 與這套的 `purple hoodie`、`cropped hoodie`、`glowing bikini`、`see-through`、`latex clothes`，互相重複。system prompt 第 6 條只說「照它的 facet 寫入括號內的 tag」，沒說要拿掉該 facet 原本的 tag。另外 `purple cropped hoodie` 因字尾相符 `cropped hoodie` 被標成 `adopted`，實際上是使用者原本的詞。修正方向：第 6 條明講「取代」要拿掉原本的 tag，或伺服器組句時對 `replaced` 的 facet 列出要移除的舊 tag。
 
 ## 6. 子專案 4 全分支審查留下的小項目
 

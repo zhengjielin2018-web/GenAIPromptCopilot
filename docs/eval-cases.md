@@ -96,22 +96,24 @@ fresh clone 在暫存目錄進行，只放 `.env`；開發用的 stack 先 `dock
 - 匯入後 `prompt_knowledge_presets_id_seq` 的 `last_value` 41928 ≥ `max(id)` 41920，種子之上再跑管線 `load` 不會撞主鍵。
 - 匯出前掃過全部 156 個 commit：沒有 Google API key 樣式的字串、沒有 `.env` 或本機設定檔進過版控。
 
-## 2026-09-25 知識庫開關與檢索細節（待跑）
+## 2026-09-25 知識庫開關與檢索細節（2026-09-29 瀏覽器已跑）
 
 設計：`docs/superpowers/specs/2026-09-25-retrieval-switch-and-trace-design.md`。瀏覽器驗收，需要 API 與知識庫。
 
 | # | 操作 | 應該看到 | 結果 |
 | :--- | :--- | :--- | :--- |
-| R1 | 「顯示檢索細節」關，送「一個銀髮少女穿涼鞋站在雨夜街頭」 | 畫面與 2026-09-25 之前相同：工具卡一行摘要與縮圖、追問選項、定稿 chip | ⏳ |
-| R2 | 開「顯示檢索細節」（不開新對話） | 同一張 `SearchPresets` 卡點開變成逐項（標籤｜查詢句｜池 → 命中），項目可展開命中清單，標題點了開抽屜；定稿卡多「檢索貢獻」；儀表板底部多「本次對話檢索摘要」 | ⏳ |
-| R3 | 關「顯示檢索細節」 | 三處都回到 R1 的樣子 | ⏳ |
-| R4 | 關「使用知識庫」 | 開關旁出現「新對話後生效」；目前對話照常 | ⏳ |
-| R5 | 按「新對話」，送同一句 | 沒有「查知識庫」「找相似作品」卡；追問選項全是純文字；定稿 chip 只有 llm／base；「新對話後生效」消失 | ⏳ |
-| R6 | 在 R5 的對話重新整理 | 對話流回來，「使用知識庫」開關仍是關、沒有「新對話後生效」 | ⏳ |
-| R7 | 開「使用知識庫」再開新對話，跑到定稿，看 audit `Turn_Completed` | payload 有 `"retrieval":"on"`；R5 那段的是 `"off"`，且 `tagOrigins.rag` 為 0 | ⏳ |
-| R8 | 在 R5 的 off 對話裡開「顯示檢索細節」 | 定稿卡「檢索貢獻」顯示 rag 0 與「這次定稿沒有借用知識庫片段。」；儀表板沒有「本次對話檢索摘要」區塊 | ⏳ |
+| R1 | 「顯示檢索細節」關，送「一個銀髮少女穿涼鞋站在雨夜街頭」 | 畫面與 2026-09-25 之前相同：工具卡一行摘要與縮圖、追問選項、定稿 chip | ✅ 工具卡收起是一行摘要（`查知識庫 髮型髮色 池 1807 → 5・鞋履 池 396 → 5・…`），點開是同一行加縮圖（21 張）；追問選項是文字 chip；定稿 chip 只分 rag（青）與 base（灰），沒有「檢索貢獻」。第 2 輪第一次送「直接給我」`Turn_Failed`（`Timeout`，120 秒內沒有任何工具呼叫、log 看不出卡在哪，見 known-issues #7），重送 8 秒定稿 |
+| R2 | 開「顯示檢索細節」（不開新對話） | 同一張 `SearchPresets` 卡點開變成逐項（標籤｜查詢句｜池 → 命中），項目可展開命中清單，標題點了開抽屜；定稿卡多「檢索貢獻」；儀表板底部多「本次對話檢索摘要」 | ✅ 卡片變成 5 個項目（髮型髮色／鞋履／地點類型三項 grounded，風格／鏡頭標「僅供建議」），鞋履項目展開是 5 筆命中（標題｜band・dist・可借入），點標題開抽屜 #41593；定稿卡「檢索貢獻」`rag 5・adopted 0・llm 1・base 3` 列 5 筆借用；儀表板「查詢 1 次・看過 21 筆片段・借用 9 筆」。9 與 5 不同是定義不同：儀表板算 rag tag 的全部 `presetIds`（含字尾相符的同名片段），定稿卡只歸給 `presetIds[0]` |
+| R3 | 關「顯示檢索細節」 | 三處都回到 R1 的樣子 | ✅ 項目按鈕 0、縮圖回來、定稿卡沒有「檢索貢獻」、儀表板沒有摘要 |
+| R4 | 關「使用知識庫」 | 開關旁出現「新對話後生效」；目前對話照常 | ✅ 「使用知識庫」旁出現「新對話後生效」，目前對話與輸入框照常 |
+| R5 | 按「新對話」，送同一句 | 沒有「查知識庫」「找相似作品」卡；追問選項全是純文字；定稿 chip 只有 llm／base；「新對話後生效」消失 | ✅ 只有「判定題材」「更新維度狀態」兩張工具卡；追問卡沒有參考組合、沒有圖；定稿 chip 全是 llm／base（11 個），沒有參考組合；「新對話後生效」消失 |
+| R6 | 在 R5 的對話重新整理 | 對話流回來，「使用知識庫」開關仍是關、沒有「新對話後生效」 | ✅ 對話流回來，開關仍是關，沒有「新對話後生效」 |
+| R7 | 開「使用知識庫」再開新對話，跑到定稿，看 audit `Turn_Completed` | payload 有 `"retrieval":"on"`；R5 那段的是 `"off"`，且 `tagOrigins.rag` 為 0 | ✅ `43cdfde6…` 定稿 `retrieval: on`、`tagOrigins.rag=7`；R5 的 `0b29db08…` 是 `off`、`rag=0`（`llm=8`） |
+| R8 | 在 R5 的 off 對話裡開「顯示檢索細節」 | 定稿卡「檢索貢獻」顯示 rag 0 與「這次定稿沒有借用知識庫片段。」；儀表板沒有「本次對話檢索摘要」區塊 | ✅ 「檢索貢獻」`rag 0・adopted 0・llm 8・base 3` 與「這次定稿沒有借用知識庫片段。」；儀表板沒有摘要區塊 |
 
-## 2026-09-25 整套組合推薦與採用（API 層已跑，瀏覽器待跑）
+2026-09-29 的瀏覽器驗收：master `c1c9295`，`docker compose up -d --build`（前端 8080、API 5000），以 Playwright 驅動 headless Edge，畫面判斷靠 DOM 與截圖。R、S、T 三批的 session 見各列。整段只有 R1 那次 `Turn_Failed`（`Timeout`），沒有 `Protocol_Violation`。
+
+## 2026-09-25 整套組合推薦與採用（API 層已跑；S3、S5、S7 瀏覽器 2026-09-29 已跑）
 
 設計：`docs/superpowers/specs/2026-09-25-set-recommendations-design.md`。瀏覽器驗收，需要 API、知識庫，且 `facet_tags` 已回填（`scripts/backfill_facet_tags.py` 或 seed-v2）。
 
@@ -119,27 +121,27 @@ fresh clone 在暫存目錄進行，只放 `.env`；開發用的 stack 先 `dock
 | :--- | :--- | :--- | :--- |
 | S1 | 新對話，送「一個少女穿涼鞋」 | 儀表板鞋履 chip 的 title 含模型給的英文 tag（如 `sandals`）；追問卡底下「參考組合」只有被問的維度；人物穿著那列副標「含你講的 sandals」（`anchored=true`）、2–3 張縮圖有來源標籤；縮圖點開抽屜 | ✅ API 層：`dimensions.facetTags` 有 `clothing.footwear: "sandals"`；`final ask` 問風格／場景／鏡頭，隨後的 `recommendations` 恰好是這三維、各 3 套都有縮圖與 `sourceRef`。模型沒問穿著，這輪沒有穿著列（錨在 S2 驗）。畫面（chip title、副標、抽屜）未看 |
 | S2 | 回「直接給我」定稿 | 定稿卡底下每個適用維度都有一列參考組合；穿著列 `anchored=true`；沒錨的維度副標「最接近你描述的組合」 | ✅ API 層：`final finalized` 後 `recommendations` 含六個人像維度各 3 套；人物穿著 `anchored=true`、`anchorTags=["sandals"]`，三套的鞋履都含 `sandals`；人物樣貌錨上 `1girl`，其餘四維 `anchored=false` |
-| S3 | 在穿著列按一套的「採用」：上半身切「照它的」、鞋履維持「留我的」、確定 | 對照表：missing 的列預設「照它的」、covered 的預設「留我的」、這套沒有的列停用；確定後使用者泡泡先是「採用〈標題〉…」再變成伺服器組的整句；新定稿卡上半身 tag 是洋紅色 `adopted` chip（點開抽屜）、鞋履仍是原詞；先開「顯示檢索細節」，「檢索貢獻」多「採用」那列；audit `Turn_Completed` 的 `adoption.filled` 或 `replaced` 含 `clothing.upper`（看採用前的狀態）、`tagOrigins.adopted ≥ 1` | ⏸ 需要瀏覽器（對照表預設、泡泡、洋紅 chip、檢索貢獻）。API 層 ✅：採用 #41593、`take` 上半身 → `session.text`「採用〈休閒短版綁帶裝〉（知識庫 #41593）：上半身照它的（white front-tie top, unzipped）；…保留我的。」；新定稿這兩個 tag 是 `adopted`，`sandals` 仍是 rag；audit `adoption.filled=["clothing.upper"]`、`tagOrigins.adopted=2` |
+| S3 | 在穿著列按一套的「採用」：上半身切「照它的」、鞋履維持「留我的」、確定 | 對照表：missing 的列預設「照它的」、covered 的預設「留我的」、這套沒有的列停用；確定後使用者泡泡先是「採用〈標題〉…」再變成伺服器組的整句；新定稿卡上半身 tag 是洋紅色 `adopted` chip（點開抽屜）、鞋履仍是原詞；先開「顯示檢索細節」，「檢索貢獻」多「採用」那列；audit `Turn_Completed` 的 `adoption.filled` 或 `replaced` 含 `clothing.upper`（看採用前的狀態）、`tagOrigins.adopted ≥ 1` | ✅ 瀏覽器（`66f496b6…`，採用 #41593「休閒短版綁帶裝」）：對照表上半身／下半身（空白）預設「照它的」、鞋履（保留你講的）預設「留我的」、頭部配件／材質／配件「這套沒有」停用；泡泡定格在伺服器整句（佔位字「採用〈…〉…」在 150ms 取樣間隔內就被換掉，S7 用 MutationObserver 抓到）；新定稿 `white front-tie top`、`unzipped`、`beige jeans` 是洋紅 adopted chip（button，可開抽屜），`sandals` 仍是 rag；「檢索貢獻」多「採用 休閒短版綁帶裝 → …」一列；audit `adoption.filled=["clothing.upper","clothing.lower"]`、`tagOrigins.adopted=3`。API 層先前結果：採用 #41593、`take` 上半身 → `adoption.filled=["clothing.upper"]`、`tagOrigins.adopted=2` |
 | S4 | `retrieval: off` 的新對話跑到定稿；再用 curl 對它送 `{"adopt":{"presetId":1,"dimension":"clothing","take":["clothing.upper"]}}` | 沒有任何「參考組合」區塊；curl 回 `409` | ✅ `retrieval: off` 一輪就定稿，事件裡沒有 `recommendations`，tag 來源只有 llm／base（audit `tagOrigins.rag=0`）；對它送 adopt 回 `409`「這段對話沒有知識庫，沒有組合可以採用」 |
-| S5 | 在 S3 的對話重新整理 | 兩張定稿卡與參考組合都回來；只有最新一張的「採用」可按，舊的停用並提示；`adopted` chip 仍在 | ⏸ 需要瀏覽器 |
+| S5 | 在 S3 的對話重新整理 | 兩張定稿卡與參考組合都回來；只有最新一張的「採用」可按，舊的停用並提示；`adopted` chip 仍在 | ✅ 兩張定稿卡與參考組合都回來；舊卡 18 個「採用」全停用、title「已有新的結果，這張卡的推薦不能再採用」；新卡 18 個可按，三個洋紅 chip 仍在 |
 | S6 | 跑 `python scripts/adoption_report.py --since <今天>` | 定稿輪採用率分子 ≥ 1、各維度採用次數有 clothing | ✅ `--since 2026-09-25`：定稿輪採用率 1/2、追問輪 0/1；各維度採用次數 clothing 1；採用時有錨 1/1；未對到推薦輪的採用 0 |
-| S7 | 在 S1 的追問卡按一套穿著的「採用」，上半身照它的 | 使用者泡泡是伺服器組句；若還有 missing 維度則出現新的追問卡（不再問上半身），否則定稿卡；儀表板上半身變 covered | ⏳ |
+| S7 | 在 S1 的追問卡按一套穿著的「採用」，上半身照它的 | 使用者泡泡是伺服器組句；若還有 missing 維度則出現新的追問卡（不再問上半身），否則定稿卡；儀表板上半身變 covered | ✅ `fc75cd7d…`：第一張追問卡只問風格／場景／鏡頭（沒有穿著列），回答後第二張問人物樣貌／穿著／動作，穿著列「含你講的 sandals」；採用 #17767「溫柔微笑與草帽穿搭」上半身照它的（頭部配件預設也照它的）。泡泡依序「採用〈溫柔微笑與草帽穿搭〉…」→ 伺服器整句；追問已 2/2，直接定稿，`sun hat`、`white sundress` 洋紅；儀表板上半身由虛線變實心（covered），已涵蓋 5/31 → 9/31 |
 
 API 層是用 SSE 直接打分支 `feat/set-recommendations` 的 API（本機 5010 埠），沒開前端。session：S1–S3 `5c422dd6…`（prompt_version 依序 7329f17c68b4、0424e1916433、f1c04de38f36），S4 `ec15eb6e…`（82e0ed128450）。全程沒有 `Turn_Failed`、`Protocol_Violation`。
 
 - `facet_tags` 以 `scripts/backfill_facet_tags.py` 回填開發庫。第一輪留下 863 筆 `{}`、other 23.4%：模型常把該筆以「 | 」串起的整行 tag 當成一個 tag 回傳，對不上原字而整筆被丟掉。修正後（tag 改以 JSON 陣列送出、合併回來的 key 拆開比對）用 `--redo-empty` 重送這 863 筆，現在 19,354 筆 NULL 0、`{}` 33 筆（抽查是 tag 確實不屬於該筆提供的 facet），other 約 20.5%。第一輪裡部分 tag 被合併回傳而落進 other 的列不是 `{}`，`--redo-empty` 不會重送；要找回得整表重跑（約 970 次呼叫），這次沒做。
 - seed-v2：dump 在本機匯出（104.8 MB，`facet_tags` 在內），Release `seed-v2` 已於 2026-09-25 發布，`docker-compose.yml` 的 `SEED_URL` 預設值已改成 seed-v2（`8d9666c`）。⏳ 新 volume 從 seed-v2 起整套 stack 的驗證還沒記錄。
 
-## 2026-09-25 測試用審查開關（待跑）
+## 2026-09-25 測試用審查開關（2026-09-29 已跑）
 
 `.env` 設 `SAFETY_ALLOW_DISABLE=true` 後 `docker compose up -d --build api`。沒設時 T1 以外的案例都跑不了。
 
 | # | 操作 | 應該看到 | 結果 |
 | :--- | :--- | :--- | :--- |
-| T1 | 不設 `SAFETY_ALLOW_DISABLE`，開前端 | 頂列沒有「程式端審查」開關；`GET /api/config/safety` 回 `canDisable: false`；直接打 `messages` 帶 `"safety":"off"` 回 403 | ⏳ |
-| T2 | 設了之後開前端 | 頂列多「程式端審查」開關，預設開著 | ⏳ |
-| T3 | 開關開著，送「穿著改成比基尼泳裝」 | 跟以前一樣可能被 `Blocked_NSFW` 擋 | ⏳ |
-| T4 | 關掉開關（整組轉洋紅、出現「已關閉（測試用）」），重送同一句 | 不被我們擋（Gemini 自己仍可能 `Blocked_Upstream`）；audit `Turn_Completed` 的 payload 有 `"safety":"off"` | ⏳ |
-| T5 | 開關關著，採用一套含 `see-through` 的穿著組合（如 #41745） | 定稿，不出現 `Blocked_Output`（`Blocked_Upstream` 仍可能） | ⏳ |
-| T6 | 重新整理 | 開關回到開著 | ⏳ |
-| T7 | 開關關著跑到定稿，按「存進共享知識庫」送出 | 顯示「這份定稿是在關閉程式端審查時產生的…」，`save-to-shared` 回 409，`shared_prompt_histories` 沒有新列；打開開關再定稿一次後可以存 | ⏳ |
+| T1 | 不設 `SAFETY_ALLOW_DISABLE`，開前端 | 頂列沒有「程式端審查」開關；`GET /api/config/safety` 回 `canDisable: false`；直接打 `messages` 帶 `"safety":"off"` 回 403 | ✅ `canDisable:false`；頂列只有「使用知識庫」「顯示檢索細節」；`messages` 帶 `"safety":"off"` 回 403 與設定提示。註：Git Bash 用 `curl -d` 直接帶中文時 body 會被轉碼壞，框架回空 body 的 400；改用 UTF-8 檔案（`--data-binary @file`）才是 403 |
+| T2 | 設了之後開前端 | 頂列多「程式端審查」開關，預設開著 | ✅ `canDisable:true`，頂列多「程式端審查」，`aria-checked=true`（以 `SAFETY_ALLOW_DISABLE=true docker compose up -d api` 臨時覆蓋，`.env` 未動） |
+| T3 | 開關開著，送「穿著改成比基尼泳裝」 | 跟以前一樣可能被 `Blocked_NSFW` 擋 | ✅ `Blocked_NSFW`「輸入被判定為不當內容：要求穿著比基尼泳裝…」 |
+| T4 | 關掉開關（整組轉洋紅、出現「已關閉（測試用）」），重送同一句 | 不被我們擋（Gemini 自己仍可能 `Blocked_Upstream`）；audit `Turn_Completed` 的 payload 有 `"safety":"off"` | ✅ 開關轉 magenta、顯示「已關閉（測試用）」；同一句定稿（`bikini top`、`bikini bottom`、`swimwear`），audit `Turn_Completed` `safety: off` |
+| T5 | 開關關著，採用一套含 `see-through` 的穿著組合（如 #41745） | 定稿，不出現 `Blocked_Output`（`Blocked_Upstream` 仍可能） | ✅ `8f5b47db…`：描述賽博風發光比基尼＋透視乳膠，定稿後穿著推薦第一套就是 #41745；「全部照它的」採用，定稿含 `see-through`、`latex clothes`，沒有 `Blocked_Output`（`safety: off`、`adopted=14`）。另見 known-issues #10「照它的取代 covered facet 時舊 tag 沒拿掉」 |
+| T6 | 重新整理 | 開關回到開著 | ✅ 重新整理後 `aria-checked=true`、沒有「已關閉」字樣 |
+| T7 | 開關關著跑到定稿，按「存進共享知識庫」送出 | 顯示「這份定稿是在關閉程式端審查時產生的…」，`save-to-shared` 回 409，`shared_prompt_histories` 沒有新列；打開開關再定稿一次後可以存 | ✅ 關著定稿 → 儲存顯示該訊息、`save-to-shared` 409、列數仍 6306。同一段（`8f5b47db…`）打開開關再定稿被 `Blocked_Output` 擋（內容含 see-through，審查確實回來了），所以另開無害對話 `c9cc2f19…` 重跑：關 → 定稿 → 409；開 → 改背景再定稿 → 200、舊卡顯示「已被後面的定稿取代」。存進去的那列驗完已刪除 |
