@@ -75,19 +75,22 @@ public class PresetRepository(NpgsqlDataSource ds)
     // facet 層級向量（facet 向量設計 §5.3）：子表以 facet_id 的 B-tree 縮池，之後精確算距離。
     // 不建 HNSW：池最多約 3,700 筆，而且要依 tag_key 去重（同一組 tag 的片段向量一模一樣，不去重前 5 名常是 5 筆 sandals）——去重要看完整個池，近似索引幫不上（設計 §7）。
     private const string FacetPoolSql = "SELECT count(*) FROM preset_facet_embeddings WHERE facet_id = @facet";
+    // ORDER BY 最後加 preset_id：同一組 tag 的片段向量完全相同，dist 打平時排序原本沒有 tie-breaker，
+    // 挑到哪個 preset／排在第幾名會不穩定（不同次查詢可能不同）；加了 preset_id 之後同分永遠同序，結果可重現（設計 §7）。
     private const string SearchFacetSql = """
         WITH d AS (
             SELECT DISTINCT ON (tag_key) preset_id, embedding <=> @q AS dist
             FROM preset_facet_embeddings
             WHERE facet_id = @facet
-            ORDER BY tag_key, dist
+            ORDER BY tag_key, dist, preset_id
         )
         SELECT p.id, p.title, p.category, p.facet_ids, p.prompt_snippet, p.negative_snippet, p.image_url, d.dist, p.source_ref
         FROM d JOIN prompt_knowledge_presets p ON p.id = d.preset_id
-        ORDER BY d.dist
+        ORDER BY d.dist, d.preset_id
         LIMIT @k
         """;
     // 近似錨（設計 §6.3）：字面錨不到 2 筆時，拿該 facet 的錨去比同一個 facet 的向量，門檻內、且仍是「組合」的列。不去重：整套穿搭不同才是要給使用者比的。
+    // 同理加 p.id 當 tie-breaker（見 SearchFacetSql 上面那則說明）。
     private const string RecommendSimilarSql = $"""
         SELECT p.id, p.title, p.facet_ids, p.facet_tags::text, p.image_url, p.source_ref, e.embedding <=> @a AS dist
         FROM preset_facet_embeddings e
@@ -95,7 +98,7 @@ public class PresetRepository(NpgsqlDataSource ds)
         WHERE e.facet_id = @facet
           AND e.embedding <=> @a <= @maxDist
           AND {SetFilter}
-        ORDER BY dist
+        ORDER BY dist, p.id
         LIMIT @take
         """;
 
