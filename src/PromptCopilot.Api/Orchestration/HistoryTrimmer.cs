@@ -1,7 +1,9 @@
+using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.ChatCompletion;
+using Microsoft.SemanticKernel.Connectors.Google;
 
 namespace PromptCopilot.Api.Orchestration;
 
@@ -15,6 +17,11 @@ public static class HistoryTrimmer
     {
         for (var i = fromIndex; i < h.Count; i++)
         {
+            if (h[i] is GeminiChatMessageContent { CalledToolResults.Count: > 0 } g && CompressGemini(h, i, g) is { } rebuilt)
+            {
+                h[i] = rebuilt;
+                continue;
+            }
             foreach (var r in h[i].Items.OfType<FunctionResultContent>().ToList())
             {
                 var compressed = CompressResult(r.FunctionName ?? "", r.Result?.ToString() ?? "");
@@ -30,6 +37,52 @@ public static class HistoryTrimmer
             }
         }
     }
+
+    /// <summary>known-issues #8：Connectors.Google 1.80.1-alpha 把 tool 結果放在 <c>CalledToolResults</c>（送出時就是這裡序列化成 functionResponse），
+    /// <c>Items</c> 只有一個空的 TextContent，上面 FunctionResultContent 那條路碰不到。<c>GeminiFunctionToolResult</c> 與 <c>FunctionResult</c>
+    /// 都沒有公開的 setter，只能整則重建：壓得動的結果換成帶壓縮字串的新 FunctionResult，其餘沿用原物件。
+    /// 改放 FunctionResultContent 不行——connector 序列化時直接丟 NotSupportedException。回 null 表示這則不動。</summary>
+    private static GeminiChatMessageContent? CompressGemini(ChatHistory h, int index, GeminiChatMessageContent msg)
+    {
+        try
+        {
+            var results = msg.CalledToolResults!;
+            var calls = PrecedingToolCalls(h, index);
+            var rebuilt = new List<GeminiFunctionToolResult>(results.Count);
+            var changed = false;
+            foreach (var r in results)
+            {
+                var compressed = CompressResult(r.FunctionResult.Function?.Name ?? "", r.FunctionResult.GetValue<object>()?.ToString() ?? "");
+                // 新的 GeminiFunctionToolResult 要一個 tool call，但它只從 call 取 FullyQualifiedName（就是 functionResponse 的 name）；
+                // 原本那個 call 沒公開，從前一則 model 訊息的 ToolCalls 按名稱找回來。同名的 call 可以互換。
+                var call = compressed is null ? null : calls.FirstOrDefault(c => c.FullyQualifiedName == r.FullyQualifiedName);
+                if (call is null) { rebuilt.Add(r); continue; }
+                rebuilt.Add(new GeminiFunctionToolResult(call, new FunctionResult(r.FunctionResult, compressed)));
+                changed = true;
+            }
+            if (!changed) return null;
+            if (rebuilt.Count > 1)
+                return MultiResultCtor?.Invoke(new object?[] { msg.Role, msg.Content, msg.ModelId, rebuilt, msg.Metadata }) as GeminiChatMessageContent;
+            var single = new GeminiChatMessageContent(rebuilt[0]) { ModelId = msg.ModelId };
+            ((KernelContent)single).Metadata = msg.Metadata;           // GeminiChatMessageContent.Metadata 是唯讀的 new 屬性，setter 在基底
+            return single;
+        }
+        catch (Exception) { return null; }                             // 重建靠的是 connector 的內部形狀，出錯寧可不壓，也不能讓一輪失敗
+    }
+
+    /// <summary>往前找最近一則帶 ToolCalls 的 model 訊息（auto-invoke 時就是緊鄰的上一則）。</summary>
+    private static IReadOnlyList<GeminiFunctionToolCall> PrecedingToolCalls(ChatHistory h, int index)
+    {
+        for (var j = index - 1; j >= 0; j--)
+            if (h[j] is GeminiChatMessageContent { ToolCalls.Count: > 0 } m) return m.ToolCalls!;
+        return Array.Empty<GeminiFunctionToolCall>();
+    }
+
+    /// <summary>模型一次發多個呼叫時，connector 把全部結果放進同一則 tool 訊息；Gemini 要求 functionResponse 的 part 數跟 call 數一樣，不能拆成多則。
+    /// 1.80.1-alpha 只公開單一結果的建構子，多結果的是 internal，只好用反射。換版後找不到就不壓（HistoryTrimmerGeminiTests 會紅）。</summary>
+    private static readonly ConstructorInfo? MultiResultCtor = typeof(GeminiChatMessageContent).GetConstructor(
+        BindingFlags.Instance | BindingFlags.NonPublic, null,
+        new[] { typeof(AuthorRole), typeof(string), typeof(string), typeof(IEnumerable<GeminiFunctionToolResult>), typeof(GeminiMetadata) }, null);
 
     private static string? CompressResult(string functionName, string json)
     {
