@@ -67,6 +67,28 @@ public class AdoptionComposerTests
         Assert.Equal(new[] { "clothing.head", "clothing.footwear" }, c.Adoption.Replaced);
     }
 
+    /// <summary>2026-09-29 T5：「照它的」換掉 covered facet 時，句子點名要拿掉的舊 tag（session.FacetTags），模型才知道是取代不是追加。</summary>
+    [Fact]
+    public void Replaced_facet_with_previous_tags_names_them_in_its_bracket()
+    {
+        var s = Sess(("clothing.upper", FacetState.Covered), ("clothing.footwear", FacetState.Covered));
+        s.ApplyFacetStates(new Dictionary<string, FacetState> { ["clothing.upper"] = FacetState.Covered },
+            Catalog, new Dictionary<string, string> { ["clothing.upper"] = "purple cropped hoodie, cyberpunk glowing bikini" });
+        var c = AdoptionComposer.Compose(new AdoptRequest(41720, "clothing", new[] { "clothing.upper" }), Preset(Tags), s, Catalog, 1);
+        Assert.Equal("採用〈和風女僕紫和服〉（知識庫 #41720）：上半身照它的（purple kimono, detached sleeves，取代原本的 purple cropped hoodie, cyberpunk glowing bikini）；頭部配件、下半身、鞋履、材質與磨損、配件飾品保留我的。", c.Text);
+    }
+
+    [Fact]
+    public void Filled_facet_and_replaced_facet_without_previous_tags_have_no_replace_clause()
+    {
+        // head：原本 missing（補上）；footwear：covered 但模型沒給 tags；upper：notApplicable（補上），FacetTags 不可能有值
+        var s = Sess(("clothing.footwear", FacetState.Covered), ("clothing.upper", FacetState.NotApplicable));
+        var c = AdoptionComposer.Compose(new AdoptRequest(41720, "clothing", new[] { "clothing.head", "clothing.upper", "clothing.footwear" }), Preset(Tags), s, Catalog, 1);
+        Assert.Equal(new[] { "clothing.footwear" }, c.Adoption.Replaced);
+        Assert.DoesNotContain("取代原本的", c.Text);
+        Assert.Contains("頭部配件照它的（maid headdress）、上半身照它的（purple kimono, detached sleeves）、鞋履照它的（sandals）", c.Text);
+    }
+
     [Fact]
     public void Dedups_take()
     {

@@ -182,7 +182,13 @@ LIMIT @take
 採用〈{title}〉（知識庫 #{id}）：{facet 中文名}照它的（{tags 以「, 」相接}）、{…}；{facet 中文名}、{…}保留我的。
 ```
 
-沒有保留項時省略分號後半段。這句同時是使用者泡泡顯示的文字、模型看到的訊息與 audit 的 `raw_input`。
+沒有保留項時省略分號後半段。換掉的 facet（6.3 的 `Replaced`，採用前是 covered／waived）若 `session.FacetTags` 有模型給的舊 tag，該 facet 的括號裡接「，取代原本的 {舊 tags}」（2026-09-29 起，驗收 T5：只說「照它的」，模型把新 tag 加在使用者原本的 tag 旁邊，定稿互相重複）：
+
+```
+採用〈賽博夜行緊身衣〉（知識庫 #41745）：上半身照它的（shrug (clothing), glowing bikini, purple hoodie，取代原本的 purple cropped hoodie, cyberpunk glowing bikini）、…；配件飾品保留我的。
+```
+
+補上的 facet（採用前 missing／notApplicable）與沒有 `FacetTags` 的換掉 facet 不加這段。這句同時是使用者泡泡顯示的文字、模型看到的訊息與 audit 的 `raw_input`。
 
 ### 6.3 Session 記帳
 
@@ -200,9 +206,9 @@ public sealed record Adoption(int TurnIndex, long PresetId, string Dimension,
 
 `system.md`「## 流程」加第 6 條：
 
-> 6. 使用者訊息以「採用〈」開頭時，那是他從推薦的組合裡挑了一套：「照它的」facet 寫入括號內的 tag（原字，不改寫）、狀態設 `covered`、`tags` 填同樣的字、note 記「採用知識庫 #編號」；「保留我的」facet 維持原狀。然後照第 1 條判斷：工具清單裡有 `AskUser` 而且還有 missing 的維度就 `AskUser`（不要再問剛採用的那些 facet），否則直接 `FinalizePrompt`。
+> 6. 使用者訊息以「採用〈」開頭時，那是他從推薦的組合裡挑了一套。「照它的」是**取代**：定稿時該 facet 只留括號內的 tag（原字，不改寫），原本的 tag 全部拿掉——從使用者先前的描述翻的、上一版定稿裡屬於這個 facet 的、括號內「取代原本的」後面列的都算；狀態設 `covered`、`tags` 填留下的那些字、note 記「採用知識庫 #編號」。「保留我的」facet 維持原狀。然後照第 1 條判斷：工具清單裡有 `AskUser` 而且還有 missing 的維度就 `AskUser`（不要再問剛採用的那些 facet），否則直接 `FinalizePrompt`。
 
-本案的 prompt 改動只有這一條加上 5.5 的半句。`SystemPromptBuilderTests` 各加一條驗證存在。
+本案的 prompt 改動只有這一條加上 5.5 的半句。`SystemPromptBuilderTests` 各加一條驗證存在。「是取代、原本的 tag 全部拿掉」是 2026-09-29 補的（驗收 T5）：原本只說「寫入括號內的 tag」，模型把新 tag 加在舊的旁邊。
 
 ### 6.5 tag 來源 `adopted`
 
@@ -265,7 +271,7 @@ public sealed record Adoption(int TurnIndex, long PresetId, string Dimension,
 - `PresetRepositoryTests`（既有整合測試風格）：`RecommendAsync` 的 ≥2 facet 與 `facet_tags IS NOT NULL` 過濾；錨的整段相等與字尾相符（`white sandals` 命中 `sandals`）；錨為空不加條件。
 - `SessionPluginTests`：`tags` 寫入／狀態改非 covered 時移除／`SetProfile` 清空；snapshot／restore。
 - `TagAttributionTests`：adopted 優先於 rag、次於 base；字尾規則；多筆 adoption 取最近。
-- `SessionEndpointsTests`：`adopt` 的每一種 400／409；組句格式（含無保留項）；`Text` 被忽略。
+- `SessionEndpointsTests`：`adopt` 的每一種 400／409；組句格式（含無保留項；換掉的 facet 有舊 tag 時接「取代原本的」，`AdoptionComposerTests`）；`Text` 被忽略。
 - `SessionTests`：`Adoptions` 進 snapshot／restore；`Filled`／`Replaced` 分類。
 - `SystemPromptBuilderTests`：第 6 條存在（採用後照第 1 條判斷追問或定稿）且 off 模式也存在（規則無害）。
 - `AgenticOrchestratorTests`：`Turn_Completed` 的 `recommendations`／`adoption` payload；推薦失敗寫 `Recommendation_Failed`；在追問卡上採用、以 ask 收尾的輪照樣記採用。
