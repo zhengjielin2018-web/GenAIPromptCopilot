@@ -54,7 +54,7 @@ public class HistoryTrimmerGeminiTests
         }
     }
 
-    private static string Reply(string partsJson) =>
+    internal static string Reply(string partsJson) =>
         $$$"""{"candidates":[{"content":{"role":"model","parts":[{{{partsJson}}}]},"finishReason":"STOP","index":0}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}""";
 
     private const string CallSearch = """{"functionCall":{"name":"Knowledge_SearchPresets","args":{"query":"銀髮"}},"thoughtSignature":"SIG-1"}""";

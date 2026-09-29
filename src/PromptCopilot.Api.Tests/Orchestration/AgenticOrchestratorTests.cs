@@ -49,6 +49,9 @@ public class AgenticOrchestratorTests
         /// <summary>把 Chat 包進真的重試層。要驗 attempts 就不能繞過它。</summary>
         public bool Resilient { get; set; }
 
+        /// <summary>換成真的 Google connector（HTTP 用假 handler）：驗送出去的請求形狀時用，Chat 腳本就不會被用到。</summary>
+        public IChatCompletionService? ChatOverride { get; set; }
+
         /// <summary>預設不推薦：既有測試不該因為推薦而多出事件。</summary>
         public IRecommendationService Recommendations { get; set; } = new StubRecommendations(_ => Task.FromResult<RecommendationsEvent?>(null));
 
@@ -60,9 +63,9 @@ public class AgenticOrchestratorTests
             var llm = Microsoft.Extensions.Options.Options.Create(new LlmOptions());
             var guard = new SafetyGuard(new Denylist(Deny), new SafetyClassifier(GuardChat, llm));
             var prompts = new SystemPromptBuilder(Catalog, Options, Path.Combine(AppContext.BaseDirectory, "Prompts", "system.md"));
-            IChatCompletionService chat = Resilient
+            IChatCompletionService chat = ChatOverride ?? (Resilient
                 ? new ResilientChatCompletion(Chat, llm, (_, _) => Task.CompletedTask)
-                : Chat;
+                : Chat);
             return new AgenticOrchestrator(chat, Catalog, guard, prompts, SinkOverride ?? Audit, Options,
                 new SafetyClassifier(ClassifierChat, llm), Logger, Recommendations,
                 kernelFactory: (turn, tools, _) =>
@@ -467,6 +470,104 @@ public class AgenticOrchestratorTests
         var row = Assert.Single(h.Audit.Entries, a => a.EventType == "Blocked_NSFW");
         Assert.Contains("nude", row.PayloadJson!);
         Assert.Empty(h.Chat.Calls);
+    }
+
+    /// <summary>送出去時排在 contents 最後的那一則：system 訊息不算，connector 會把它們全部搬進 systemInstruction。</summary>
+    private static ChatMessageContent LastOnTheWire(ChatHistory h) => h.Last(m => m.Role != AuthorRole.System);
+
+    private static int[] SystemIndexes(ChatHistory h) =>
+        h.Select((m, i) => (m, i)).Where(x => x.m.Role == AuthorRole.System).Select(x => x.i).ToArray();
+
+    /// <summary>known-issues #3：第一次回純文字時，那則 model 訊息若還留在 history，重試請求的 contents 就以 model 結尾，
+    /// Gemini 回 400「Requests ending with a model turn are not supported.」。</summary>
+    [Fact]
+    public async Task Retry_request_does_not_end_with_the_first_attempts_model_text()
+    {
+        var h = new Harness();
+        h.Chat.Then(FakeChatCompletion.Text("好的，我來幫你整理。"))
+              .ThenAsync(async (hist, k) => new[] { await Invoke(hist, k!, "Dialog", "Discuss", DiscussArgs("寫實走光影，動漫走筆觸。")) });
+
+        var events = await h.RunAsync("寫實跟動漫差在哪");
+
+        Assert.Equal(2, h.Chat.Calls.Count);
+        Assert.Equal(AuthorRole.User, LastOnTheWire(h.Chat.Calls[1]).Role);
+        Assert.Contains("必須", h.Chat.Calls[1].Last().Content!);                   // 提示照樣帶著
+        Assert.Equal("message", Assert.Single(events.OfType<FinalEvent>()).Kind);
+        Assert.DoesNotContain(h.Session.ChatHistory, m => m.Content == "好的，我來幫你整理。");
+    }
+
+    /// <summary>第一次先跑了工具才回純文字：拿掉那則文字後，重試請求以工具結果結尾（Gemini 送成 user 底下的 functionResponse）。</summary>
+    [Fact]
+    public async Task Retry_request_after_a_tool_call_ends_with_the_tool_result()
+    {
+        var h = new Harness();
+        h.Chat.ThenAsync(async (hist, k) =>
+        {
+            await Invoke(hist, k!, "Session", "SetProfile", new { profile = "portrait" });
+            return new[] { FakeChatCompletion.Text("我先設好 profile。") };
+        })
+        .ThenAsync(async (hist, k) => new[] { await Invoke(hist, k!, "Dialog", "AskUser", AskArgs()) });
+
+        var events = await h.RunAsync("一個少女");
+
+        Assert.Equal(AuthorRole.Tool, LastOnTheWire(h.Chat.Calls[1]).Role);
+        Assert.Equal("ask", Assert.Single(events.OfType<FinalEvent>()).Kind);
+        Assert.Equal("portrait", h.Session.Profile);
+    }
+
+    /// <summary>重試提示只給那一次呼叫看：留在 history 的話，connector 每一輪都會把它併進 systemInstruction，直到 Truncate 把那一輪剪掉。</summary>
+    [Fact]
+    public async Task Retry_reminder_does_not_outlive_the_turn()
+    {
+        var h = new Harness();
+        h.Chat.Then(FakeChatCompletion.Text("好的，我來幫你整理。"))
+              .ThenAsync(async (hist, k) => new[] { await Invoke(hist, k!, "Dialog", "Discuss", DiscussArgs("好")) });
+        await h.RunAsync("寫實跟動漫差在哪");
+        Assert.Equal(new[] { 0 }, SystemIndexes(h.Session.ChatHistory));
+
+        h.Chat.ThenAsync(async (hist, k) => new[] { await Invoke(hist, k!, "Dialog", "Discuss", DiscussArgs("好")) });
+        await h.RunAsync("那動漫呢");
+        Assert.Equal(new[] { 0 }, SystemIndexes(h.Chat.Calls[2]));                   // 下一輪的請求只帶 system prompt
+    }
+
+    /// <summary>重試仍沒有終止型工具、也沒產出文字：包裝退回用第一次的文字（它被暫時拿出 history，要放回去）。</summary>
+    [Fact]
+    public async Task Wrap_falls_back_to_the_first_attempts_text_when_the_retry_is_blank()
+    {
+        var h = new Harness();
+        h.Chat.Then(FakeChatCompletion.Text("寫實走光影，動漫走筆觸。")).Then(FakeChatCompletion.Text("  "));
+
+        var events = await h.RunAsync("寫實跟動漫差在哪");
+
+        var final = Assert.Single(events.OfType<FinalEvent>());
+        Assert.Equal("message", final.Kind);
+        Assert.Contains("光影", final.Message!);
+        Assert.Equal(1, h.Session.DiscussStreak);
+        Assert.Single(h.Session.ChatHistory, m => m.Content == "寫實走光影，動漫走筆觸。");
+        Assert.Equal(new[] { 0 }, SystemIndexes(h.Session.ChatHistory));
+    }
+
+    /// <summary>強制定稿的提示同理：定稿成功後不能留在 history。</summary>
+    [Fact]
+    public async Task Forced_finalize_reminder_does_not_outlive_the_turn()
+    {
+        var h = new Harness();
+        h.Chat.ThenAsync(async (hist, k) =>
+        {
+            await Invoke(hist, k!, "Session", "SetProfile", new { profile = "portrait" });
+            k!.Turn().Outcome = new BudgetExhaustedOutcome();
+            return new[] { FakeChatCompletion.Text("") };
+        })
+        .ThenAsync(async (hist, k) =>
+        {
+            Assert.Contains("預算已用盡", hist.Last().Content!);
+            return new[] { await Invoke(hist, k!, "Dialog", "FinalizePrompt", new { positivePrompt = "masterpiece, 1girl", negativePrompt = "lowres", tips = "t", intentSummary = "一個女生", facetStates = Array.Empty<object>() }) };
+        });
+
+        var events = await h.RunAsync("一個少女");
+
+        Assert.Equal("finalized", Assert.Single(events.OfType<FinalEvent>()).Kind);
+        Assert.Equal(new[] { 0 }, SystemIndexes(h.Session.ChatHistory));
     }
 
     [Fact]
