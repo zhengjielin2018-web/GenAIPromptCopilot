@@ -7,7 +7,7 @@
 | :--- | :--- | :--- | :--- |
 | 4 | 無害描述被上游 SAFETY 連續誤擋 | 行為 | 中 |
 | 5 | eval #5、#18 行為不符預期；§14 端到端要在新 HEAD 重跑 | 調整 | 低 |
-| 10 | 整套組合推薦的已知限制：錨靠模型翻譯、同義詞抓不到、SQL 的錨比對比 C# 粗、換了內容沒重給 `tags` 時舊錨留著；採用輪失敗後重試是純文字，HTTP 層就失敗時填回的是佔位字 | 限制 | 低 |
+| 10 | 整套組合推薦的已知限制：錨靠模型翻譯、SQL 的錨比對比 C# 粗、換了內容沒重給 `tags` 時舊錨留著；採用輪失敗後重試是純文字，HTTP 層就失敗時填回的是佔位字 | 限制 | 低 |
 | 11 | `AskUser`／`Discuss` 的 call args 壓縮對 Gemini 不生效 | 成本 | 低 |
 | 6 | 子專案 4 全分支審查留下的小項目 | 整理 | 低 |
 
@@ -35,15 +35,14 @@
 - **eval #18**：追問偏少，一次只問 1–2 個維度，回答後就定稿，服裝整組留空。#1 修好後要重測，預算可能是原因之一。→ 追問政策已在 `fix/ask-all-missing` 反轉，重測。
 - **§14 端到端驗收**是在 `fc449f7` 跑的，之後改過輪次流程、重試分類、輸出安全，要在新 HEAD 重跑。
 - **eval #21／#22** 的故障注入方式（改 `Llm:Model`）測不到：404 不重試，session 在記憶體裡、重啟就沒了。要換一種注入方式，例如可設定的 fake 失敗次數。
-- **facet 檢索「過濾準、排序不準」在穿著上看得到**（2026-09-29 瀏覽器驗收 R2 觀察）：「一個銀髮少女穿涼鞋站在雨夜街頭」的 `SearchPresets`，鞋履項目「涼鞋」池 396 → 5，前 5 名的鞋履 tag 依序是 `sandals`、`cowboy boots`、`sandals`、`wearing Nike sneakers`、`sneakers`（前 3 名 2 筆對），而知識庫鞋履 facet 含 sandal 的有 18 筆。同一次的髮型髮色「銀髮少女」5/5、地點類型「雨夜街頭」5/5 都對。穿著片段涵蓋頭到腳，整套向量被上下身主導，鞋履這種小 facet 排序就不準；髮型、地點的片段本身就以那個 facet 為主，不受影響。這支持 facet 向量子表案（`preset_facet_embeddings`）。
 
 ## 10. 整套組合推薦的已知限制（2026-09-25）
 
 （原本也編成 9，跟文末已修正的 #9 撞號，2026-09-25 改為 10。）
 （2026-09-29：「照它的」取代 covered facet 時舊 tag 沒被拿掉的那一條已修正，移到文末「已修正」的 #10。）
+（2026-09-29：同義詞抓不到已由 facet 向量的近似錨處理，見已修正 #12。）
 
 - **錨靠模型翻譯**：追問階段的錨是模型在 `SetFacetStates` 給的英文 `tags`，翻錯或沒給就退回無錨（「最接近你描述的組合」），不報錯。定稿後多了 positive 的 tag 當錨，會好一些。
-- **同義詞抓不到**：錨比對是整段相等或空白為界的字尾（`platform sandals` ↔ `sandals`），`slippers` 對 `sandals` 不會命中。後續的 facet 向量案（子表 `preset_facet_embeddings`）用「該 facet 向量最近的」補這個缺口，排在本案之後。
 - **採用那一輪失敗後的重試是純文字**：失敗條目的「重試」把伺服器組的採用句填回輸入框，重送時走一般訊息，模型仍會照第 6 條處理（還在收集且有 missing 的維度就追問，否則定稿），但 `Adoption` 沒記帳、tag 不會標 `adopted`。要重新採用請再按一次卡片上的「採用」。
 - **錨的 SQL 比對只做小寫與底線換空白**：`RecommendAsync` 對資料庫的 tag 只做 `replace(lower(tag), '_', ' ')`，沒有 `TagAttribution.Normalize` 剝 `:數字` 權重、外層括號、連續空白那幾步，比 C# 端的比對粗。`facet_tags` 保留原始 SD 語法（如 `(sandals:1.2)`）時有兩個後果：一是錨會漏配，漏到不足 2 筆就退回無錨，卡片照樣有推薦，所以不容易被發現；二是被別的錨撈進來的候選，回報的 `anchorTags` 由 C# 以完整的 `Normalize` 算，可能多列一個 SQL 沒真正比中的錨。
 - **covered facet 換了內容、模型沒重給 `tags` 時舊錨留著**：`Session.ApplyFacetStates` 只在 `tags` 非空時覆寫、狀態改成非 covered 時才移除。使用者把涼鞋改成靴子，模型維持 covered 卻沒附新的 `tags`，推薦仍以 `sandals` 當錨。
@@ -267,3 +266,13 @@ prompt_version 都是 `8c10dcfe1f16`，跟子專案 3 驗收時能正常追問�
 - 還沒在 compose 或瀏覽器上實測：純文字回覆是模型自己決定的，沒辦法指定觸發，要靠之後走查時看 audit 的 `Protocol_Violation` 後面接的是 `Turn_Completed`。
 
 2026-09-29 實測（臨時測試，沒 commit）：`AgenticOrchestratorTests.Harness` 接真的 connector，第一次請求由假 handler 回純文字「好的，我來幫你整理這個角色的設定。」模擬模型沒呼叫工具，之後的請求都打真的 `gemini-3.5-flash-lite`；輸入「一個女生」，orchestrator 各跑一次 master 版與修正版。master：補救請求 `contents` 是 `[user, model]`，Gemini 回 400「Requests ending with a model turn are not supported.」，audit 是 `Protocol_Violation` → `Turn_Failed {"stage":"loop","errorClass":"HttpOperationException",…400…}`，跟瀏覽器看到的一樣。修正版：補救請求 `contents` 是 `[user]`、`systemInstruction` 兩則（system prompt＋補救提示），Gemini 回 200 並接著呼叫 `SetProfile` → `SetFacetStates` → `AskUser`，audit 是 `Protocol_Violation` → `Turn_Completed`（`AskOutcome`），這一輪結束後 history 除 index 0 外沒有 system 訊息。限制：第一次的純文字是罐頭，不是模型自己產的；Harness 的 kernel 沒掛 filter 也沒有知識庫，所以 `AskUser` 後迴圈沒停、`SearchPresets` 找不到函式，這些跟 #3 無關。下一輪 `systemInstruction` 只剩一則沒有打真的 Gemini 驗，由 `AgenticOrchestratorGeminiTests` 涵蓋。
+
+### 12. facet 檢索「過濾準、排序不準」與推薦的同義詞（facet 層級向量）
+
+**現象**：R2 驗收「涼鞋」查 `clothing.footwear` 前 5 名只有 2 筆 sandals（知識庫有 18 筆）；推薦的錨 `slippers` 對不上 `sandals`，退回無錨。原本分別記在 §5 與 §10。
+
+**根因**：facet 項目過濾後仍拿整套片段向量（`title。description。全部 tag`）排序，穿著片段被上下身主導；錨比對只做字面。
+
+**修正**（分支 `feat/facet-vector-retrieval`，commit `<hash>`）：子表 `preset_facet_embeddings` 存每個片段每個 facet 的向量（`scripts/embed_facet_tags.py` 從 `facet_tags` 算，seed-v3 帶著）；`SearchPresets` facet 項目改比 facet 向量、依 `tag_key` 去重、查詢句「原話（模型給的英文 tags）」、分級門檻 0.22／0.27；推薦字面錨不到 2 筆先試近似錨（facet 距離 ≤ 0.23），前端標「接近你講的 …」。不建 HNSW（設計 §7）。設計：`docs/superpowers/specs/2026-09-29-facet-vector-retrieval-design.md`；實驗：`docs/experiments/2026-09-29-facet-vector-text.md`。
+
+**驗收**：單元測試（`KnowledgePluginTests`、`RecommendationServiceTests`、`test_embed_facet_tags.py`、`test_tags.py`）、整合測試 `RepositoryIntegrationTests`。離線重跑與線上驗收見實驗紀錄與 `docs/eval-cases.md` 2026-09-29 facet 向量一節。

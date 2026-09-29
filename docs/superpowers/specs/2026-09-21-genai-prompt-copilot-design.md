@@ -707,7 +707,7 @@ scripts/
 
 | Tool | 策略 | SQL 概念 |
 | :--- | :--- | :--- |
-| `SearchPresets` | **分維度**：一次呼叫帶多個維度的查詢，每項用該維度專屬的查詢語句，`facetIds` 依維度過濾後向量排序 | `WHERE facet_ids && $facetIdsOfDimension ORDER BY preset_embedding <=> $dimensionQueryVec LIMIT k` |
+| `SearchPresets` | **分維度**：一次呼叫帶多個項目；維度項目 `facetIds` 過濾後以整套向量排序；facet 項目（2026-09-29）以該 facet 自己的向量排序、依 tag 組合去重，查詢句「原話（英文 tag）」 | 維度：`WHERE facet_ids && $facets ORDER BY preset_embedding <=> $vec LIMIT k`；facet：`preset_facet_embeddings WHERE facet_id = $f`，`DISTINCT ON (tag_key)` 後依 `embedding <=> $vec` |
 | `SearchSimilarPrompts` | 向量 Top-K + profile 過濾 | `WHERE subject_profile = $1 ORDER BY intent_embedding <=> $2 LIMIT k` |
 | 整套組合推薦（伺服器自動，不是模型的工具） | 每個維度：有錨先以錨過濾再向量排序，不足 2 筆整批改用純向量排序（2026-09-25） | 見本節末「整套組合推薦」 |
 
@@ -716,7 +716,7 @@ scripts/
 - 一次呼叫帶本輪所有要查的維度（`queries[]`，每項一個維度），`facetIds` 由伺服器依 profile 導出。項目可帶 `facetId` 把候選池縮到單一 facet：使用者講到的每個 facet 各一項、用他描述那一項的原話（2026-09-25：一句複合描述查整個維度撈到的是整套穿搭片段，單品進不了 ledger；見[批次設計 §8](2026-09-24-batch-search-presets-design.md)）。`grounded` 仍以維度判定。
 - `query` 是該維度的專屬語句：使用者已描述的維度用其原話；未描述的維度由 agent 依整體畫面推想，且應給對比方向（例：寫實攝影 vs 動漫插畫）在同一次呼叫裡放兩個項目。
 - 使用者未描述的維度撈到的片段只可用於追問與建議，不得直接寫入提示詞。
-- 不設距離門檻；tool result 帶相似度分級（`<0.25` 高、`<0.30` 中、其餘低），由 agent 判斷。
+- 不設距離門檻；tool result 帶相似度分級（`<0.25` 高、`<0.30` 中、其餘低），由 agent 判斷。facet 項目的門檻另訂 `<0.22` 高、`<0.27` 中（facet 向量的距離分布不同，見 [facet 向量設計](2026-09-29-facet-vector-retrieval-design.md) §5.4）；子表沒有該 facet 的列時退回整套向量與原門檻，detail 的 `method` 標 `preset`。
 - `tags && $2` 決定不做：OR 上 tags 會把候選池撐到維度外，與分維度前提衝突。
 - **跨維度去重：C# 不做。** 一筆 preset 的 `facet_ids` 可能橫跨數維（實測 859 筆裡 134 筆、15.6%），會在多個候選池出現。Python demo 在檢索後去重，歸屬規則是「grounded 優先、距離次之」（分維度檢索設計 §5.3：單純比距離會讓 grounded 維度正當撈到的片段，因為某個 missing 維度推想出來的查詢剛好更近，就被降級成「僅供建議」）。C# 的 `SearchPresets` 每個項目照實回傳自己的結果，同一筆片段被兩個項目撈到，模型就看到兩份，`usable` 可能一份「可借入提示詞」、一份「僅供建議」；原本規劃「到定稿時才套這條規則」，**沒有實作**。借用資格因此只靠每筆命中的標記加上 `system.md` 的規則（`{{RETRIEVAL_RULE}}`），是提示詞約束，伺服器不強制（分維度檢索設計 §13）。
 - **session ledger。** session 內維護一本 `PresetLedger`：`SearchPresets` 撈到的每筆片段連同 `(dimension, dist, grounded)` 累加進去。實際用到它的有三處：定稿時比對 tag 來源（下一條）、`AskUser`／`Discuss` 選項的 `presetId` 驗證（不在 ledger 就改成 null）、system prompt 的「你先前提供過的選項」。`(dimension, dist, grounded)` 三個欄位照記，但目前沒有程式讀。2026-09-25 起，使用者採用推薦組合時伺服器也把該 preset 寫進 ledger（`Session.RecordAdoption`），定稿 chip 才能開抽屜、offered 區段才會列它。
@@ -730,7 +730,7 @@ scripts/
 1. **查詢向量**：本 session 使用者說過的話（不含伺服器組的採用句）依序串接、取最後 500 字，一輪只嵌入一次，各維度共用。
 2. **候選必須是整套**：已回填 `facet_tags`，且該維度至少 2 個 facet 有 tag。
 3. **錨**：該維度 covered facet 的 `FacetTags`（模型在 `SetFacetStates` 附的英文 tag，如涼鞋 → `sandals`）；定稿時再加 positive 的 tag（基礎畫質詞除外）。
-4. **有錨**：只留 covered facet 底下有 tag 等於錨、或以「空白＋錨」結尾的片段，再依距離取 3 筆（`MATERIALIZED` CTE 精確排序，不走 HNSW，罕見的錨不會被掃描上限漏掉）。**不足 2 筆就整批丟掉**，改成不過濾、依距離取 3 筆（HNSW），不跟有錨的結果合併。
+4. **有錨**：只留 covered facet 底下有 tag 等於錨、或以「空白＋錨」結尾的片段，再依距離取 3 筆（`MATERIALIZED` CTE 精確排序，不走 HNSW，罕見的錨不會被掃描上限漏掉）。**不足 2 筆先試近似錨**（2026-09-29：該 facet 的 `FacetTags` 向量對子表同一 facet 的向量，距離 ≤ 0.23 且仍是組合的列，各 covered facet 合併取最小距離；≥ 2 筆顯示「接近你講的 …」），仍不足就改成不過濾、依距離取 3 筆（HNSW），不跟前面的結果合併。
 5. **沒錨**：直接走第 4 步的「不過濾」那條。
 
 兩條都依同一個向量排序；錨只決定排序前要不要先縮小範圍。卡片上有錨的顯示「含你講的 sandals」，退回的顯示「最接近你描述的組合」。細節見 [整套組合推薦設計](2026-09-25-set-recommendations-design.md) §4.4、§5.3。

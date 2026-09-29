@@ -145,3 +145,15 @@ API 層是用 SSE 直接打分支 `feat/set-recommendations` 的 API（本機 50
 | T5 | 開關關著，採用一套含 `see-through` 的穿著組合（如 #41745） | 定稿，不出現 `Blocked_Output`（`Blocked_Upstream` 仍可能） | ✅ `8f5b47db…`：描述賽博風發光比基尼＋透視乳膠，定稿後穿著推薦第一套就是 #41745；「全部照它的」採用，定稿含 `see-through`、`latex clothes`，沒有 `Blocked_Output`（`safety: off`、`adopted=14`）。另見 known-issues #10「照它的取代 covered facet 時舊 tag 沒拿掉」 |
 | T6 | 重新整理 | 開關回到開著 | ✅ 重新整理後 `aria-checked=true`、沒有「已關閉」字樣 |
 | T7 | 開關關著跑到定稿，按「存進共享知識庫」送出 | 顯示「這份定稿是在關閉程式端審查時產生的…」，`save-to-shared` 回 409，`shared_prompt_histories` 沒有新列；打開開關再定稿一次後可以存 | ✅ 關著定稿 → 儲存顯示該訊息、`save-to-shared` 409、列數仍 6306。同一段（`8f5b47db…`）打開開關再定稿被 `Blocked_Output` 擋（內容含 see-through，審查確實回來了），所以另開無害對話 `c9cc2f19…` 重跑：關 → 定稿 → 409；開 → 改背景再定稿 → 200、舊卡顯示「已被後面的定稿取代」。存進去的那列驗完已刪除 |
+
+## 2026-09-29 facet 層級向量（待 merge 後跑）
+
+前置：開發庫套 `db/migrations/003`、跑 `scripts/embed_facet_tags.py` 到 `preset_facet_embeddings` 有約 37k 列；用本分支建 compose。Claude 以 Playwright 驅動 headless Edge 跑，實際呼叫 Gemini。
+
+| # | 操作 | 應該看到 | 結果 |
+| :--- | :--- | :--- | :--- |
+| F1 | 送「一個銀髮少女穿涼鞋站在雨夜街頭」，開「顯示檢索細節」 | 鞋履項目的查詢句顯示「涼鞋（sandals）」、標「facet 向量」、池約 338；前 5 名的鞋履 tag 都是 sandal 類且互不相同 | |
+| F2 | 多送 5 句不同描述（含穿著、髮型、場景、風格），查 audit `Tool_Invoked` 的 `SearchPresets` args | facet 項目帶 `tags` 的比例；低於一半就要回頭加強工具說明 | |
+| F3 | 送「一個女生穿拖鞋在海邊」，等追問／定稿的推薦 | 穿著維度若字面錨 `slippers` 命中不到 2 筆，出現「接近你講的 slippers」；audit `recommendations.dimensions[]` 有 `similar:true`；看前 3 套的鞋履 tag 是否合理（門檻 0.23） | |
+| F4 | 對一個 `preset_facet_embeddings` 為空的庫（或暫時 `TRUNCATE` 後還原）送 F1 那句 | 鞋履項目標「整套向量」、池 396、照常回結果 | |
+| F5 | `EXPLAIN ANALYZE` `SearchFacetSql`，`facet_id = 'scene.location'` | Execution Time 個位數毫秒級 | |
