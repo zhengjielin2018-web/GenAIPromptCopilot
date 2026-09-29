@@ -678,7 +678,7 @@ public class AgenticOrchestratorTests
         Assert.True(kinds.IndexOf("final") < kinds.LastIndexOf("dimensions") && kinds.LastIndexOf("dimensions") < kinds.IndexOf("recommendations"));
         Assert.Equal(7, Assert.Single(events.OfType<RecommendationsEvent>()).Dimensions[0].Sets[0].PresetId);
         var completed = Assert.Single(h.Audit.Entries, a => a.EventType == "Turn_Completed");
-        Assert.Contains("""recommendations":{"dimensions":[{"dimension":"style","anchored":false,"presetIds":[7]}]}""", completed.PayloadJson!);
+        Assert.Contains("""recommendations":{"dimensions":[{"dimension":"style","anchored":false,"similar":false,"presetIds":[7]}]}""", completed.PayloadJson!);
     }
 
     /// <summary>設計 §9：推薦是附加的。final 已宣告，推薦炸了不能回滾、不能發 error。</summary>

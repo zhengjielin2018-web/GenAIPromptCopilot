@@ -4,6 +4,7 @@ namespace PromptCopilot.Api.Streaming;
 /// Facets 列該維度對本 profile 的全部 facet（yaml 順序），State 是本輪結束時的四態，Tags 取自 facet_tags（沒有就空）。</summary>
 public sealed record RecommendedFacet(string FacetId, string Label, string State, IReadOnlyList<string> Tags);
 public sealed record RecommendedSet(long PresetId, string Title, string? ImageUrl, string? SourceRef, double Dist, IReadOnlyList<RecommendedFacet> Facets);
-/// <summary>Anchored：候選是先用「含使用者講的元素」過濾的；AnchorTags 是實際命中的錨。false 時是純向量排序的「最接近你描述的組合」。</summary>
-public sealed record RecommendedDimension(string Dimension, string Label, bool Anchored, IReadOnlyList<string> AnchorTags, IReadOnlyList<RecommendedSet> Sets);
+/// <summary>Anchored：候選是先用「含使用者講的元素」字面過濾的；Similar（2026-09-29）：字面抓不到、改用 facet 向量離錨夠近的（facet 向量設計 §6）；兩者不會同時為 true。
+/// AnchorTags 是實際命中（anchored）或有貢獻（similar）的錨。兩者都 false 時是純向量排序的「最接近你描述的組合」。</summary>
+public sealed record RecommendedDimension(string Dimension, string Label, bool Anchored, IReadOnlyList<string> AnchorTags, IReadOnlyList<RecommendedSet> Sets, bool Similar = false);
 public sealed record RecommendationsEvent(int TurnIndex, IReadOnlyList<RecommendedDimension> Dimensions) : AgentEvent("recommendations");

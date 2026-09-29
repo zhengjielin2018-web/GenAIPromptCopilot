@@ -16,7 +16,8 @@ public interface IRecommendationService
 
 /// <summary>整套組合推薦（設計 §5）。由伺服器產生、模型不知道：推薦系統要「每次都在、每次一樣」。
 /// 追問時只查被問的維度，定稿時查本 profile 全部維度；每個維度：錨（covered facet 的 FacetTags＋定稿 positive）
-/// 有就先過濾再向量排序，命中不到 2 筆退回純向量。</summary>
+/// 有就先過濾再向量排序，命中不到 2 筆退回純向量。
+/// 字面錨不到 2 筆先試近似錨（facet 向量離錨 ≤ RecommendationSimilarMaxDist），仍不到 2 筆才退回純向量。</summary>
 public sealed class RecommendationService(FacetCatalog catalog, IEmbeddingClient embed, PresetRepository presets, OrchestratorOptions options) : IRecommendationService
 {
     public const int QueryChars = 500;
@@ -37,7 +38,15 @@ public sealed class RecommendationService(FacetCatalog catalog, IEmbeddingClient
         if (dimensions.Count == 0) return null;
         var query = QueryText(s.ChatHistory);
         if (query.Length == 0) return null;
-        var vec = (await embed.EmbedAsync(new[] { query }, GeminiEmbeddingClient.RetrievalQuery, ct))[0];
+        // 近似錨的文字先算好，跟使用者原話一起 embed（設計 §6.2）：哪個維度走到近似錨都不會多一次呼叫；沒用到的向量丟掉無妨。
+        var anchorTexts = new List<(string dim, string facet, string text)>();
+        foreach (var dim in dimensions)
+            foreach (var facetId in catalog.FacetsOf(profile, dim))
+                if (s.FacetStates.GetValueOrDefault(facetId, FacetState.Missing) == FacetState.Covered && SimilarAnchorText(s, facetId) is { } t)
+                    anchorTexts.Add((dim, facetId, t));
+        var vectors = await embed.EmbedAsync(new[] { query }.Concat(anchorTexts.Select(a => a.text)).ToList(), GeminiEmbeddingClient.RetrievalQuery, ct);
+        var vec = vectors[0];
+        var anchorVec = anchorTexts.Select((a, i) => (a, v: vectors[i + 1])).ToDictionary(x => (x.a.dim, x.a.facet), x => x.v);
         // 基礎畫質詞不當錨：每次定稿都有，只會把推薦拉向剛好也寫了 masterpiece 的片段
         var finalTags = outcome is FinalizedOutcome f
             ? TagAttribution.Split(f.Final.Positive).Select(TagAttribution.Normalize).Where(t => t.Length > 0 && !TagAttribution.IsBase(t)).ToList()
@@ -57,14 +66,22 @@ public sealed class RecommendationService(FacetCatalog catalog, IEmbeddingClient
                 hits = await presets.RecommendAsync(vec, facets, covered, anchors, options.RecommendationTake, ct);
                 anchored = hits.Count >= MinAnchoredHits;
             }
-            if (!anchored) hits = await presets.RecommendAsync(vec, facets, Array.Empty<string>(), Array.Empty<string>(), options.RecommendationTake, ct);
+            var similar = false;
+            IReadOnlyList<string> similarTags = Array.Empty<string>();
+            if (!anchored)
+            {
+                (hits, similarTags) = await SimilarAsync(s, dim, covered, facets, anchorVec, ct);
+                similar = hits.Count >= MinAnchoredHits;
+                if (!similar) hits = Array.Empty<PresetCandidate>();
+            }
+            if (!anchored && !similar) hits = await presets.RecommendAsync(vec, facets, Array.Empty<string>(), Array.Empty<string>(), options.RecommendationTake, ct);
             if (hits.Count == 0) continue;
-            var matched = anchored ? MatchedAnchors(hits, covered, anchors) : Array.Empty<string>();
+            var matched = anchored ? MatchedAnchors(hits, covered, anchors) : similar ? similarTags : Array.Empty<string>();
             var sets = hits.Select(h => new RecommendedSet(h.Id, h.Title, h.ImageUrl, h.SourceRef, Math.Round(h.Dist, 3),
                 facets.Select(x => new RecommendedFacet(x, catalog.Facets[x].Label,
                     FacetStateParser.ToWire(s.FacetStates.GetValueOrDefault(x, FacetState.Missing)),
                     h.FacetTags.GetValueOrDefault(x) ?? Array.Empty<string>())).ToList())).ToList();
-            result.Add(new RecommendedDimension(dim, catalog.DimensionLabel(dim, profile), anchored, matched, sets));
+            result.Add(new RecommendedDimension(dim, catalog.DimensionLabel(dim, profile), anchored, matched, sets, similar));
         }
         return result.Count == 0 ? null : new RecommendationsEvent(turnIndex, result);
     }
@@ -100,4 +117,34 @@ public sealed class RecommendationService(FacetCatalog catalog, IEmbeddingClient
     private static IReadOnlyList<string> MatchedAnchors(IReadOnlyList<PresetCandidate> hits, IReadOnlyList<string> covered, IReadOnlyList<string> anchors) =>
         anchors.Where(a => hits.Any(h => covered.Any(f => (h.FacetTags.GetValueOrDefault(f) ?? Array.Empty<string>())
             .Select(TagAttribution.Normalize).Any(t => t == a || TagAttribution.EndsWithWord(t, a))))).ToList();
+
+    /// <summary>近似錨（設計 §6.1）：每個 covered 且有錨向量的 facet 各查一次，同一片段取最小距離，依距離取前 take；
+    /// 回傳的 tags 是「有貢獻」的 facet 的 FacetTags（至少一筆進了前 take）。子表沒有這個 facet 的列就跳過它。</summary>
+    private async Task<(IReadOnlyList<PresetCandidate> hits, IReadOnlyList<string> tags)> SimilarAsync(Session s, string dim, IReadOnlyList<string> covered,
+        IReadOnlyList<string> facets, IReadOnlyDictionary<(string, string), float[]> anchorVec, CancellationToken ct)
+    {
+        var best = new Dictionary<long, (PresetCandidate c, string facet)>();
+        foreach (var f in covered)
+        {
+            if (!anchorVec.TryGetValue((dim, f), out var av)) continue;
+            if (await presets.FacetPoolSizeAsync(f, ct) == 0) continue;
+            foreach (var h in await presets.RecommendSimilarAsync(av, f, facets, options.RecommendationSimilarMaxDist, options.RecommendationTake, ct))
+                if (!best.TryGetValue(h.Id, out var cur) || h.Dist < cur.c.Dist) best[h.Id] = (h, f);
+        }
+        var top = best.Values.OrderBy(x => x.c.Dist).Take(options.RecommendationTake).ToList();
+        var contributing = covered.Where(f => top.Any(x => x.facet == f)).ToList();
+        var tags = new List<string>();
+        foreach (var f in contributing)
+            foreach (var t in TagAttribution.Split(s.FacetTags.GetValueOrDefault(f)).Select(TagAttribution.Normalize))
+                if (t.Length > 0 && !tags.Contains(t)) tags.Add(t);
+        return (top.Select(x => x.c).ToList(), tags);
+    }
+
+    /// <summary>該 facet 的錨文字：FacetTags 正規化、丟空、去重、保序、", " 串接；沒有可用的 tag 回 null（不拿空字串去 embed）。</summary>
+    public static string? SimilarAnchorText(Session s, string facetId)
+    {
+        if (!s.FacetTags.TryGetValue(facetId, out var raw)) return null;
+        var parts = TagAttribution.Split(raw).Select(TagAttribution.Normalize).Where(t => t.Length > 0).Distinct().ToList();
+        return parts.Count == 0 ? null : string.Join(", ", parts);
+    }
 }

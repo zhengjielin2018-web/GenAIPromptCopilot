@@ -28,17 +28,27 @@ public class RecommendationServiceTests
     {
         public List<(string firstFacet, IReadOnlyList<string> anchorFacets, IReadOnlyList<string> anchorTags, int take)> Calls { get; } = new();
         public Dictionary<(string firstFacet, bool anchored), IReadOnlyList<PresetCandidate>> Script { get; } = new();
+        public List<(string facet, double maxDist, int take)> SimilarCalls { get; } = new();
+        public Dictionary<string, IReadOnlyList<PresetCandidate>> SimilarScript { get; } = new();     // key：facetId
+        public Dictionary<string, long> FacetPools { get; } = new();                                    // 沒設 → 0 → 跳過近似
         public override Task<IReadOnlyList<PresetCandidate>> RecommendAsync(float[] query, IReadOnlyList<string> dimensionFacets,
             IReadOnlyList<string> anchorFacets, IReadOnlyList<string> anchorTags, int take, CancellationToken ct)
         {
             Calls.Add((dimensionFacets[0], anchorFacets, anchorTags, take));
             return Task.FromResult(Script.GetValueOrDefault((dimensionFacets[0], anchorFacets.Count > 0), Array.Empty<PresetCandidate>()));
         }
+        public override Task<long> FacetPoolSizeAsync(string facetId, CancellationToken ct) => Task.FromResult(FacetPools.GetValueOrDefault(facetId, 0L));
+        public override Task<IReadOnlyList<PresetCandidate>> RecommendSimilarAsync(float[] anchor, string facetId, IReadOnlyList<string> dimensionFacets, double maxDist, int take, CancellationToken ct)
+        {
+            SimilarCalls.Add((facetId, maxDist, take));
+            return Task.FromResult(SimilarScript.GetValueOrDefault(facetId, Array.Empty<PresetCandidate>()));
+        }
     }
 
-    private static PresetCandidate Set(long id, string title, params (string facet, string tags)[] facetTags) =>
+    private static PresetCandidate Set(long id, string title, params (string facet, string tags)[] facetTags) => Set(id, title, 0.21, facetTags);
+    private static PresetCandidate Set(long id, string title, double dist, params (string facet, string tags)[] facetTags) =>
         new(id, title, facetTags.Select(f => f.facet).ToList(),
-            facetTags.ToDictionary(f => f.facet, f => (IReadOnlyList<string>)f.tags.Split(", ")), "https://img", "civitai:1:0", 0.21);
+            facetTags.ToDictionary(f => f.facet, f => (IReadOnlyList<string>)f.tags.Split(", ")), "https://img", "civitai:1:0", dist);
 
     private static (RecommendationService svc, Session s, FakeEmbeddings embed, FakePresets presets) Make(params (string facet, string tags)[] covered)
     {
@@ -203,5 +213,97 @@ public class RecommendationServiceTests
         var embed = new FakeEmbeddings(); var presets = new FakePresets();
         Assert.Null(await new RecommendationService(Catalog, embed, presets, new OrchestratorOptions()).BuildAsync(s, Ask("style"), 1, default));
         Assert.Empty(embed.Texts); Assert.Empty(presets.Calls);
+    }
+
+    [Fact]
+    public async Task Literal_anchor_short_of_two_hits_tries_the_similar_anchor_and_reports_it_as_similar()
+    {
+        var (svc, s, embed, presets) = Make(("clothing.footwear", "slippers"));
+        presets.FacetPools["clothing.footwear"] = 338;
+        presets.Script[("clothing.head", true)] = new[] { Set(1, "只有一套", ("clothing.footwear", "slippers"), ("clothing.upper", "x")) };
+        presets.SimilarScript["clothing.footwear"] = new[]
+        {
+            Set(2, "涼鞋一", 0.18, ("clothing.footwear", "sandals"), ("clothing.upper", "a")),
+            Set(3, "涼鞋二", 0.21, ("clothing.footwear", "sandals"), ("clothing.lower", "b")),
+        };
+        var e = await svc.BuildAsync(s, Ask("clothing"), 1, default);
+        var d = Assert.Single(e!.Dimensions);
+        Assert.False(d.Anchored); Assert.True(d.Similar);
+        Assert.Equal(new[] { "slippers" }, d.AnchorTags);                                        // 有貢獻的 facet 的 FacetTags
+        Assert.Equal(new long[] { 2, 3 }, d.Sets.Select(x => x.PresetId));
+        Assert.Equal(0.18, d.Sets[0].Dist);                                                      // 近似路上的 Dist 是 facet 距離
+        var call = Assert.Single(presets.SimilarCalls);
+        Assert.Equal(("clothing.footwear", 0.23, 3), call);
+        Assert.Single(presets.Calls);                                                            // 沒退到無錨
+        Assert.Equal(new[] { "一個少女穿涼鞋", "slippers" }, embed.Texts);                        // 錨向量與查詢向量同一次 embed
+    }
+
+    [Fact]
+    public async Task Similar_anchor_short_of_two_hits_falls_back_to_unanchored()
+    {
+        var (svc, s, _, presets) = Make(("clothing.footwear", "slippers"));
+        presets.FacetPools["clothing.footwear"] = 338;
+        presets.SimilarScript["clothing.footwear"] = new[] { Set(2, "只一套", 0.2, ("clothing.footwear", "sandals"), ("clothing.upper", "a")) };
+        presets.Script[("clothing.head", false)] = new[] { Set(8, "a", ("clothing.upper", "x"), ("clothing.lower", "y")), Set(9, "b", ("clothing.upper", "x"), ("clothing.lower", "y")) };
+        var d = Assert.Single((await svc.BuildAsync(s, Ask("clothing"), 1, default))!.Dimensions);
+        Assert.False(d.Anchored); Assert.False(d.Similar); Assert.Empty(d.AnchorTags);
+        Assert.Equal(new long[] { 8, 9 }, d.Sets.Select(x => x.PresetId));
+        Assert.Equal(2, presets.Calls.Count);
+    }
+
+    [Fact]
+    public async Task Similar_anchor_is_skipped_when_the_subtable_has_no_rows_for_the_facet()
+    {
+        var (svc, s, _, presets) = Make(("clothing.footwear", "slippers"));                     // FacetPools 沒設 → 0
+        presets.Script[("clothing.head", false)] = new[] { Set(8, "a", ("clothing.upper", "x"), ("clothing.lower", "y")) };
+        await svc.BuildAsync(s, Ask("clothing"), 1, default);
+        Assert.Empty(presets.SimilarCalls);
+    }
+
+    [Fact]
+    public async Task Anchored_result_never_runs_the_similar_query()
+    {
+        var (svc, s, _, presets) = Make(("clothing.footwear", "sandals"));
+        presets.FacetPools["clothing.footwear"] = 338;
+        presets.Script[("clothing.head", true)] = new[] { Set(1, "a", ("clothing.footwear", "sandals"), ("clothing.upper", "x")), Set(2, "b", ("clothing.footwear", "sandals"), ("clothing.lower", "y")) };
+        var d = Assert.Single((await svc.BuildAsync(s, Ask("clothing"), 1, default))!.Dimensions);
+        Assert.True(d.Anchored); Assert.False(d.Similar); Assert.Empty(presets.SimilarCalls);
+    }
+
+    [Fact]
+    public async Task Similar_results_from_several_facets_merge_by_min_distance_and_credit_only_contributing_facets()
+    {
+        var (svc, s, _, presets) = Make(("clothing.footwear", "slippers"), ("clothing.head", "beret"));
+        presets.FacetPools["clothing.footwear"] = 338; presets.FacetPools["clothing.head"] = 662;
+        presets.SimilarScript["clothing.footwear"] = new[] { Set(2, "x", 0.20, ("clothing.footwear", "sandals"), ("clothing.upper", "a")), Set(3, "y", 0.22, ("clothing.footwear", "sandals"), ("clothing.upper", "a")) };
+        presets.SimilarScript["clothing.head"] = new[] { Set(2, "x", 0.10, ("clothing.head", "cap"), ("clothing.upper", "a")), Set(4, "z", 0.15, ("clothing.head", "cap"), ("clothing.upper", "a")) };
+        var d = Assert.Single((await svc.BuildAsync(s, Ask("clothing"), 1, default))!.Dimensions);
+        Assert.True(d.Similar);
+        Assert.Equal(new long[] { 2, 4, 3 }, d.Sets.Select(x => x.PresetId));                    // 2 取兩邊較小的 0.10
+        Assert.Equal(0.10, d.Sets[0].Dist);
+        Assert.Equal(new[] { "beret", "slippers" }, d.AnchorTags);                               // 兩個 facet 都有進前 3；順序照 yaml（head 在 footwear 前）
+    }
+
+    [Fact]
+    public async Task Facet_whose_tags_normalize_to_nothing_is_not_embedded_as_an_anchor()
+    {
+        // Review Focus 4
+        var (svc, s, embed, presets) = Make(("clothing.footwear", "( :1.2)"));
+        presets.FacetPools["clothing.footwear"] = 338;
+        presets.Script[("clothing.head", false)] = new[] { Set(8, "a", ("clothing.upper", "x"), ("clothing.lower", "y")) };
+        await svc.BuildAsync(s, Ask("clothing"), 1, default);
+        Assert.Equal(new[] { "一個少女穿涼鞋" }, embed.Texts);
+        Assert.Empty(presets.SimilarCalls);
+        Assert.Null(RecommendationService.SimilarAnchorText(s, "clothing.footwear"));
+        Assert.Null(RecommendationService.SimilarAnchorText(s, "clothing.head"));                 // 沒有 FacetTags
+    }
+
+    [Fact]
+    public void Similar_anchor_text_normalizes_dedups_and_joins_the_facet_tags()
+    {
+        var s = new Session("s"); s.ApplyProfile("portrait", Catalog);
+        s.ApplyFacetStates(new Dictionary<string, FacetState> { ["clothing.footwear"] = FacetState.Covered }, Catalog,
+            new Dictionary<string, string> { ["clothing.footwear"] = "(Slippers:1.2), flip_flops, slippers" });
+        Assert.Equal("slippers, flip flops", RecommendationService.SimilarAnchorText(s, "clothing.footwear"));
     }
 }

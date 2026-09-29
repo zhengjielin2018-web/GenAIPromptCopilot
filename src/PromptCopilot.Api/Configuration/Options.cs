@@ -37,6 +37,9 @@ public sealed class OrchestratorOptions
     public int RecommendationTake { get; set; } = 3;
     /// <summary>推薦自己的逾時：它在 final 宣告之後才跑，不能掛在整輪的 token 上（那會走回滾）。</summary>
     public int RecommendationTimeoutSeconds { get; set; } = 20;
+    /// <summary>推薦的近似錨（facet 向量設計 §6.4）：字面錨不到 2 筆時，facet 向量距離在這個門檻內的才算「接近你講的」。
+    /// 實驗（英文比英文）正解距離中位數 0.19、非正解 0.27。</summary>
+    public double RecommendationSimilarMaxDist { get; set; } = 0.23;
 }
 
 public sealed class SafetyOptions
