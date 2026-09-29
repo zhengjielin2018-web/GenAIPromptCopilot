@@ -173,12 +173,12 @@ export interface RetrievalSummary {
   searches: number                                   // 完成的 SearchPresets 次數
   pools: { dimension: string; label: string; poolSize: number }[]   // 每個維度最近一次查詢的候選池（facet 項目歸到所屬維度，取該維度最後一個 item；標籤與數字都來自那個 item）
   seen: number                                       // 命中過的不同 preset 數
-  borrowed: number                                   // 最新一次定稿裡 rag 來源引用的不同 preset 數
+  borrowed: number                                   // 最新一次定稿裡 rag 來源（正負向）借用的不同 preset 數，每個 tag 只算 presetIds[0]
 }
 export function retrievalSummary(transcript: Entry[]): RetrievalSummary
 ```
 
-畫面三個數字一列（查詢次數、看過幾筆、借用幾筆），`pools` 用維度標籤加數字的小 chip。
+畫面三個數字一列（查詢次數、看過幾筆、借用幾筆），`pools` 用維度標籤加數字的小 chip。`borrowed` 跟 4.6 的 `byPreset` 同一個歸屬（2026-09-29 改：原本算 rag tag 的全部 `presetIds`，驗收 R2 儀表板「借用 9 筆」、定稿卡只列 5 筆，讀的人對不起來）。
 
 ### 4.8 相容性
 

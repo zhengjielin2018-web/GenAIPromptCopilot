@@ -85,6 +85,20 @@ describe('retrievalSummary', () => {
     })
   })
 
+  it('counts only presetIds[0] of rag sources as borrowed, the same attribution as the final card', () => {
+    const positiveSources: TagSource[] = [
+      { tag: 'sandals', origin: 'rag', presetIds: [2, 5, 6, 7] },   // 後面是字尾相符的同名片段，不算借用
+      { tag: 'neon lights', origin: 'rag', presetIds: [3, 2] },
+      { tag: 'shirt', origin: 'adopted', presetIds: [9] },
+    ]
+    const negativeSources: TagSource[] = [{ tag: 'blurry', origin: 'rag', presetIds: [3, 8] }]
+    const t: Entry[] = [{ kind: 'final', turnIndex: 1, data: { kind: 'finalized', positive: 'p', negative: 'n', tips: '', intentSummary: '',
+      positiveSources, negativeSources } }]
+    expect(retrievalSummary(t).borrowed).toBe(2)
+    // 與定稿卡「檢索貢獻」的 rag 列數一致
+    expect(contributions(positiveSources, negativeSources).byPreset.filter(g => g.origin === 'rag')).toHaveLength(2)
+  })
+
   it('skips items with error when collecting pools', () => {
     const t: Entry[] = [tool('c1', { items: [{ ...item('style', '風格', 0, []), error: 'x' }] })]
     expect(retrievalSummary(t).pools).toEqual([])

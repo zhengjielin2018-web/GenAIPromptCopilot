@@ -34,7 +34,8 @@ export interface RetrievalSummary {
   pools: { dimension: string; label: string; poolSize: number }[]
   /** 命中過的不同 preset 數 */
   seen: number
-  /** 最新一次定稿裡 rag 來源（正負向）引用的不同 preset 數 */
+  /** 最新一次定稿裡 rag 來源（正負向）借用的不同 preset 數。與定稿卡「檢索貢獻」同一個歸屬：每個 tag 只算 presetIds[0]，
+   *  後面字尾相符的同名片段不算（2026-09-29 驗收：全算時儀表板的數字比定稿卡列的多） */
   borrowed: number
 }
 
@@ -61,7 +62,7 @@ export function retrievalSummary(transcript: Entry[]): RetrievalSummary {
   const borrowed = new Set<number>()
   if (latestFinal && latestFinal.data.kind === 'finalized') {
     for (const s of [...(latestFinal.data.positiveSources ?? []), ...(latestFinal.data.negativeSources ?? [])])
-      if (s.origin === 'rag') s.presetIds.forEach(id => borrowed.add(id))
+      if (s.origin === 'rag' && s.presetIds.length > 0) borrowed.add(s.presetIds[0])
   }
   return { searches, pools: [...pools.values()], seen: seen.size, borrowed: borrowed.size }
 }
