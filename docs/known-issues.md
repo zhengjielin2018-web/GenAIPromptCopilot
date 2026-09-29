@@ -76,6 +76,7 @@
 ## 10. 整套組合推薦的已知限制（2026-09-25）
 
 （原本也編成 9，跟文末已修正的 #9 撞號，2026-09-25 改為 10。）
+（2026-09-29：「照它的」取代 covered facet 時舊 tag 沒被拿掉的那一條已修正，移到文末「已修正」的 #10。）
 
 - **錨靠模型翻譯**：追問階段的錨是模型在 `SetFacetStates` 給的英文 `tags`，翻錯或沒給就退回無錨（「最接近你描述的組合」），不報錯。定稿後多了 positive 的 tag 當錨，會好一些。
 - **同義詞抓不到**：錨比對是整段相等或空白為界的字尾（`platform sandals` ↔ `sandals`），`slippers` 對 `sandals` 不會命中。後續的 facet 向量案（子表 `preset_facet_embeddings`）用「該 facet 向量最近的」補這個缺口，排在本案之後。
@@ -83,7 +84,6 @@
 - **錨的 SQL 比對只做小寫與底線換空白**：`RecommendAsync` 對資料庫的 tag 只做 `replace(lower(tag), '_', ' ')`，沒有 `TagAttribution.Normalize` 剝 `:數字` 權重、外層括號、連續空白那幾步，比 C# 端的比對粗。`facet_tags` 保留原始 SD 語法（如 `(sandals:1.2)`）時有兩個後果：一是錨會漏配，漏到不足 2 筆就退回無錨，卡片照樣有推薦，所以不容易被發現；二是被別的錨撈進來的候選，回報的 `anchorTags` 由 C# 以完整的 `Normalize` 算，可能多列一個 SQL 沒真正比中的錨。
 - **covered facet 換了內容、模型沒重給 `tags` 時舊錨留著**：`Session.ApplyFacetStates` 只在 `tags` 非空時覆寫、狀態改成非 covered 時才移除。使用者把涼鞋改成靴子，模型維持 covered 卻沒附新的 `tags`，推薦仍以 `sandals` 當錨。
 - **採用在 HTTP 層就失敗時，重試填回的是佔位字**：上一條「重試」指的是 `session` 事件之後才失敗（泡泡已換成伺服器組的整句）。若採用在 HTTP 層就被擋（`400`／`409`，或在 `session` 事件之前斷線），失敗條目的原文還是前端的佔位字「採用〈標題〉…」，按「重試」會把這串佔位字填回輸入框；照送只是一般訊息，而且沒有任何 tag。要重新採用請再按一次卡片上的「採用」。
-- **「照它的」取代 covered facet 時，舊 tag 沒被拿掉**（2026-09-29 瀏覽器驗收 T5 發現）：使用者先講了「紫色短版連帽外套、發光比基尼、透視乳膠材質」，採用 #41745 按「全部照它的」，伺服器正確記 `adoption.replaced=["clothing.upper","clothing.material"]`，但定稿同時留著 `purple cropped hoodie`、`cyberpunk glowing bikini`、`translucent latex material`、`glossy latex` 與這套的 `purple hoodie`、`cropped hoodie`、`glowing bikini`、`see-through`、`latex clothes`，互相重複。system prompt 第 6 條只說「照它的 facet 寫入括號內的 tag」，沒說要拿掉該 facet 原本的 tag。另外 `purple cropped hoodie` 因字尾相符 `cropped hoodie` 被標成 `adopted`，實際上是使用者原本的詞。修正方向：第 6 條明講「取代」要拿掉原本的 tag，或伺服器組句時對 `replaced` 的 facet 列出要移除的舊 tag。
 
 ## 6. 子專案 4 全分支審查留下的小項目
 
@@ -196,3 +196,22 @@ prompt_version 都是 `8c10dcfe1f16`，跟子專案 3 驗收時能正常追問�
 **修正**（分支 `fix/ask-all-missing`，merge commit `b9290e4`；定稿閘門在 `ee3887f`）：system.md 第 1 條改為 `SetProfile` → `SetFacetStates` → `SearchPresets`；同時把追問政策反轉為問滿 missing 維度：該維度底下只要還有任何 facet 是 missing（waived 與有委託 note 的不算）就要問，只講一部分的維度也問剩下的 facet，使用者接受完整描述也可能先被追問（eval #2）。起因是使用者 2026-09-25 實測回饋「描述缺很多面向，但追問很少」，見 #5 的 eval #18。`SetFacetStates` 與 `AskUser` 的工具描述、主規格 §4.2 與 §15、批次設計 §3.4 同步。主規格 §9「grounded 由伺服器算」原則不變，只是讓伺服器有資料可算。
 
 **驗收**：重跑 eval #1、#18、#24，看第一輪 `SearchPresets` 對使用者講過的維度是否 `grounded: true`、追問是否把 missing 維度問滿。
+
+### 10. 「照它的」取代 covered facet 時，舊 tag 沒被拿掉
+
+（原本是 §10 整套組合推薦已知限制的其中一條，修正後移來這裡。）
+
+**現象**（2026-09-29 瀏覽器驗收 T5）：使用者先講了「紫色短版連帽外套、發光比基尼、透視乳膠材質」，採用 #41745 按「全部照它的」，伺服器正確記 `adoption.replaced=["clothing.upper","clothing.material"]`，但定稿同時留著 `purple cropped hoodie`、`cyberpunk glowing bikini`、`translucent latex material`、`glossy latex` 與這套的 `purple hoodie`、`cropped hoodie`、`glowing bikini`、`see-through`、`latex clothes`，互相重複。另外 `purple cropped hoodie` 被標成 `adopted`，實際上是使用者原本的詞。
+
+**根因**：system prompt 第 6 條只說「照它的 facet 寫入括號內的 tag」，沒說要拿掉該 facet 原本的 tag，模型就把新 tag 加在舊的旁邊。`adopted` 的比對沿用 rag 的字尾規則，`purple cropped hoodie` 以空白為界結尾是 `cropped hoodie`，所以算成採用帶進來的。
+
+**修正**（分支 `fix/adopt-replace`，commit `8bbc964`、`6a10255`）：
+
+- 伺服器組句時，換掉的 facet（`replaced`）若 `session.FacetTags` 有模型先前給的英文 tag，括號裡接「，取代原本的 …」點名要拿掉的舊 tag（`AdoptionComposer`）。
+- system.md 第 6 條改成「照它的」是**取代**：定稿時該 facet 只留括號內的 tag，原本的 tag 全部拿掉——從使用者先前描述翻的、上一版定稿裡屬於這個 facet 的、「取代原本的」後面列的都算。
+- `adopted` 只認正規化後整段相等，不再用字尾規則（`TagAttribution.AdoptedBy`）；沒命中的照常走 rag → llm。
+- 設計 `2026-09-25-set-recommendations-design.md` §6.2、§6.4、§6.5 與 `docs/單輪流程說明.md` 同步。
+
+**驗收**：單元測試（`AdoptionComposerTests`、`SystemPromptBuilderTests`、`TagAttributionTests`）；瀏覽器重跑 T5，看定稿裡上半身／材質只剩這套的 tag、`adopted` chip 只標這套的原字。
+
+**備註**：同一輪也把儀表板「借用」改成跟定稿卡「檢索貢獻」同一個歸屬（每個 rag tag 只算 `presetIds[0]`，commit `2d82451`）：驗收 R2 儀表板寫「借用 9 筆」、定稿卡只列 5 筆。
