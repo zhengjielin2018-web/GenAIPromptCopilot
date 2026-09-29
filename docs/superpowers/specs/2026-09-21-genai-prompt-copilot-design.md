@@ -364,6 +364,8 @@ RunTurnAsync(session, input, ct):  // input = TurnInput(text, adoption?, adopted
 2. **call args 也壓**：該輪結束後，`AskUser.asks[].options` 與 `Discuss.options` 壓成 `[{label, presetId}]`，去掉 `tags`。完整內容 ledger 有（§4.4）。
 3. **整體截斷**：保留 system message + 最近 **10 輪**（一輪 = 一則 user message 起到終止型 tool 止），更早的丟掉。`PresetLedger`、`FacetStates`、`LastFinal` 是 session 事實，不靠 history 記住，所以丟掉是安全的。
 
+**Gemini connector 的 tool 結果形狀（2026-09-29，known-issues #8）。** `Connectors.Google` 1.80.1-alpha 不把 tool 結果放成 `FunctionResultContent`：tool 訊息是 `GeminiChatMessageContent`，結果在 `CalledToolResults`（`GeminiFunctionToolResult` 包一個 `FunctionResult`），送出時從這裡序列化成 `functionResponse`；`Items` 只有一個空的 `TextContent`。模型一次發多個呼叫時，全部結果在同一則 tool 訊息裡。所以第 1 條的壓縮對這種訊息是**整則重建**：壓得動的結果換成帶壓縮字串的新 `FunctionResult`（`functionResponse` 的 `name` 取自前一則 model 訊息的 `ToolCalls`），其餘沿用原物件，在同一個位置換掉；單一結果用公開建構子，多個結果用 internal 建構子（反射），不能拆成多則，因為 Gemini 要求回覆的 part 數與 call 數相同。重建失敗就不壓這則。改放 `FunctionResultContent` 不可行，connector 序列化時會丟 `NotSupportedException`。第 2 條改的是 `Items` 裡的 `FunctionCallContent`，connector 送出時讀的是 `ToolCalls`，目前對 Gemini 不生效（known-issues #11）。
+
 ### 4.8 Provider 抽象
 
 兩條獨立的軸：

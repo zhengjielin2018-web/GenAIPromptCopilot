@@ -7,9 +7,9 @@
 | :--- | :--- | :--- | :--- |
 | 3 | 純文字補救的重試請求被 Gemini 回 400 | bug | 中 |
 | 4 | 無害描述被上游 SAFETY 連續誤擋 | 行為 | 中 |
-| 8 | `HistoryTrimmer` 對 Gemini 的工具結果從未生效 | 可觀測性／成本 | 中 |
 | 5 | eval #5、#18 行為不符預期；§14 端到端要在新 HEAD 重跑 | 調整 | 低 |
 | 10 | 整套組合推薦的已知限制：錨靠模型翻譯、同義詞抓不到、SQL 的錨比對比 C# 粗、換了內容沒重給 `tags` 時舊錨留著；採用輪失敗後重試是純文字，HTTP 層就失敗時填回的是佔位字 | 限制 | 低 |
+| 11 | `AskUser`／`Discuss` 的 call args 壓縮對 Gemini 不生效 | 成本 | 低 |
 | 6 | 子專案 4 全分支審查留下的小項目 | 整理 | 低 |
 
 ---
@@ -40,12 +40,6 @@
 
 **#7 的實測結果**（2026-09-29）：「中年阿姨在廚房夾菜，穿著圍裙」連送三次都是**輸入被拒**（`promptFeedback.blockReason = PROHIBITED_CONTENT`），`safetyRatings` 是空的；同一輪先跑的輸入分類器呼叫（同一個模型、同一句話）是 `STOP` 放行，被拒的是帶 system prompt 與工具定義的主迴圈第一次呼叫。`PROHIBITED_CONTENT` 不屬於 `safetySettings` 可調門檻的四個 harm 類別（那些會附 `safetyRatings`），所以「調 `safetySettings` 門檻」這條路走不通。上面「女性＋只穿圍裙＋廚房」的假設仍未證實也未排除；觸發點看起來是「生圖提示詞的語境＋這句話」的組合，而不是這句話本身。
 
-## 8. `HistoryTrimmer` 對 Gemini 的工具結果從未生效（可觀測性／成本，中）
-
-- 現象：Google connector 把工具結果放在 `GeminiChatMessageContent.CalledToolResult`，tool 訊息的 `Items` 只有一個空的 `TextContent`，所以 `HistoryTrimmer.CompressTurn` 的 `Items.OfType<FunctionResultContent>()` 找不到東西，多輪 §6.3 的壓縮實際上一次都沒跑；下一輪請求仍帶完整片段本文。Reviewer 用 connector 真實產生的 history 實測確認（2026-09-24）。
-- 影響：只在合成測試裡有效；正式路徑沒有壓縮，token 成本比設計高。舊形狀的 history 不受影響（session 只在記憶體，重啟即清）。
-- 修正方向：把 tool 訊息正規化成 `FunctionResultContent`（或直接重建訊息），並用 connector 產生的 history 寫測試。
-
 ## 5. 效果調整（非 bug）
 
 - **eval #5**「一個女生，其他隨便」：仍追問風格，沒有直接定稿。
@@ -65,6 +59,12 @@
 - **錨的 SQL 比對只做小寫與底線換空白**：`RecommendAsync` 對資料庫的 tag 只做 `replace(lower(tag), '_', ' ')`，沒有 `TagAttribution.Normalize` 剝 `:數字` 權重、外層括號、連續空白那幾步，比 C# 端的比對粗。`facet_tags` 保留原始 SD 語法（如 `(sandals:1.2)`）時有兩個後果：一是錨會漏配，漏到不足 2 筆就退回無錨，卡片照樣有推薦，所以不容易被發現；二是被別的錨撈進來的候選，回報的 `anchorTags` 由 C# 以完整的 `Normalize` 算，可能多列一個 SQL 沒真正比中的錨。
 - **covered facet 換了內容、模型沒重給 `tags` 時舊錨留著**：`Session.ApplyFacetStates` 只在 `tags` 非空時覆寫、狀態改成非 covered 時才移除。使用者把涼鞋改成靴子，模型維持 covered 卻沒附新的 `tags`，推薦仍以 `sandals` 當錨。
 - **採用在 HTTP 層就失敗時，重試填回的是佔位字**：上一條「重試」指的是 `session` 事件之後才失敗（泡泡已換成伺服器組的整句）。若採用在 HTTP 層就被擋（`400`／`409`，或在 `session` 事件之前斷線），失敗條目的原文還是前端的佔位字「採用〈標題〉…」，按「重試」會把這串佔位字填回輸入框；照送只是一般訊息，而且沒有任何 tag。要重新採用請再按一次卡片上的「採用」。
+
+## 11. `AskUser`／`Discuss` 的 call args 壓縮對 Gemini 不生效（成本，低）
+
+- 現象（2026-09-29，修 #8 時用真的 connector 查到）：`HistoryTrimmer.CompressTurn` 第二條（call args 去掉 `tags`，主規格 §4.7）改的是 model 訊息 `Items` 裡的 `FunctionCallContent.Arguments`，但 Google connector 送出時讀的是 `GeminiChatMessageContent.ToolCalls`（`GeminiFunctionToolCall.Arguments`），兩份不是同一個物件。實測改了 `FunctionCallContent.Arguments` 後，下一次請求的 `functionCall.args` 原封不動。
+- 影響：選項的 `tags` 每輪留在 history 裡，量比 #8 的片段本文小很多。
+- 修正方向：跟 #8 一樣重建 model 訊息，但 `GeminiFunctionToolCall` 與帶 tool call 的 `GeminiChatMessageContent` 建構子都是 internal，而且要保住 `thoughtSignature`（Gemini 3 要求帶回）。可以考慮直接改請求本文（像 `GeminiRoleFixHandler` 那樣在 HTTP 層處理）。
 
 ## 6. 子專案 4 全分支審查留下的小項目
 
@@ -231,3 +231,23 @@ prompt_version 都是 `8c10dcfe1f16`，跟子專案 3 驗收時能正常追問�
 2026-09-29 實測（`fix/adopt-replace` 建的 compose，前端操作）：不用 T5 的內容（開著審查會被 `Blocked_Output`），改用「一個少女穿紫色連帽外套和牛仔短褲、白色運動鞋」→ 定稿 `purple hoodie`、`denim shorts`、`white sneakers` → 採用 #41618「率性秋季日常裝」全部照它的。組句是「上半身照它的（crop top, white shirt, brown overcoat, open coat, long sleeves，取代原本的 purple hoodie）、下半身照它的（denim shorts, blue shorts，取代原本的 denim shorts）…；鞋履、配件飾品保留我的」；新定稿沒有 `purple hoodie`，上半身、下半身、頭部配件、材質只剩這套的 9 個 tag（全是 adopted），留我的 `white sneakers` 仍是 rag。儀表板「借用 3 筆」與定稿卡「檢索貢獻」的 3 列一致。小瑕疵：新舊 tag 相同時仍會寫「取代原本的 denim shorts」。
 
 **備註**：同一輪也把儀表板「借用」改成跟定稿卡「檢索貢獻」同一個歸屬（每個 rag tag 只算 `presetIds[0]`，commit `2d82451`）：驗收 R2 儀表板寫「借用 9 筆」、定稿卡只列 5 筆。
+
+### 8. `HistoryTrimmer` 對 Gemini 的工具結果從未生效
+
+**現象**（2026-09-24，reviewer 用 connector 真實產生的 history 確認）：Google connector 把工具結果放在 `GeminiChatMessageContent.CalledToolResult(s)`，tool 訊息的 `Items` 只有一個空的 `TextContent`，所以 `HistoryTrimmer.CompressTurn` 的 `Items.OfType<FunctionResultContent>()` 找不到東西，主規格 §4.7 的 tool result 壓縮實際上一次都沒跑；下一輪請求仍帶完整片段本文（`positive`／`negative`），token 成本比設計高。原本的單元測試手工組 `FunctionResultContent`，不是 connector 實際存的形狀，所以一直是綠的。
+
+**查證**（真的 `GoogleAIGeminiChatCompletionService`，HTTP 用假 handler）：
+
+- connector 1.80.1-alpha 的 tool 訊息是 `GeminiChatMessageContent`，結果在 `CalledToolResults`（`GeminiFunctionToolResult` 包一個 `FunctionResult`），送出時序列化成 `functionResponse`，`name` 是 `Knowledge_SearchPresets`。模型一次發多個呼叫時，全部結果在**同一則** tool 訊息裡。
+- 原本列的方向「正規化成 `FunctionResultContent`」走不通：connector 序列化時直接丟 `NotSupportedException: Unsupported content type. FunctionResultContent is not supported by Gemini.`。
+- `GeminiFunctionToolResult`、`FunctionResult` 都沒有公開的 setter，只能整則重建。
+
+**修正**（分支 `fix/history-trimmer-gemini`）：採「重建 Gemini 訊息」。
+
+- `CompressTurn` 碰到帶 `CalledToolResults` 的 `GeminiChatMessageContent`，逐一用原本的 `CompressResult` 規則壓；壓得動的換成 `new GeminiFunctionToolResult(call, new FunctionResult(原結果, 壓縮字串))`，其餘沿用原物件，再在同一個 index 換掉整則訊息。`call` 從前一則 model 訊息公開的 `ToolCalls` 按名稱找回來（結果只從它取 `FullyQualifiedName`）。
+- 單一結果用公開的建構子，補回 `ModelId`、`Metadata`；多個結果的建構子是 internal，用反射呼叫（不能拆成多則：Gemini 要求 functionResponse 的 part 數跟 call 數一樣）。找不到建構子或重建出錯就不壓這則，不丟例外。
+- 原本的 `FunctionResultContent` 路徑保留。
+- 主規格 §4.7 同步。
+- 同一次查到 call args 壓縮（§4.7 第二條）也有同類問題，另列 #11。
+
+**驗收**：`HistoryTrimmerGeminiTests` 用真的 connector 跑一輪 auto-invoke，壓縮後再送下一輪，檢查那次請求的 `functionResponse`：role 是 `user`、`name` 是 `Knowledge_SearchPresets`、內容只剩 `{dimension, facetId, poolSize, hits: [{id, title}]}` 與錯誤項目，本文裡沒有片段文字，`functionCall` 的 `thoughtSignature` 還在；平行呼叫（`SearchPresets` + `SetProfile`）時仍是同一則、兩個 part，只有 `SearchPresets` 被壓。另一條測試釘住 connector 的形狀（`CalledToolResults`、`Items` 沒有 `FunctionResultContent`），connector 換版時會先紅。**實測待做**：用這個分支建的 api 跑兩輪以上，看第二輪送出的 `functionResponse` 已是壓縮形狀。
