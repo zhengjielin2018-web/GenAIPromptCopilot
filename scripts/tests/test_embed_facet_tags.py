@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 
 from embed_facet_tags import DELETE_SQL, UPSERT_SQL, Plan, make_plan, run
 
@@ -192,3 +193,58 @@ def test_limit_caps_the_number_of_items_embedded_this_run():
 def test_upsert_sql_updates_tag_key_and_embedding_on_conflict():
     assert "ON CONFLICT (preset_id, facet_id) DO UPDATE" in UPSERT_SQL
     assert "tag_key = EXCLUDED.tag_key" in UPSERT_SQL and "embedding = EXCLUDED.embedding" in UPSERT_SQL
+
+
+class RaisingOnFirstUpsertConn(FakeConn):
+    """第一次寫 UPSERT_SQL 就丟例外，模擬主執行緒寫入炸掉（review：不該把佇列裡的批次打光才報錯）。"""
+
+    def cursor(self):
+        conn = self
+
+        class Cur:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def execute(self, sql, params):
+                if sql == UPSERT_SQL:
+                    raise RuntimeError("db exploded")
+                conn.writes.append((sql, params))
+                conn.write_threads.add(threading.get_ident())
+
+            def executemany(self, sql, seq):
+                for params in seq:
+                    self.execute(sql, params)
+
+        return Cur()
+
+
+class SlowCountingClient:
+    """每次呼叫都睡一下再回傳、計數呼叫次數：讓還沒開始的批次留在池的佇列裡，可以驗證有沒有被取消。"""
+
+    def __init__(self, delay: float = 0.02):
+        self.delay = delay
+        self.calls = 0
+        self._lock = threading.Lock()
+
+    def embed_batch(self, texts, *, task_type):
+        time.sleep(self.delay)
+        with self._lock:
+            self.calls += 1
+        return [[float(len(t))] + [0.0] * 767 for t in texts]
+
+
+def test_db_write_failure_cancels_queued_batches_instead_of_draining_the_pool():
+    # 主執行緒寫入炸掉時，`with ThreadPoolExecutor(...)` 離開前不該把佇列裡剩下的批次都打完 Gemini
+    # 才讓例外冒出來——那樣一整輪（例如 1,150 批）在真正失敗前還會多打上千次請求。
+    presets = [(i, {"style.genre": [f"tag{i}"]}) for i in range(20)]   # 20 個單筆批次
+    conn = RaisingOnFirstUpsertConn(presets, [])
+    client = SlowCountingClient(delay=0.02)
+    try:
+        run(conn, client, workers=2, batch_size=1, log=lambda *_: None)
+        raise AssertionError("expected RuntimeError to propagate")
+    except RuntimeError as e:
+        assert str(e) == "db exploded"
+    assert client.calls < 10          # 遠少於 20 批：佇列裡沒送出的批次被取消了，不是全部打完才炸

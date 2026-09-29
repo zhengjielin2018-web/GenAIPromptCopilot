@@ -116,27 +116,36 @@ def run(conn, client, *, workers: int = WORKERS, batch_size: int = BATCH_SIZE, l
     # 送出在執行緒池、寫入在主執行緒：as_completed 誰先回來誰先寫，每批一個交易。
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
         futures = {pool.submit(embed, b): b for b in batches}
-        for fut in as_completed(futures):
-            batch = futures[fut]
-            try:
-                items, vectors = fut.result()
-            except Exception as e:  # noqa: BLE001 - 一批失敗不該拖垮其他批；記下來結尾回報
-                stats["failed_batches"].append([(it[0], it[1]) for it in batch])
-                log(f"  批次失敗（{len(batch)} 筆）：{type(e).__name__} {e}")
-                continue
-            # 這裡的資料庫錯誤（連線斷掉等）不攔截、直接往外炸掉整個 run：那不是「這一批」的問題，
-            # 硬要當成失敗批記下來、continue 下一批，只會在同一條斷掉的連線上再炸一次。已經 commit
-            # 的批次不會因此消失，重跑照常只補沒寫進去的。
-            with conn.cursor() as cur:
-                for (pid, fid, key, _), vec in zip(items, vectors, strict=True):
-                    cur.execute(UPSERT_SQL, (pid, fid, key, Vector(vec)))
-                    if (pid, fid) in plan.replacing:
-                        stats["updated"] += 1
-                    else:
-                        stats["inserted"] += 1
-            conn.commit()
-            stats["upserted"] += len(items)
-            log(f"embed_facet_tags: {stats['upserted']}/{len(todo)} 已寫入")
+        try:
+            for fut in as_completed(futures):
+                batch = futures[fut]
+                try:
+                    items, vectors = fut.result()
+                except Exception as e:  # noqa: BLE001 - 一批失敗不該拖垮其他批；記下來結尾回報
+                    stats["failed_batches"].append([(it[0], it[1]) for it in batch])
+                    log(f"  批次失敗（{len(batch)} 筆）：{type(e).__name__} {e}")
+                    continue
+                # 這裡的資料庫錯誤（連線斷掉等）不攔截、直接往外炸掉整個 run：那不是「這一批」的問題，
+                # 硬要當成失敗批記下來、continue 下一批，只會在同一條斷掉的連線上再炸一次。已經 commit
+                # 的批次不會因此消失，重跑照常只補沒寫進去的。
+                with conn.cursor() as cur:
+                    for (pid, fid, key, _), vec in zip(items, vectors, strict=True):
+                        cur.execute(UPSERT_SQL, (pid, fid, key, Vector(vec)))
+                        if (pid, fid) in plan.replacing:
+                            stats["updated"] += 1
+                        else:
+                            stats["inserted"] += 1
+                conn.commit()
+                stats["upserted"] += len(items)
+                log(f"embed_facet_tags: {stats['upserted']}/{len(todo)} 已寫入")
+        except BaseException:
+            # 寫入炸掉、或使用者按 Ctrl-C：此時池裡可能還排著幾百批還沒送出。預設的
+            # `with ThreadPoolExecutor(...)` 離開時只會 shutdown(wait=True)，不會取消還沒開始跑
+            # 的 future，結果是例外要等所有排隊中的批次都打完 Gemini（可能上千次請求）才會冒出來。
+            # 這裡主動 cancel_futures，讓還沒開始執行的批次直接取消；已經在跑的那幾批（數量最多等於
+            # workers）跑完即可，已經 commit 的批次不受影響，重跑照常只補沒寫進去的。
+            pool.shutdown(wait=False, cancel_futures=True)
+            raise
     stats["elapsed_s"] = time.monotonic() - started
     return stats
 
