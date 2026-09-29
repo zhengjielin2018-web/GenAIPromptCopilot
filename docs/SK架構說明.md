@@ -99,7 +99,7 @@ sequenceDiagram
     end
     Note over K: 終止型工具成功 → TerminalToolFilter 設 Terminate，迴圈停
     C-->>O: 回來
-    O->>O: 沒有終止型工具？補一則提示再呼叫一次（Protocol_Violation）
+    O->>O: 沒有終止型工具？拿掉這次的純文字、帶一則暫時提示再呼叫一次（Protocol_Violation）
     O->>O: 標 tag 來源、推薦、HistoryTrimmer 壓縮與截斷、寫 audit
     O-->>E: final／blocked／error 事件
 ```
@@ -148,18 +148,20 @@ new GoogleAIGeminiChatCompletionService(model, apiKey, GoogleAIVersion.V1_Beta, 
 | 工具結果放在 `GeminiChatMessageContent.CalledToolResults`，`Items` 只有一個空的 `TextContent`；放通用的 `FunctionResultContent` 會丟 `NotSupportedException` | — | `HistoryTrimmer.CompressTurn` 對 Gemini 訊息整則重建（known-issues #8） | `HistoryTrimmerGeminiTests` 釘住這個形狀 | connector 改用通用的 `FunctionResultContent` |
 | 多個工具結果的 `GeminiChatMessageContent` 建構子是 internal | Gemini 要求一則回應裡的 `functionResponse` 數與呼叫數一致，不能拆開 | `HistoryTrimmer` 用反射呼叫；找不到就不壓縮，不會失敗 | `HistoryTrimmerGeminiTests` 的平行呼叫案例 | 建構子公開，或上一條解決 |
 | 模型發出的工具呼叫送回時讀 `ToolCalls`，改 `FunctionCallContent.Arguments` 沒有作用 | — | 尚未處理：`AskUser`／`Discuss` 選項的 tag 剝除在 Gemini 上沒生效（known-issues #11） | — | — |
+| `ChatHistory` 裡**任何位置**的 system 訊息都被併進 `systemInstruction.parts`，不留在 `contents`；只要還在 history，之後每一輪都會送 | — | orchestrator 的暫時提示（純文字補救、強制定稿）由 `CallWithReminderAsync` 帶，呼叫完就從 history 拿掉同一則。不改成 user 訊息：`HistoryTrimmer.Truncate` 以 user 訊息數輪次（known-issues #3） | `AgenticOrchestratorGeminiTests` 釘住這個形狀 | 不是補丁、不用拿掉；connector 改成保留 system 的位置時，重看補救與強制定稿 |
 
-另外兩條屬於 Gemini 本身的行為，connector 換版也不會變：
+另外三條屬於 Gemini 本身的行為，connector 換版也不會變：
 
 - `promptFeedback.blockReason = PROHIBITED_CONTENT` 不屬於 `safetySettings` 可調門檻的類別，調門檻擋不掉（known-issues #4 的實測）。
 - Gemini 3 系列要求工具呼叫帶回 `thoughtSignature`；handler 與 `HistoryTrimmer` 都原封不動保留它。
+- `contents` 以 model 結尾的請求回 `400 INVALID_ARGUMENT`「Requests ending with a model turn are not supported.」，有沒有帶 tools 都一樣（2026-09-29 實打 `gemini-3.5-flash-lite`）。加上表格最後一列，history 以純文字的 model 訊息結尾時補一則 system 提示，送出去仍以 model 結尾——這就是 known-issues #3。orchestrator 補救前先把那則純文字拿出 history。
 
 ---
 
 ## 6. 升級 SK 或 connector 時的檢查清單
 
 1. 看 release notes 有沒有提到 Gemini 的 role、`FunctionResultContent`、`GeminiChatMessageContent`、例外訊息格式。
-2. `dotnet test src/PromptCopilot.sln`：`GeminiRoleFixHandlerTests`、`GeminiDiagnosticsHandlerTests`、`HistoryTrimmerGeminiTests` 是專門盯 connector 行為的，紅了就回第 5 節那張表逐條確認。
+2. `dotnet test src/PromptCopilot.sln`：`GeminiRoleFixHandlerTests`、`GeminiDiagnosticsHandlerTests`、`HistoryTrimmerGeminiTests`、`AgenticOrchestratorGeminiTests` 是專門盯 connector 行為的，紅了就回第 5 節那張表逐條確認。
 3. `LlmFailureClassifier.ContentBlockMarkers` 靠 connector 的例外字樣判斷「被擋」，例外訊息改了要跟著改。
 4. 起 compose 跑一段 3 輪以上的對話（有 `SearchPresets`、有定稿），看 `docker compose logs api` 的 `Gemini 200` 與 `Turn …` 行，確認沒有 400。
 5. 某個補丁不再需要時，把它的程式、DI 註冊、測試與這份文件的那一列一起拿掉。
@@ -170,4 +172,4 @@ new GoogleAIGeminiChatCompletionService(model, apiKey, GoogleAIVersion.V1_Beta, 
 
 - [主規格](superpowers/specs/2026-09-21-genai-prompt-copilot-design.md)：§4.2 Plugins 與 Tools、§4.3 工具清單組裝、§4.5 Filters、§4.6 失敗模式與重試、§4.7 Chat history 修剪、§4.8 Provider 與 connector 選擇
 - [多輪對話設計](superpowers/specs/2026-09-22-multi-turn-dialogue-design.md)：一輪即交易、auto-invoke 迴圈的邊角
-- [已知問題](known-issues.md)：#4、#7、#8、#11 與 connector 相關
+- [已知問題](known-issues.md)：#3、#4、#7、#8、#11 與 connector 相關

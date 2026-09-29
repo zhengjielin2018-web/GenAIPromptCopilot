@@ -302,12 +302,12 @@ LedgerEntry {
 
 | 情況 | 處理 |
 | :--- | :--- |
-| LLM 回純文字、未呼叫終止 tool | 補一則系統提示重試一次。仍為純文字：若 `Discuss` 本輪可用，包成 `Discuss`（`message` = 原文，`options` 留空，`facetStates` 用 session 現值原樣填回，`DiscussStreak++`）；否則發 `error` 事件。LLM 吐散文時想做的九成是講話，不是追問；包成追問會憑空生出追問氣泡與 chip，還燒掉一次 `AskCount`。`Finalized` 之後 `Discuss` 永遠可用，所以定稿後這條路徑不會掉到 `error` 分支 |
+| LLM 回純文字、未呼叫終止 tool | 補一則系統提示重試一次。重試前先把第一次的純文字拿出 history（Gemini 不收以 model 結尾的請求），提示只給這一次呼叫看、呼叫完就拿掉（known-issues #3）。仍為純文字：若 `Discuss` 本輪可用，包成 `Discuss`（`message` = 原文，`options` 留空，`facetStates` 用 session 現值原樣填回，`DiscussStreak++`）；否則發 `error` 事件。LLM 吐散文時想做的九成是講話，不是追問；包成追問會憑空生出追問氣泡與 chip，還燒掉一次 `AskCount`。`Finalized` 之後 `Discuss` 永遠可用，所以定稿後這條路徑不會掉到 `error` 分支 |
 | `Profile` 為 null 時呼叫 `AskUser` / `FinalizePrompt` | `TerminalToolFilter` 不終止，改回傳結構化錯誤「請先呼叫 SetProfile」給 LLM，讓它補呼叫後再繼續；計入 tool 預算。`Discuss` 不受此限（§4.3） |
 | `Finalized` 下 `Discuss` 帶了與 session 現值不同的 `facetStates` | 不終止，回結構化錯誤「facet 狀態有變更，請改用 `FinalizePrompt`」；計入 tool 預算（§4.5） |
 | `AskUser.asks` 經 §4.2 清洗後為空 | 不終止，回結構化錯誤要 LLM 重呼叫；計入 tool 預算 |
 | `FinalizePrompt` 時 `AskUser` 仍在清單上，且套用這次的 `facetStates` 後仍有 `missing`、又沒有委託 note 的 facet（定稿閘門） | 不終止、不定稿，回結構化錯誤要求先 `AskUser`（一次最多 3 個維度），列出缺的 facet id；計入 tool 預算。預算耗盡後的強制定稿（下一列）不受此限（`TurnContext.ForcedFinalize`）。`FinalizePrompt` 永遠在清單上，拿不掉，所以在呼叫時擋 |
-| Tool 預算耗盡 | `Terminate` 後再跑一次強制定稿：只掛 `FinalizePrompt`，附「請立即以現有資訊定稿」提示 |
+| Tool 預算耗盡 | `Terminate` 後再跑一次強制定稿：只掛 `FinalizePrompt`，附「請立即以現有資訊定稿」提示；提示同樣呼叫完就從 history 拿掉 |
 | LLM 呼叫失敗（傳輸／空回應／內容攔截） | 依下方三層規則內部重試；重試耗盡才算本輪失敗 |
 | 單輪逾時（預設 120s） | `CancellationToken` 取消；退避等待吃同一個 token，不會出現「逾時了還在退避」 |
 | **任何失敗**（逾時、取消、例外、上游攔截、輸出側攔截） | **session 回滾至本輪開始前**，發 `error` 或 `blocked` 事件 |

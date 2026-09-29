@@ -5,7 +5,6 @@
 
 | # | 問題 | 類型 | 優先 |
 | :--- | :--- | :--- | :--- |
-| 3 | 純文字補救的重試請求被 Gemini 回 400 | bug | 中 |
 | 4 | 無害描述被上游 SAFETY 連續誤擋 | 行為 | 中 |
 | 5 | eval #5、#18 行為不符預期；§14 端到端要在新 HEAD 重跑 | 調整 | 低 |
 | 10 | 整套組合推薦的已知限制：錨靠模型翻譯、同義詞抓不到、SQL 的錨比對比 C# 粗、換了內容沒重給 `tags` 時舊錨留著；採用輪失敗後重試是純文字，HTTP 層就失敗時填回的是佔位字 | 限制 | 低 |
@@ -13,16 +12,6 @@
 | 6 | 子專案 4 全分支審查留下的小項目 | 整理 | 低 |
 
 ---
-
-## 3. 純文字補救的重試請求被 Gemini 回 400
-
-**現象**（2026-09-24，子專案 3 瀏覽器走查）：「一個女生」→ audit `Protocol_Violation {"attempt":1}` 後緊接 `Turn_Failed {"stage":"loop","message":"...400 (Bad Request)","errorClass":"HttpOperationException"}`。前端正確回滾並給重試鈕，同一句再送通常會過。
-
-**推測**：補救時送給 Gemini 的 history 形狀不合法，例如多一則 system 訊息或空的 model 訊息。尚未查證。
-
-**修正方向**：先用 fake `IChatCompletionService` 讓第一次回純文字，攔下第二次請求的 `ChatHistory` 檢查形狀；再對照 Gemini 的 role 規則（`GeminiRoleFixHandler` 已處理過一次同類問題）。
-
-**2026-09-29 再現**：瀏覽器實測時又發生一次（session `36063629…`），同樣是 `Protocol_Violation` 後接 `Turn_Failed` 400。當時的 audit 仍只有 connector 的例外訊息；#7 修好後，下一次發生時 Gemini 回的錯誤本文會在 `Turn_Failed` payload 的 `upstream.body`。
 
 ## 4. 無害描述被上游 SAFETY 連續誤擋
 
@@ -253,3 +242,26 @@ prompt_version 都是 `8c10dcfe1f16`，跟子專案 3 驗收時能正常追問�
 **驗收**：`HistoryTrimmerGeminiTests` 用真的 connector 跑一輪 auto-invoke，壓縮後再送下一輪，檢查那次請求的 `functionResponse`：role 是 `user`、`name` 是 `Knowledge_SearchPresets`、內容只剩 `{dimension, facetId, poolSize, hits: [{id, title}]}` 與錯誤項目，本文裡沒有片段文字，`functionCall` 的 `thoughtSignature` 還在；平行呼叫（`SearchPresets` + `SetProfile`）時仍是同一則、兩個 part，只有 `SearchPresets` 被壓。另一條測試釘住 connector 的形狀（`CalledToolResults`、`Items` 沒有 `FunctionResultContent`），connector 換版時會先紅。實測見下一段。
 
 2026-09-29 實測（`fix/history-trimmer-gemini` 建的 api，直接打 SSE）：同一段對話連跑 5 輪（描述 → 回答追問 → 直接給我 → 背景改夕陽海邊 → 鞋子換白色運動鞋），第 1 輪呼叫 `SearchPresets`、之後幾輪的歷史都帶著壓縮過的工具結果；5 輪都 `Turn_Completed`（2 次追問、3 次定稿），`docker compose logs api` 裡 20 次 `Gemini 200`，沒有 400、沒有重試。省了多少 token 看不到：audit 的 `prompt_tokens` 從來沒寫過。
+
+### 3. 純文字補救的重試請求被 Gemini 回 400
+
+**現象**（2026-09-24，子專案 3 瀏覽器走查）：「一個女生」→ audit `Protocol_Violation {"attempt":1}` 後緊接 `Turn_Failed {"stage":"loop","message":"...400 (Bad Request)","errorClass":"HttpOperationException"}`。前端正確回滾並給重試鈕，同一句再送通常會過。2026-09-29 瀏覽器實測又發生一次（session `36063629…`），形狀相同。
+
+**根因**（2026-09-29 查證）：原本推測的「多一則 system 訊息」在線上根本不在 `contents` 裡；問題是 `contents` 以 model 結尾。
+
+- 第一次呼叫以純文字結束（沒有終止型工具）時，`CallAsync` 把那則 assistant 訊息加進 `ChatHistory`，補救再接一則 system 提示。回覆只有空白時不加，所以是間歇性的。
+- Google connector 把 `ChatHistory` 裡**每一則** system 訊息（不管位置）都搬進 `systemInstruction.parts`，不留在 `contents`。用真的 `GoogleAIGeminiChatCompletionService` + `GeminiRoleFixHandler` 接罐頭 handler 擷取重試請求：`systemInstruction.parts` 是 `["SYS-PROMPT","RETRY-SYS"]`，`contents` 以 `{"role":"model","parts":[{"text":"好的，我來幫你整理。","thoughtSignature":"SIG-2"}]}` 結尾。
+- 直接打 Gemini（`gemini-3.5-flash-lite`，v1beta `generateContent`）：`contents` 以 model 結尾，不論有沒有帶 tools，都回 `400 INVALID_ARGUMENT`「Requests ending with a model turn are not supported.」；後面補一則 user 就 200。
+- 同一個機制的第二個問題（從擷取到的請求本文推得，沒有在線上觀察到）：補救提示與強制定稿提示（「tool 呼叫預算已用盡。請立即…呼叫 FinalizePrompt 定稿…」）在這一輪成功後仍留在 history，之後每一輪 connector 都把它們併進 `systemInstruction`，直到 `HistoryTrimmer.Truncate` 剪掉那一輪。也就是說，強制定稿過一次之後，後面好幾輪的模型都還看得到「預算已用盡，請立即定稿」。
+
+**修正**（分支 `fix/retry-ends-with-model`，commit `b850d57`）：
+
+- 重試前把第一次的純文字拿出 history（`CallAsync` 改成回傳它補上的那則），重試請求就以使用者訊息或工具結果結尾。重試有文字 → 照舊包成 `Discuss`；重試連文字都沒有 → 把第一次的放回原位再包，維持「兩次之中有一次有文字就包」；其餘照舊 `ProtocolViolationException`。
+- 補救提示與強制定稿提示改由 `CallWithReminderAsync` 帶：加進 history、呼叫、在 `finally` 裡拿掉同一則（比對參考，不是把 index 0 以外的 system 都刪掉）。system 在線上跟位置無關，拿掉不影響其他訊息。刻意不改成 user 訊息：`Truncate` 以 user 訊息數輪次，多一則會從一輪的中間剪。
+- 主規格 §4.6、`docs/SK架構說明.md` 第 3、5、6 節同步。`docs/單輪流程說明.md` 只描述 Python 的單輪 demo，沒有這段流程，不用改。
+
+**驗收**：
+
+- `AgenticOrchestratorTests`：重試請求（忽略 system）不以 assistant 結尾；先跑工具才回純文字時，重試請求以工具結果結尾；經過補救、經過強制定稿的一輪成功後，history 只剩 index 0 的 system；重試空白時，包裝退回用第一次的文字。
+- `AgenticOrchestratorGeminiTests`：orchestrator 接真的 connector，假 handler 照 Gemini 的規則對以 model 結尾的請求回 400。連兩輪都走補救：重試請求的 `contents` 只有 `user`、補救提示在 `systemInstruction`；下一輪的 `systemInstruction` 只剩 system prompt。修正前第一輪就是 `turn_failed`。另一條釘住 connector 的形狀（history 中間的 system 訊息進 `systemInstruction`、不進 `contents`），connector 換版時會先紅。
+- 還沒在 compose 或瀏覽器上實測：純文字回覆是模型自己決定的，沒辦法指定觸發，要靠之後走查時看 audit 的 `Protocol_Violation` 後面接的是 `Turn_Completed`。
