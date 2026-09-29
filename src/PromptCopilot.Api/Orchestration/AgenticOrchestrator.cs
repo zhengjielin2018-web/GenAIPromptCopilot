@@ -52,7 +52,32 @@ public sealed class AgenticOrchestrator(
         }
     }
 
+    /// <summary>每輪結束時（任何結局）寫一行摘要 log：容器 log 原本看不出一輪發生什麼事（known-issues #7）。</summary>
+    private sealed class TurnTrace
+    {
+        public string Result = "Turn_Failed";
+        public string? Detail;
+        public TurnContext? Turn;
+    }
+
     internal async Task ExecuteAsync(Session session, TurnInput input, ChannelWriter<AgentEvent> writer, CancellationToken ct)
+    {
+        // 這一輪的上游觀察紀錄。要在任何 LLM 呼叫之前放好：輸入分類器（guard）也走同一個 chat client，
+        // 它的呼叫一樣經過 GeminiDiagnosticsHandler、一樣算進這一輪。AsyncLocal 的值只往下流，不會漏回呼叫端。
+        var upstream = new UpstreamDiagnostics();
+        UpstreamDiagnostics.Current = upstream;
+        var turnIndex = session.TurnIndex + 1;
+        var trace = new TurnTrace();
+        var sw = Stopwatch.StartNew();
+        try { await ExecuteTurnAsync(session, input, writer, upstream, trace, ct); }
+        finally
+        {
+            logger.LogInformation("Turn {SessionId}#{TurnIndex} {Result} {Detail} tools={ToolCalls} gemini={GeminiCalls} {ElapsedMs} ms",
+                session.Id, turnIndex, trace.Result, trace.Detail ?? "-", trace.Turn?.ToolCalls ?? 0, upstream.Calls, sw.ElapsedMilliseconds);
+        }
+    }
+
+    private async Task ExecuteTurnAsync(Session session, TurnInput input, ChannelWriter<AgentEvent> writer, UpstreamDiagnostics upstream, TurnTrace trace, CancellationToken ct)
     {
         var text = input.Text;
         var turnIndex = session.TurnIndex + 1;
@@ -73,6 +98,7 @@ public sealed class AgenticOrchestrator(
             var g = await guard.CheckAsync(text, input.SafetyOn, ct);
             if (g.Blocked)
             {
+                trace.Result = g.BlockCode!;
                 writer.TryWrite(new BlockedEvent(g.BlockCode!, g.Message!));
                 await TryAuditAsync(new AuditEntry(session.Id, turnIndex, g.BlockCode!, RawInput: text,
                     PayloadJson: g.BlockDetail is null ? null : JsonSerializer.Serialize(new { term = g.BlockDetail }, Json)));
@@ -87,6 +113,7 @@ public sealed class AgenticOrchestrator(
             var tools = ToolSetBuilder.Build(session, g.WantsAutoComplete, options);
             if (g.WantsAutoComplete) session.AutoFill = true;
             var turn = new TurnContext(session, turnIndex, g, tools, writer, snapshot.FacetStates) { SafetyOn = input.SafetyOn };
+            trace.Turn = turn;
             (var systemPrompt, version) = prompts.Build(session, tools);
             EnsureSystemMessage(session.ChatHistory, systemPrompt);
             session.ChatHistory.AddUserMessage(text);
@@ -141,6 +168,8 @@ public sealed class AgenticOrchestrator(
             writer.TryWrite(dimensions);
             var recommended = await TryRecommendAsync(session, turn.Outcome, turnIndex, version, text);
             if (recommended is not null) writer.TryWrite(recommended);
+            trace.Result = "Turn_Completed";
+            trace.Detail = turn.Outcome.GetType().Name;
 
             // 主規格 §5.1：LLM 挑了哪些 facet 追問、哪些被使用者放掉，要在紀錄裡看得見。
             // 不另開事件（沒有行為掛在上面），寫進這一筆的 payload。
@@ -163,32 +192,43 @@ public sealed class AgenticOrchestrator(
         catch (OutputBlockedException e)
         {
             session.Restore(snapshot);
+            (trace.Result, trace.Detail) = ("Blocked_Output", e.Reason);
             writer.TryWrite(new BlockedEvent("Blocked_Output", $"這一輪的輸出被攔截：{e.Reason}。你可以改寫需求後再送。"));
             await TryAuditAsync(new AuditEntry(session.Id, turnIndex, "Blocked_Output", version, text, Payload(("reason", e.Reason))));
         }
         catch (UpstreamBlockedException e)
         {
             session.Restore(snapshot);
+            // 例外的 reason 是從 connector 的訊息字面猜的（多半只剩 SAFETY）；handler 從回應本文讀到的才可靠
+            var block = upstream.Block;
+            var reason = block?.Reason ?? e.Reason;
+            (trace.Result, trace.Detail) = ("Blocked_Upstream", reason);
             writer.TryWrite(new BlockedEvent("Blocked_Upstream",
-                $"Gemini 判定這次的內容不該生成，已攔截（{e.Reason}）。這不是程式錯誤，也不是知識庫的問題；下一步在你手上——改寫需求或直接再送一次。"));
+                $"Gemini 判定這次的內容不該生成，已攔截（{reason}）。這不是程式錯誤，也不是知識庫的問題；下一步在你手上——改寫需求或直接再送一次。"));
             await TryAuditAsync(new AuditEntry(session.Id, turnIndex, "Blocked_Upstream", version, text,
-                Payload(("reason", e.Reason), ("stage", stage), ("attempts", AttemptsOf(e)))));
+                Payload(("reason", reason), ("stage", stage), ("attempts", AttemptsOf(e)),
+                    ("upstream", block is null ? null : (object)new { kind = block.Kind, reason = block.Reason, safetyRatings = block.SafetyRatings }))));
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
             session.Restore(snapshot);
+            (trace.Result, trace.Detail) = ("Turn_Failed", "ClientDisconnected");
             await TryAuditAsync(new AuditEntry(session.Id, turnIndex, "Turn_Failed", version, text, Payload(("stage", stage), ("errorClass", "ClientDisconnected"))));
             throw;
         }
         catch (OperationCanceledException)
         {
             session.Restore(snapshot);
+            (trace.Result, trace.Detail) = ("Turn_Failed", "Timeout");
             writer.TryWrite(new ErrorEvent("timeout", $"這一輪超過 {options.TurnTimeoutSeconds} 秒沒完成，已取消。可以直接再送一次。"));
-            await TryAuditAsync(new AuditEntry(session.Id, turnIndex, "Turn_Failed", version, text, Payload(("stage", stage), ("errorClass", "Timeout"))));
+            // 打了幾次 Gemini、逾時那一刻是不是還有一次卡著沒回來（pendingMs）：分得出是上游慢還是我們自己卡住
+            await TryAuditAsync(new AuditEntry(session.Id, turnIndex, "Turn_Failed", version, text,
+                Payload(("stage", stage), ("errorClass", "Timeout"), ("upstream", Fields(("calls", upstream.Calls), ("pendingMs", upstream.PendingMs))))));
         }
         catch (ProtocolViolationException e)
         {
             session.Restore(snapshot);
+            (trace.Result, trace.Detail) = ("Turn_Failed", nameof(ProtocolViolationException));
             writer.TryWrite(new ErrorEvent("protocol_violation", "模型這一輪沒有給出可用的回應，已還原。可以直接再送一次。"));
             await TryAuditAsync(new AuditEntry(session.Id, turnIndex, "Turn_Failed", version, text,
                 Payload(("stage", stage), ("errorClass", nameof(ProtocolViolationException)), ("message", e.Message))));
@@ -196,16 +236,23 @@ public sealed class AgenticOrchestrator(
         catch (Exception e)
         {
             session.Restore(snapshot);
+            (trace.Result, trace.Detail) = ("Turn_Failed", e.GetType().Name);
             // 例外訊息可能帶連線字串、路徑、上游原文：留在 audit 就好，不送到使用者眼前
             writer.TryWrite(new ErrorEvent("turn_failed", "這一輪失敗，已還原到送出前的狀態。可以直接再送一次。"));
+            // connector 只留 "400 (Bad Request)"；最近一次 Gemini 回非 2xx 時，把狀態碼與本文一起記下（known-issues #3）
+            var http = upstream.HttpError;
             await TryAuditAsync(new AuditEntry(session.Id, turnIndex, "Turn_Failed", version, text,
-                Payload(("stage", stage), ("errorClass", e.GetType().Name), ("message", e.Message), ("attempts", AttemptsOf(e)))));
+                Payload(("stage", stage), ("errorClass", e.GetType().Name), ("message", e.Message), ("attempts", AttemptsOf(e)),
+                    ("upstream", http is null ? null : (object)new { status = http.Status, body = http.Body }))));
         }
     }
 
     /// <summary>null 的欄位直接不寫進去（主規格 §4.6：attempts 沒有就不要硬塞一個 0）。</summary>
-    private static string Payload(params (string Key, object? Value)[] fields) =>
-        JsonSerializer.Serialize(fields.Where(f => f.Value is not null).ToDictionary(f => f.Key, f => f.Value), Json);
+    private static string Payload(params (string Key, object? Value)[] fields) => JsonSerializer.Serialize(Fields(fields), Json);
+
+    /// <summary>同一個省略 null 的規則，給巢狀的物件用。</summary>
+    private static Dictionary<string, object?> Fields(params (string Key, object? Value)[] fields) =>
+        fields.Where(f => f.Value is not null).ToDictionary(f => f.Key, f => f.Value);
 
     /// <summary>positive 各來源的 tag 數；四者加總等於 positive 的 tag 數（eval #25）。</summary>
     private static object TagOrigins(IReadOnlyList<TagSource>? sources)
