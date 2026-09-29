@@ -4,7 +4,7 @@ namespace PromptCopilot.Api.Sessions;
 
 /// <summary>定稿 tag 的來源。Origin：<c>rag</c>（命中 ledger 裡的片段）｜<c>adopted</c>（採用的組合帶進來的）｜<c>llm</c>（模型自己寫的）｜<c>base</c>（基礎畫質詞／負向詞）。
 /// rag 的 PresetIds 整段相等的命中在前、字尾相符在後，各自依片段寫進 ledger 的先後、不重複，PresetTitle 與 SourceRef 取第一個；
-/// adopted 只帶那一套的 id、標題與出處；llm 與 base 的 PresetIds 空、PresetTitle 與 SourceRef 為 null。</summary>
+/// adopted 只帶那一套的 id、標題與出處（只認整段相等，見 <see cref="Adopted"/>）；llm 與 base 的 PresetIds 空、PresetTitle 與 SourceRef 為 null。</summary>
 public sealed record TagSource(string Tag, string Origin, IReadOnlyList<long> PresetIds, string? PresetTitle, string? SourceRef = null);
 
 /// <summary>定稿時由伺服器比對 ledger 標 tag 來源，不信模型自述（主規格 §9）。純函式、無 I/O。
@@ -18,7 +18,9 @@ public static class TagAttribution
     public const string Rag = "rag";
     public const string Llm = "llm";
     public const string Base = "base";
-    /// <summary>採用組合帶進來的（設計 §6.5）：優先序 base → adopted → rag → llm。只看 positive：採用的都是正向 tag。</summary>
+    /// <summary>採用組合帶進來的（設計 §6.5）：優先序 base → adopted → rag → llm。只看 positive：採用的都是正向 tag。
+    /// 只認正規化後整段相等，不用字尾規則：採用句給的是原字，模型照抄；字尾相符會把使用者原本的
+    /// <c>purple cropped hoodie</c> 算成這套 <c>cropped hoodie</c> 帶進來的（2026-09-29 驗收 T5）。沒命中的照常走 rag → llm。</summary>
     public const string Adopted = "adopted";
 
     // 靜態欄位依宣告順序初始化：下面的基礎詞表要呼叫 Normalize，這兩個 Regex 必須排在前面。
@@ -66,16 +68,13 @@ public static class TagAttribution
         }).ToList();
     }
 
-    /// <summary>最近一次採用優先：同一個 tag 被兩套都帶進來時，使用者最後選的那套才是它的出處。</summary>
+    /// <summary>整段相等才算；最近一次採用優先：同一個 tag 被兩套都帶進來時，使用者最後選的那套才是它的出處。</summary>
     private static Adoption? AdoptedBy(string key, IReadOnlyList<Adoption> adoptions)
     {
         for (var i = adoptions.Count - 1; i >= 0; i--)
             foreach (var taken in adoptions[i].Taken.Values)
                 foreach (var raw in taken)
-                {
-                    var t = Normalize(raw);
-                    if (t.Length > 0 && (t == key || EndsWithWord(t, key) || EndsWithWord(key, t))) return adoptions[i];
-                }
+                    if (key.Length > 0 && Normalize(raw) == key) return adoptions[i];
         return null;
     }
 

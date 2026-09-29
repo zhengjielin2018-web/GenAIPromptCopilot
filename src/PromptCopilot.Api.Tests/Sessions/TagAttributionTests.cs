@@ -236,12 +236,25 @@ public class TagAttributionTests
         Assert.Equal("civitai:1:0", r[1].SourceRef);
     }
 
+    /// <summary>2026-09-29 驗收 T5：adopted 只認正規化後整段相等。採用的是原字，模型照抄；
+    /// 字尾相符會把使用者原本的 <c>purple cropped hoodie</c> 算成這套 <c>cropped hoodie</c> 帶進來的。</summary>
     [Fact]
-    public void Adopted_uses_the_same_word_suffix_rule_both_ways()
+    public void Adopted_needs_whole_segment_equality_after_normalizing()
     {
-        var a = new[] { Adopt(1, "t", ("clothing.footwear", "platform sandals"), ("clothing.upper", "shirt")) };
-        var r = TagAttribution.Attribute("sandals, white shirt, (Shirt:1.1)", Ledger(), negative: false, a);
-        Assert.All(r, x => Assert.Equal("adopted", x.Origin));
+        var a = new[] { Adopt(1, "t", ("clothing.upper", "cropped hoodie, glowing bikini")) };
+        var r = TagAttribution.Attribute("cropped hoodie, (Glowing_Bikini:1.2), purple cropped hoodie, hoodie", Ledger(), negative: false, a);
+        Assert.Equal(new[] { "adopted", "adopted", "llm", "llm" }, r.Select(x => x.Origin));
+    }
+
+    /// <summary>不再算 adopted 的 tag 照原本的 rag → llm 走，ledger 裡的採用片段一樣用字尾規則比。</summary>
+    [Fact]
+    public void A_suffix_of_an_adopted_tag_falls_through_to_rag()
+    {
+        var ledger = Ledger((41745, "賽博夜行", "cropped hoodie, glowing bikini", null));
+        var s = Assert.Single(TagAttribution.Attribute("purple cropped hoodie", ledger, negative: false,
+            new[] { Adopt(41745, "賽博夜行", ("clothing.upper", "cropped hoodie")) }));
+        Assert.Equal("rag", s.Origin);
+        Assert.Equal(new long[] { 41745 }, s.PresetIds);
     }
 
     [Fact]

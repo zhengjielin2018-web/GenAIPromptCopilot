@@ -212,7 +212,9 @@ public sealed record Adoption(int TurnIndex, long PresetId, string Dimension,
 
 ### 6.5 tag 來源 `adopted`
 
-`TagAttribution.Attribute` 多收 `IReadOnlyList<Adoption> adoptions`。優先序：base → **adopted** → rag → llm。adopted 比對：tag 與任一 `Adoption.Taken` 的 tag 整段相等或字尾相符（同 rag 規則），命中就 `TagSource(tag, "adopted", [presetId], title)`。多筆 adoption 命中時取最近一輪的。`TagOrigins` 計數加 `adopted`。
+`TagAttribution.Attribute` 多收 `IReadOnlyList<Adoption> adoptions`。優先序：base → **adopted** → rag → llm。adopted 比對：tag 與任一 `Adoption.Taken` 的 tag 正規化後整段相等，命中就 `TagSource(tag, "adopted", [presetId], title)`。多筆 adoption 命中時取最近一輪的。`TagOrigins` 計數加 `adopted`。
+
+2026-09-29 起不再用字尾規則（原本同 rag，整段相等或以空白為界的字尾相符）：驗收 T5 裡使用者原本的 `purple cropped hoodie` 因字尾相符這套的 `cropped hoodie` 被標成 `adopted`。採用句給的是資料庫原字、第 6 條要模型照抄，整段相等就夠；沒命中的 tag 照常走 rag → llm（ledger 裡有這套，字尾相符仍會標 rag）。
 
 ## 7. 前端
 
@@ -270,7 +272,7 @@ public sealed record Adoption(int TurnIndex, long PresetId, string Dimension,
 - `RecommendationServiceTests`：`AskOutcome` 只查被問的維度；`FinalizedOutcome` 查全部維度；錨來自 `FacetTags`（追問）與 `FacetTags`＋positive（定稿）；有錨命中 ≥2 取前 3 且 `anchorTags` 正確；命中 <2 退回無錨查詢並 `anchored=false`；沒有 covered facet 或沒有 tags 的維度不加錨；候選為 0 的維度不列；`retrieval` off 不呼叫；查詢向量只嵌入一次；例外不外拋。
 - `PresetRepositoryTests`（既有整合測試風格）：`RecommendAsync` 的 ≥2 facet 與 `facet_tags IS NOT NULL` 過濾；錨的整段相等與字尾相符（`white sandals` 命中 `sandals`）；錨為空不加條件。
 - `SessionPluginTests`：`tags` 寫入／狀態改非 covered 時移除／`SetProfile` 清空；snapshot／restore。
-- `TagAttributionTests`：adopted 優先於 rag、次於 base；字尾規則；多筆 adoption 取最近。
+- `TagAttributionTests`：adopted 優先於 rag、次於 base；只認整段相等（字尾相符的落到 rag／llm）；多筆 adoption 取最近。
 - `SessionEndpointsTests`：`adopt` 的每一種 400／409；組句格式（含無保留項；換掉的 facet 有舊 tag 時接「取代原本的」，`AdoptionComposerTests`）；`Text` 被忽略。
 - `SessionTests`：`Adoptions` 進 snapshot／restore；`Filled`／`Replaced` 分類。
 - `SystemPromptBuilderTests`：第 6 條存在（採用後照第 1 條判斷追問或定稿）且 off 模式也存在（規則無害）。
