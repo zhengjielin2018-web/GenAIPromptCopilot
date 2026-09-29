@@ -121,14 +121,20 @@ public sealed class AgenticOrchestrator(
             var kernel = kernelFactory(turn, tools, true);
 
             stage = "loop";
-            await CallAsync(turn, kernel, tct);
+            var firstText = await CallAsync(turn, kernel, tct);
 
             if (turn.Outcome is null)
             {
                 // 多輪 §5.3：補一則系統提示重試一次
                 await TryAuditAsync(new AuditEntry(session.Id, turnIndex, "Protocol_Violation", version, text, """{"attempt":1}"""));
-                session.ChatHistory.AddSystemMessage("你必須呼叫 AskUser、Discuss、FinalizePrompt 或 RequestSaveConsent 之一來結束這一輪，不要只回純文字。");
-                await CallAsync(turn, kernel, tct);
+                // 第一次的純文字先拿出 history：connector 把 system 訊息全搬進 systemInstruction，contents 就會以這則 model 結尾，
+                // Gemini 回 400「Requests ending with a model turn are not supported.」（known-issues #3）。
+                // 重試連文字都沒產的話放回原位，下面的包裝才還能用它（只掃 startIdx 之後）。
+                var firstAt = firstText is null ? -1 : session.ChatHistory.IndexOf(firstText);
+                if (firstAt >= 0) session.ChatHistory.RemoveAt(firstAt);
+                var retryText = await CallWithReminderAsync(turn, kernel,
+                    "你必須呼叫 AskUser、Discuss、FinalizePrompt 或 RequestSaveConsent 之一來結束這一輪，不要只回純文字。", tct);
+                if (firstAt >= 0 && turn.Outcome is null && retryText is null) session.ChatHistory.Insert(firstAt, firstText!);
             }
             if (turn.Outcome is null)
             {
@@ -303,15 +309,28 @@ public sealed class AgenticOrchestrator(
     }
 
     /// <summary>一次 SK auto-invoke：connector 自己跑 tool、跑 filter，Terminal filter 設 Terminate 就回來。
-    /// SK 邊跑邊把 call 與結果寫進 history；最後若是純文字（沒 tool）它不會自己加，這裡補上。</summary>
-    private async Task CallAsync(TurnContext turn, Kernel kernel, CancellationToken ct)
+    /// SK 邊跑邊把 call 與結果寫進 history；最後若是純文字（沒 tool）它不會自己加，這裡補上，並回傳補上的那則（沒補就是 null）。</summary>
+    private async Task<ChatMessageContent?> CallAsync(TurnContext turn, Kernel kernel, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
         var settings = new GeminiPromptExecutionSettings { FunctionChoiceBehavior = FunctionChoiceBehavior.Auto() };
         var history = turn.Session.ChatHistory;
         var msg = (await chat.GetChatMessageContentsAsync(history, settings, kernel, ct))[0];
-        if (msg.Role == AuthorRole.Assistant && !msg.Items.OfType<FunctionCallContent>().Any() && !string.IsNullOrWhiteSpace(msg.Content))
-            history.Add(msg);
+        if (msg.Role != AuthorRole.Assistant || msg.Items.OfType<FunctionCallContent>().Any() || string.IsNullOrWhiteSpace(msg.Content)) return null;
+        history.Add(msg);
+        return msg;
+    }
+
+    /// <summary>帶一則只給這次呼叫看的系統提示。connector 把 history 裡每一則 system 訊息（不管位置）都併進 systemInstruction，
+    /// 留著的話之後每一輪都會送出去，直到 Truncate 剪掉那一輪（known-issues #3）。呼叫完就拿掉；system 在線上跟位置無關，拿掉不影響其他訊息。
+    /// 不改成 user 訊息：Truncate 以 user 訊息數輪次，多一則會從一輪的中間剪。</summary>
+    private async Task<ChatMessageContent?> CallWithReminderAsync(TurnContext turn, Kernel kernel, string reminder, CancellationToken ct)
+    {
+        var history = turn.Session.ChatHistory;
+        var note = new ChatMessageContent(AuthorRole.System, reminder);
+        history.Add(note);
+        try { return await CallAsync(turn, kernel, ct); }
+        finally { history.Remove(note); }
     }
 
     /// <summary>主規格 §4.6：預算耗盡後只掛 FinalizePrompt 再跑一次；kernel 不掛 budget filter，否則第一個 call 又被擋。</summary>
@@ -320,8 +339,7 @@ public sealed class AgenticOrchestrator(
         turn.Outcome = null;
         turn.ForcedFinalize = true;          // 定稿閘門放行：只剩 FinalizePrompt，擋下去這一輪就沒有出口
         var kernel = kernelFactory(turn, new HashSet<string> { ToolNames.FinalizePrompt }, false);
-        turn.Session.ChatHistory.AddSystemMessage("tool 呼叫預算已用盡。請立即以現有資訊呼叫 FinalizePrompt 定稿，不要再檢索。facetStates 依使用者原話標記：使用者講過的 facet 標 covered，真的沒講的才是 missing，其餘 missing 的 facet 留白。");
-        await CallAsync(turn, kernel, ct);
+        await CallWithReminderAsync(turn, kernel, "tool 呼叫預算已用盡。請立即以現有資訊呼叫 FinalizePrompt 定稿，不要再檢索。facetStates 依使用者原話標記：使用者講過的 facet 標 covered，真的沒講的才是 missing，其餘 missing 的 facet 留白。", ct);
     }
 
     private static void EnsureSystemMessage(ChatHistory h, string prompt)
