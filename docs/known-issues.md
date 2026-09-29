@@ -7,7 +7,6 @@
 | :--- | :--- | :--- | :--- |
 | 3 | 純文字補救的重試請求被 Gemini 回 400 | bug | 中 |
 | 4 | 無害描述被上游 SAFETY 連續誤擋 | 行為 | 中 |
-| 7 | log 不足：看不出被擋的原因，一輪的經過只在資料庫裡 | 可觀測性 | 中（#4 要靠它確認） |
 | 8 | `HistoryTrimmer` 對 Gemini 的工具結果從未生效 | 可觀測性／成本 | 中 |
 | 5 | eval #5、#18 行為不符預期；§14 端到端要在新 HEAD 重跑 | 調整 | 低 |
 | 10 | 整套組合推薦的已知限制：錨靠模型翻譯、同義詞抓不到、SQL 的錨比對比 C# 粗、換了內容沒重給 `tags` 時舊錨留著；採用輪失敗後重試是純文字，HTTP 層就失敗時填回的是佔位字 | 限制 | 低 |
@@ -23,6 +22,8 @@
 
 **修正方向**：先用 fake `IChatCompletionService` 讓第一次回純文字，攔下第二次請求的 `ChatHistory` 檢查形狀；再對照 Gemini 的 role 規則（`GeminiRoleFixHandler` 已處理過一次同類問題）。
 
+**2026-09-29 再現**：瀏覽器實測時又發生一次（session `36063629…`），同樣是 `Protocol_Violation` 後接 `Turn_Failed` 400。當時的 audit 仍只有 connector 的例外訊息；#7 修好後，下一次發生時 Gemini 回的錯誤本文會在 `Turn_Failed` payload 的 `upstream.body`。
+
 ## 4. 無害描述被上游 SAFETY 連續誤擋
 
 **現象**（2026-09-24）：「中年阿姨在廚房夾菜，穿著圍裙」連送 3 次、改寫兩次，共 5 次 `Blocked_Upstream {"stage":"loop","reason":"SAFETY","attempts":2}`。改成「中年女士在廚房，正把青菜放入便當內，她穿著圍裙與長褲」才通過。
@@ -33,31 +34,9 @@
 
 - 5 次都發生在**第一次**模型呼叫：被擋的輪次沒有任何 `Tool_Invoked`，送出去的只有 system prompt、工具定義與使用者那句話。輸入端的 `SafetyGuard` 分類器同樣呼叫 Gemini，卻每次都放行。
 - 主迴圈與分類器都沒設 `safetySettings`，走 Gemini 預設門檻。
-- 被擋的 5 句，衣著都只有「穿著圍裙」；把「阿姨」換成「女士」照樣被擋；加上「與長褲」才通過。**假設**：在「產生生圖提示詞」的語境下，「女性＋只穿圍裙＋廚房」貼近 SD 語料常見的「裸體圍裙」題材，被上游分類器判定。這只是從字面規律推的，目前的紀錄無法證實（見 #7）。
+- 被擋的 5 句，衣著都只有「穿著圍裙」；把「阿姨」換成「女士」照樣被擋；加上「與長褲」才通過。**假設**：在「產生生圖提示詞」的語境下，「女性＋只穿圍裙＋廚房」貼近 SD 語料常見的「裸體圍裙」題材，被上游分類器判定。這只是從字面規律推的，當時的紀錄無法證實（#7 已補上紀錄）。
 
-**修正方向**：先做 #7，把被擋的類別與分數記下來，確認假設。可以考慮的處理：調整 Gemini 的 `safetySettings` 門檻（要評估對 NSFW 防線的影響）、或在 `blocked` 的前端文案提示「換個說法」。這一項跟 NSFW 過濾範圍無關，過濾範圍已定案。
-
-## 7. log 不足：看不出被擋的原因，一輪的經過只在資料庫裡
-
-**現況**：
-
-- **`audit_logs`（資料庫）** 是唯一完整的紀錄：每輪的輸入原文、每次工具呼叫的參數與結果、結局、攔截、存檔。重啟不會消失。
-- **API 容器 log**（`docker compose logs api`）幾乎沒有對話的資訊：程式只在寫 audit 失敗、串流中途出錯、缺 API key 時寫 log。其餘全是 `System.Net.Http` 每次 embedding 請求的 Information 行（一輪可達數十行）。容器重建後這份 log 就沒了。
-
-**缺的東西**：
-
-1. `Blocked_Upstream` 只記 `reason`，而且這個值不可靠：`LlmFailureClassifier.BlockReasonOf` 在例外訊息含 "blocked" 或 "safety" 時一律回 `SAFETY`。「輸入被拒」（`promptFeedback.blockReason`）與「輸出被截」（`finishReason`）在 audit 裡長得一樣，也沒有 `safetyRatings` 的類別與機率。#4 因此無法確認。
-2. `Turn_Failed` 只記例外訊息的前段，沒有 Gemini 回應本文（#3 的 400 需要它）。
-3. 容器 log 沒有每輪一行的摘要，看 demo 時沒辦法從終端機判斷發生什麼事。
-4. `Tool_Invoked` 的 args 與 result 截到 200 字，查 2026-09-25 的服裝 tag 問題時無法從 audit 看出 clothing 查了什麼、撈到什麼，只能重跑推斷；至少 `SearchPresets` 與 `FinalizePrompt` 要存完整。
-
-**修正方向**：
-
-- 攔截時把 `GeminiMetadata` 的 `PromptFeedbackBlockReason`、`FinishReason`、`PromptFeedbackSafetyRatings`／候選的 `SafetyRatings` 整包寫進 `Blocked_Upstream` 的 payload，並分開記「輸入被拒」與「輸出被截」。例外路徑拿不到 metadata 時，至少記下完整例外訊息。
-- `AgenticOrchestrator` 在每輪結束時寫一行 Information：session、turn、結局、工具呼叫數、耗時。
-- `appsettings.json` 把 `System.Net.Http` 調到 Warning。
-
-**驗收**：重送「中年阿姨在廚房夾菜，穿著圍裙」，`Blocked_Upstream` 的 payload 看得到是哪一種攔截、哪個類別、什麼機率；`docker compose logs api` 每輪有一行摘要，沒有 embedding 請求的雜訊。
+**修正方向**：#7 已完成，`Blocked_Upstream` 現在記得到攔截種類與 `safetyRatings`。下一步是重送「中年阿姨在廚房夾菜，穿著圍裙」，讀 payload 的 `upstream.kind` 與 `upstream.safetyRatings`，確認上面的假設。可以考慮的處理：調整 Gemini 的 `safetySettings` 門檻（要評估對 NSFW 防線的影響）、或在 `blocked` 的前端文案提示「換個說法」。這一項跟 NSFW 過濾範圍無關，過濾範圍已定案。
 
 ## 8. `HistoryTrimmer` 對 Gemini 的工具結果從未生效（可觀測性／成本，中）
 
@@ -196,6 +175,39 @@ prompt_version 都是 `8c10dcfe1f16`，跟子專案 3 驗收時能正常追問�
 **修正**（分支 `fix/ask-all-missing`，merge commit `b9290e4`；定稿閘門在 `ee3887f`）：system.md 第 1 條改為 `SetProfile` → `SetFacetStates` → `SearchPresets`；同時把追問政策反轉為問滿 missing 維度：該維度底下只要還有任何 facet 是 missing（waived 與有委託 note 的不算）就要問，只講一部分的維度也問剩下的 facet，使用者接受完整描述也可能先被追問（eval #2）。起因是使用者 2026-09-25 實測回饋「描述缺很多面向，但追問很少」，見 #5 的 eval #18。`SetFacetStates` 與 `AskUser` 的工具描述、主規格 §4.2 與 §15、批次設計 §3.4 同步。主規格 §9「grounded 由伺服器算」原則不變，只是讓伺服器有資料可算。
 
 **驗收**：重跑 eval #1、#18、#24，看第一輪 `SearchPresets` 對使用者講過的維度是否 `grounded: true`、追問是否把 missing 維度問滿。
+
+### 7. log 不足：看不出被擋的原因，一輪的經過只在資料庫裡
+
+**現況**：
+
+- **`audit_logs`（資料庫）** 是唯一完整的紀錄：每輪的輸入原文、每次工具呼叫的參數與結果、結局、攔截、存檔。重啟不會消失。
+- **API 容器 log**（`docker compose logs api`）幾乎沒有對話的資訊：程式只在寫 audit 失敗、串流中途出錯、缺 API key 時寫 log。其餘全是 `System.Net.Http` 每次 embedding 請求的 Information 行（一輪可達數十行）。容器重建後這份 log 就沒了。
+
+**缺的東西**：
+
+1. `Blocked_Upstream` 只記 `reason`，而且這個值不可靠：`LlmFailureClassifier.BlockReasonOf` 在例外訊息含 "blocked" 或 "safety" 時一律回 `SAFETY`。「輸入被拒」（`promptFeedback.blockReason`）與「輸出被截」（`finishReason`）在 audit 裡長得一樣，也沒有 `safetyRatings` 的類別與機率。#4 因此無法確認。
+2. `Turn_Failed` 只記例外訊息的前段，沒有 Gemini 回應本文（#3 的 400 需要它）。
+3. 容器 log 沒有每輪一行的摘要，看 demo 時沒辦法從終端機判斷發生什麼事。
+4. `Tool_Invoked` 的 args 與 result 截到 200 字，查 2026-09-25 的服裝 tag 問題時無法從 audit 看出 clothing 查了什麼、撈到什麼，只能重跑推斷；至少 `SearchPresets` 與 `FinalizePrompt` 要存完整。
+
+**修正方向**：
+
+- 攔截時把 `GeminiMetadata` 的 `PromptFeedbackBlockReason`、`FinishReason`、`PromptFeedbackSafetyRatings`／候選的 `SafetyRatings` 整包寫進 `Blocked_Upstream` 的 payload，並分開記「輸入被拒」與「輸出被截」。例外路徑拿不到 metadata 時，至少記下完整例外訊息。
+- `AgenticOrchestrator` 在每輪結束時寫一行 Information：session、turn、結局、工具呼叫數、耗時。
+- `appsettings.json` 把 `System.Net.Http` 調到 Warning。
+
+**驗收**：重送「中年阿姨在廚房夾菜，穿著圍裙」，`Blocked_Upstream` 的 payload 看得到是哪一種攔截、哪個類別、什麼機率；`docker compose logs api` 每輪有一行摘要，沒有 embedding 請求的雜訊。
+
+**修正**（分支 `fix/upstream-diagnostics`，commit `f455999`、`b3e117b`、`72bfa7e`）：沒走上面第一條的 `GeminiMetadata`——connector 碰到輸入被拒時直接丟例外，根本拿不到 metadata。改在 HTTP 層讀回應本文。
+
+- `GeminiDiagnosticsHandler`（包在 `GeminiRoleFixHandler` 外面）讀每一次 `:generateContent` 的回應，記進這一輪的 `UpstreamDiagnostics`（`AsyncLocal`，`AgenticOrchestrator` 每輪開頭放新的；輸入／輸出分類器走同一個 client，也算在內）：`promptFeedback.blockReason` → `input_blocked`，`finishReason` 屬內容攔截 → `output_blocked`，連同 `safetyRatings`；非 2xx 記狀態碼與本文（截到 2 KB）；另記呼叫次數與在途的那一次。每次呼叫寫一行 `Gemini <狀態碼> <毫秒> ms finish=… block=…`。
+- `Blocked_Upstream` 多 `upstream: {kind, reason, safetyRatings}`，有它時 `reason` 與給使用者的訊息改用它的 reason。`Turn_Failed` 在最近一次是非 2xx 時多 `upstream: {status, body}`，逾時時多 `upstream: {calls, pendingMs?}`。
+- 每輪結束寫一行 `Turn <session>#<turn> <事件> <細節> tools=<n> gemini=<n> <毫秒> ms`，任何結局都寫。
+- `appsettings.json` 的 `System.Net.Http` 調到 Warning。
+- `Tool_Invoked` 的 `SearchPresets`、`FinalizePrompt` 存完整的 args 與 result，其他 tool 照舊截 200 字。
+- 主規格 §4.6、§6.2、§7 的 audit 欄位同步。
+
+**驗收**：單元測試（`GeminiDiagnosticsHandlerTests`、`AgenticOrchestratorTests`、`FiltersTests`）。上面的實測驗收（重送圍裙那句、看 `docker compose logs api`）還沒跑。
 
 ### 10. 「照它的」取代 covered facet 時，舊 tag 沒被拿掉
 
