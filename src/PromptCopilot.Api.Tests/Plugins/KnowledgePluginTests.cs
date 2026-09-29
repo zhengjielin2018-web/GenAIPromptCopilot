@@ -499,7 +499,7 @@ public class KnowledgePluginTests
     {
         var (p, _, _, embed, presets, events) = Make(covered: new[] { "clothing.footwear" });
         presets.FacetPools["clothing.footwear"] = 338;
-        presets.FacetHits["clothing.footwear"] = new[] { Hit(1, "涼鞋", "clothing.footwear", 0.20), Hit(2, "靴", "clothing.footwear", 0.25) };
+        presets.FacetHits["clothing.footwear"] = new[] { Hit(1, "涼鞋", "clothing.footwear", 0.20), Hit(2, "靴", "clothing.footwear", 0.23) };
 
         var r = await p.SearchPresetsAsync(new[] { F("clothing.footwear", "涼鞋", "sandals") }, default);
 
@@ -510,7 +510,9 @@ public class KnowledgePluginTests
         var it = Assert.Single(Detail(events).Items);
         Assert.Equal(338, it.PoolSize); Assert.Equal("sandals", it.Tags); Assert.Equal(SearchPresetsItem.MethodFacet, it.Method);
         Assert.Equal("涼鞋", it.Query);                                                          // detail 的 query 仍是原話，英文另放 tags
-        Assert.Equal(new[] { "高", "中" }, it.Hits.Select(h => h.Band));                          // facet 門檻 0.22／0.27
+        // 第二筆 dist 0.23：facet 門檻（0.22／0.27）是「中」，維度門檻（0.25／0.30）會是「高」——
+        // 斷言「中」才能證明 facet 路徑真的傳 facetVector: true，不是巧合下兩組門檻同答案。
+        Assert.Equal(new[] { "高", "中" }, it.Hits.Select(h => h.Band));
         var result = Results(r)[0];
         Assert.Equal(338, result.GetProperty("poolSize").GetInt64());
         Assert.False(result.TryGetProperty("tags", out _)); Assert.False(result.TryGetProperty("method", out _));   // 回給模型的形狀不變
@@ -554,14 +556,16 @@ public class KnowledgePluginTests
     {
         var (p, _, _, _, presets, events) = Make();
         presets.Pools["clothing.footwear"] = 396;                                                // FacetPools 沒設 → 0
-        presets.Hits["clothing.footwear"] = new[] { Hit(1, "涼鞋", "clothing.footwear", 0.26) };
+        presets.Hits["clothing.footwear"] = new[] { Hit(1, "涼鞋", "clothing.footwear", 0.23) };
         await p.SearchPresetsAsync(new[] { F("clothing.footwear", "涼鞋", "sandals") }, default);
         Assert.Equal(new[] { "clothing.footwear" }, presets.FacetPoolCalls);                     // 池計數本身就是退路判斷
         Assert.Empty(presets.FacetSearches);
         Assert.Equal(("clothing.footwear", KnowledgePlugin.KMissing, 0f), Assert.Single(presets.Searches));
         var it = Assert.Single(Detail(events).Items);
         Assert.Equal(396, it.PoolSize); Assert.Equal(SearchPresetsItem.MethodPreset, it.Method); Assert.Equal("sandals", it.Tags);
-        Assert.Equal("中", it.Hits[0].Band);                                                       // 退路用維度門檻 0.25／0.30
+        // dist 0.23：維度門檻（0.25／0.30）是「高」，facet 門檻（0.22／0.27）會是「中」——
+        // 這裡斷言「高」才能證明退路真的傳 facetVector: false，不是巧合下兩組門檻同答案。
+        Assert.Equal("高", it.Hits[0].Band);
     }
 
     [Fact]
