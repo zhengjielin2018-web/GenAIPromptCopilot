@@ -38,6 +38,10 @@ public class KnowledgePluginTests
         public List<IReadOnlyList<string>> PoolFacetSets { get; } = new();
         public Dictionary<string, IReadOnlyList<PresetHit>> Hits { get; } = new();
         public Dictionary<string, long> Pools { get; } = new();
+        public List<(string facet, int k, float queryIndex)> FacetSearches { get; } = new();
+        public List<string> FacetPoolCalls { get; } = new();
+        public Dictionary<string, IReadOnlyList<PresetHit>> FacetHits { get; } = new();
+        public Dictionary<string, long> FacetPools { get; } = new();                 // 沒設的 facet 視為 0 → 退路
 
         public override Task<IReadOnlyList<PresetHit>> SearchAsync(float[] query, IReadOnlyList<string> facetIds, int k, CancellationToken ct)
         {
@@ -50,6 +54,16 @@ public class KnowledgePluginTests
             PoolCalls.Add(facetIds[0]);
             PoolFacetSets.Add(facetIds.ToArray());
             return Task.FromResult(Pools.GetValueOrDefault(facetIds[0], 0L));
+        }
+        public override Task<long> FacetPoolSizeAsync(string facetId, CancellationToken ct)
+        {
+            FacetPoolCalls.Add(facetId);
+            return Task.FromResult(FacetPools.GetValueOrDefault(facetId, 0L));
+        }
+        public override Task<IReadOnlyList<PresetHit>> SearchFacetAsync(float[] query, string facetId, int k, CancellationToken ct)
+        {
+            FacetSearches.Add((facetId, k, query[0]));
+            return Task.FromResult(FacetHits.GetValueOrDefault(facetId, Array.Empty<PresetHit>()));
         }
     }
 
@@ -82,6 +96,7 @@ public class KnowledgePluginTests
 
     /// <summary>facet 項目：不帶 dimension。</summary>
     private static SearchQuery F(string facetId, string query) => new(null, query, facetId);
+    private static SearchQuery F(string facetId, string query, string? tags) => new(null, query, facetId, tags);
 
     private static List<JsonElement> Results(string json) => JsonDocument.Parse(json).RootElement.GetProperty("results").EnumerateArray().ToList();
 
@@ -475,4 +490,93 @@ public class KnowledgePluginTests
         var h = Assert.Single(d.Hits);
         Assert.Equal(new string('雨', 40) + "…", h.Intent); Assert.Equal("portrait", h.Profile); Assert.Equal(0.181, h.Dist);
     }
+
+    private static SearchPresetsDetail Detail(ChannelReader<AgentEvent> events) =>
+        (SearchPresetsDetail)Drain(events).OfType<ToolResultEvent>().Single(e => e.Name == ToolNames.SearchPresets).Detail!;
+
+    [Fact]
+    public async Task Facet_item_with_tags_embeds_the_bilingual_query_and_searches_the_facet_subtable()
+    {
+        var (p, _, _, embed, presets, events) = Make(covered: new[] { "clothing.footwear" });
+        presets.FacetPools["clothing.footwear"] = 338;
+        presets.FacetHits["clothing.footwear"] = new[] { Hit(1, "涼鞋", "clothing.footwear", 0.20), Hit(2, "靴", "clothing.footwear", 0.25) };
+
+        var r = await p.SearchPresetsAsync(new[] { F("clothing.footwear", "涼鞋", "sandals") }, default);
+
+        Assert.Equal(new[] { "涼鞋（sandals）" }, Assert.Single(embed.Calls));
+        var fs = Assert.Single(presets.FacetSearches);
+        Assert.Equal(("clothing.footwear", KnowledgePlugin.KCovered, 0f), fs);
+        Assert.Empty(presets.Searches); Assert.Empty(presets.PoolCalls);                       // 沒走整套向量、沒數 facet_ids 池
+        var it = Assert.Single(Detail(events).Items);
+        Assert.Equal(338, it.PoolSize); Assert.Equal("sandals", it.Tags); Assert.Equal(SearchPresetsItem.MethodFacet, it.Method);
+        Assert.Equal("涼鞋", it.Query);                                                          // detail 的 query 仍是原話，英文另放 tags
+        Assert.Equal(new[] { "高", "中" }, it.Hits.Select(h => h.Band));                          // facet 門檻 0.22／0.27
+        var result = Results(r)[0];
+        Assert.Equal(338, result.GetProperty("poolSize").GetInt64());
+        Assert.False(result.TryGetProperty("tags", out _)); Assert.False(result.TryGetProperty("method", out _));   // 回給模型的形狀不變
+    }
+
+    [Fact]
+    public async Task Facet_item_without_tags_embeds_the_plain_query()
+    {
+        var (p, _, _, embed, presets, _) = Make();
+        presets.FacetPools["clothing.footwear"] = 1;
+        await p.SearchPresetsAsync(new[] { F("clothing.footwear", "涼鞋") }, default);
+        Assert.Equal(new[] { "涼鞋" }, Assert.Single(embed.Calls));
+    }
+
+    [Fact]
+    public async Task Blank_tags_are_treated_as_absent()
+    {
+        // Review Focus 1：模型填了空白或只有逗號，查詢句不能變成「涼鞋（）」
+        var (p, _, _, embed, presets, events) = Make();
+        presets.FacetPools["clothing.footwear"] = 1;
+        await p.SearchPresetsAsync(new[] { F("clothing.footwear", "涼鞋", " , "), F("clothing.head", "草帽", "  ") }, default);
+        Assert.Equal(new[] { "涼鞋", "草帽" }, Assert.Single(embed.Calls));
+        Assert.All(Detail(events).Items, it => Assert.Null(it.Tags));
+    }
+
+    [Fact]
+    public async Task Dimension_item_ignores_tags_and_keeps_the_old_path_and_thresholds()
+    {
+        var (p, _, _, embed, presets, events) = Make();
+        presets.Pools["style.genre"] = 4455;
+        presets.Hits["style.genre"] = new[] { Hit(1, "寫實", "style.genre", 0.23) };            // 0.23：facet 門檻是「中」，維度門檻是「高」
+        await p.SearchPresetsAsync(new[] { new SearchQuery("style", "寫實攝影", tags: "photorealistic") }, default);
+        Assert.Equal(new[] { "寫實攝影" }, Assert.Single(embed.Calls));
+        Assert.Empty(presets.FacetSearches); Assert.Empty(presets.FacetPoolCalls);
+        var it = Assert.Single(Detail(events).Items);
+        Assert.Null(it.Tags); Assert.Equal(SearchPresetsItem.MethodPreset, it.Method); Assert.Equal("高", it.Hits[0].Band);
+    }
+
+    [Fact]
+    public async Task Facet_item_falls_back_to_the_whole_preset_vector_when_the_subtable_has_no_rows()
+    {
+        var (p, _, _, _, presets, events) = Make();
+        presets.Pools["clothing.footwear"] = 396;                                                // FacetPools 沒設 → 0
+        presets.Hits["clothing.footwear"] = new[] { Hit(1, "涼鞋", "clothing.footwear", 0.26) };
+        await p.SearchPresetsAsync(new[] { F("clothing.footwear", "涼鞋", "sandals") }, default);
+        Assert.Equal(new[] { "clothing.footwear" }, presets.FacetPoolCalls);                     // 池計數本身就是退路判斷
+        Assert.Empty(presets.FacetSearches);
+        Assert.Equal(("clothing.footwear", KnowledgePlugin.KMissing, 0f), Assert.Single(presets.Searches));
+        var it = Assert.Single(Detail(events).Items);
+        Assert.Equal(396, it.PoolSize); Assert.Equal(SearchPresetsItem.MethodPreset, it.Method); Assert.Equal("sandals", it.Tags);
+        Assert.Equal("中", it.Hits[0].Band);                                                       // 退路用維度門檻 0.25／0.30
+    }
+
+    [Fact]
+    public async Task Facet_pool_is_counted_once_per_facet_and_separately_from_the_dimension_pool()
+    {
+        var (p, _, _, _, presets, _) = Make();
+        presets.FacetPools["clothing.footwear"] = 338; presets.Pools["clothing.head"] = 700;
+        await p.SearchPresetsAsync(new[] { F("clothing.footwear", "涼鞋"), F("clothing.footwear", "拖鞋"), new SearchQuery("clothing", "夏日穿搭") }, default);
+        Assert.Equal(new[] { "clothing.footwear" }, presets.FacetPoolCalls);                     // 同 facet 兩項只數一次
+        Assert.Equal(new[] { "clothing.head" }, presets.PoolCalls);                              // 維度項目照舊數 facet_ids 池
+    }
+
+    [Theory]
+    [InlineData(0.219, true, "高")] [InlineData(0.22, true, "中")] [InlineData(0.269, true, "中")] [InlineData(0.27, true, "低")]
+    [InlineData(0.249, false, "高")] [InlineData(0.25, false, "中")] [InlineData(0.30, false, "低")]
+    public void Band_uses_the_facet_thresholds_only_for_facet_vectors(double dist, bool facet, string expected) =>
+        Assert.Equal(expected, KnowledgePlugin.Band(dist, facet));
 }
