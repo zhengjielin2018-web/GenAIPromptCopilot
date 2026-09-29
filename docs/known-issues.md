@@ -250,4 +250,6 @@ prompt_version 都是 `8c10dcfe1f16`，跟子專案 3 驗收時能正常追問�
 - 主規格 §4.7 同步。
 - 同一次查到 call args 壓縮（§4.7 第二條）也有同類問題，另列 #11。
 
-**驗收**：`HistoryTrimmerGeminiTests` 用真的 connector 跑一輪 auto-invoke，壓縮後再送下一輪，檢查那次請求的 `functionResponse`：role 是 `user`、`name` 是 `Knowledge_SearchPresets`、內容只剩 `{dimension, facetId, poolSize, hits: [{id, title}]}` 與錯誤項目，本文裡沒有片段文字，`functionCall` 的 `thoughtSignature` 還在；平行呼叫（`SearchPresets` + `SetProfile`）時仍是同一則、兩個 part，只有 `SearchPresets` 被壓。另一條測試釘住 connector 的形狀（`CalledToolResults`、`Items` 沒有 `FunctionResultContent`），connector 換版時會先紅。**實測待做**：用這個分支建的 api 跑兩輪以上，看第二輪送出的 `functionResponse` 已是壓縮形狀。
+**驗收**：`HistoryTrimmerGeminiTests` 用真的 connector 跑一輪 auto-invoke，壓縮後再送下一輪，檢查那次請求的 `functionResponse`：role 是 `user`、`name` 是 `Knowledge_SearchPresets`、內容只剩 `{dimension, facetId, poolSize, hits: [{id, title}]}` 與錯誤項目，本文裡沒有片段文字，`functionCall` 的 `thoughtSignature` 還在；平行呼叫（`SearchPresets` + `SetProfile`）時仍是同一則、兩個 part，只有 `SearchPresets` 被壓。另一條測試釘住 connector 的形狀（`CalledToolResults`、`Items` 沒有 `FunctionResultContent`），connector 換版時會先紅。實測見下一段。
+
+2026-09-29 實測（`fix/history-trimmer-gemini` 建的 api，直接打 SSE）：同一段對話連跑 5 輪（描述 → 回答追問 → 直接給我 → 背景改夕陽海邊 → 鞋子換白色運動鞋），第 1 輪呼叫 `SearchPresets`、之後幾輪的歷史都帶著壓縮過的工具結果；5 輪都 `Turn_Completed`（2 次追問、3 次定稿），`docker compose logs api` 裡 20 次 `Gemini 200`，沒有 400、沒有重試。省了多少 token 看不到：audit 的 `prompt_tokens` 從來沒寫過。
