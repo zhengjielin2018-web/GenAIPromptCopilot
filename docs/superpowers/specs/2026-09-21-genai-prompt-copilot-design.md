@@ -352,6 +352,10 @@ RunTurnAsync(session, input, ct):  // input = TurnInput(text, adoption?, adopted
 
 **Audit**：一輪失敗寫**一筆** `Turn_Failed`，`payload` 記 `{ stage, errorClass, attempts }`。每次內部重試不各寫一筆，會淹掉有用的紀錄。上游內容攔截另記 `Blocked_Upstream`（§6.2），不併進來。
 
+**上游觀察（2026-09-29，known-issues #7）。** connector 對攔截只丟一句固定的例外訊息、對 400 只留狀態碼，原因都在 Gemini 的回應本文裡。對話用的 `HttpClient` 在 `GeminiRoleFixHandler` 外面再包一層 `GeminiDiagnosticsHandler`：每次 `:generateContent` 都讀回應本文（再換一份同內容的 content 交給 connector），記進這一輪的 `UpstreamDiagnostics`（`AsyncLocal`，`AgenticOrchestrator` 每輪開頭放一個新的；輸入／輸出分類器走同一個 client，它們的呼叫也算進去）。記的是「最近一次收到回應的呼叫」：攔截種類與 `safetyRatings`、非 2xx 的狀態碼與本文（截到 2 KB），另外累計呼叫次數與還在途的那一次。`Turn_Failed` 因此多一個可選的 `upstream`：一般失敗而最近一次是非 2xx 時記 `{ status, body }`；逾時記 `{ calls, pendingMs? }`，`pendingMs` 是逾時那一刻還沒回來的那次呼叫已等了多久，沒有在途的就不寫——看得出是卡在 Gemini 還是卡在我們自己。
+
+**容器 log**：handler 每次呼叫寫一行 `Gemini {status} {ms} ms finish={finishReason} block={promptFeedback.blockReason}`（沒有的寫 `-`）；`AgenticOrchestrator` 每輪結束（任何結局）寫一行 `Turn {session}#{turn} {事件} {細節} tools={工具呼叫數} gemini={Gemini 呼叫數} {ms} ms`，事件是那一輪的 audit 事件（`Turn_Completed`、`Blocked_*`、`Turn_Failed`），細節是結局型別、攔截理由或 `errorClass`。`System.Net.Http` 的 log 等級調到 Warning，embedding 請求不再每次洗一行。完整紀錄仍以 `audit_logs` 為準，log 只是在終端機上看得出發生什麼事。
+
 ### 4.7 Chat history 修剪與截斷
 
 `Finalized` 之後 `Discuss` 不限次，history 沒有上限；而 `options` 改成結構化之後，call args 每輪都留在 history 裡，越積越肥。三條：
@@ -576,7 +580,7 @@ profiles:
 
 **攔截時的對話行為**：比照上面的命中處理——發 `blocked` 事件、`Terminate`、session 回滾至本輪開始前（§4.6）。回滾多做一件事：被擋的那句話不留在 history，否則下一輪 LLM 會看到它、可能再觸發一次。使用者不該因為上游攔截損失輪次。訊息要說清楚三件事：這是上游模型的判定**不是程式錯誤**、**不是知識庫的問題**、**下一步在使用者手上**。
 
-**Audit**：`event_type = 'Blocked_Upstream'`，`payload` 記 `blockReason` 與發生階段。必須與 `Blocked_NSFW`（我們自己擋的）**分開**——兩者混在一起會讓「合規」指標失真：一個是我們的防線生效，一個是我們把上游不接受的東西送出去了。
+**Audit**：`event_type = 'Blocked_Upstream'`，`payload` 記 `blockReason` 與發生階段；2026-09-29 起另記 `upstream: { kind, reason, safetyRatings }`（§4.6 的上游觀察）：`kind` 分 `input_blocked`（`promptFeedback.blockReason`，輸入整個被拒）與 `output_blocked`（`finishReason` 屬上表那組，輸出被截），`safetyRatings` 照 Gemini 給的 `[{ category, probability, blocked? }]`。有 `upstream` 時頂層的 `reason` 與給使用者的訊息都用它的 `reason`，不再用例外訊息字面猜出來的值。必須與 `Blocked_NSFW`（我們自己擋的）**分開**——兩者混在一起會讓「合規」指標失真：一個是我們的防線生效，一個是我們把上游不接受的東西送出去了。
 
 參考實作：`scripts/pipeline/gemini_client.py` 的 `UnusableResponse.is_content_block` 與 `generate_structured` 的重試條件（`CONTENT_BLOCK_ATTEMPTS = 1`）；使用者訊息見 `scripts/demo.py::unusable_message`。
 
@@ -661,7 +665,7 @@ CREATE TABLE audit_logs (
 CREATE INDEX idx_audit_session ON audit_logs (session_id, created_at);
 ```
 
-`event_type` 值：`Blocked_NSFW`（denylist 命中時 `payload` 記 `{ term }`——命中的詞只進這裡，不回給使用者）、`Blocked_Celebrity`、`Blocked_Output`、`Blocked_Upstream`（上游模型拒絕產出，§6.2；與 `Blocked_NSFW` 分開記，`payload` 記 `{ reason, stage, attempts? }`）、`Tool_Invoked`、`Tool_Budget_Exhausted`、`Protocol_Violation`、`Turn_Failed`（一輪失敗一筆，`payload` 記 `{ stage, errorClass, message, attempts? }`，§4.6）、`Saved_To_Shared`（`/save-to-shared` 寫入成功）、`Turn_Completed`（含 token 與延遲，`payload` 另記 `outcome`、`toolCalls`、`rejections`、`askedFacetIds?`、`waivedFacetIds`、`retrieval`（`on`／`off`），§5.1；定稿那一輪另記 `tagOrigins: { rag, adopted, llm, base }`，positive 各來源的 tag 數，§9；2026-09-25 起另記 `recommendations: { dimensions: [{ dimension, anchored, presetIds }] }`（該輪有發推薦事件）與 `adoption: { presetId, dimension, take, filled, replaced }`（該輪是採用輪），見 `2026-09-25-set-recommendations-design.md` §8）、`Recommendation_Failed`（2026-09-25，整套組合推薦失敗，`payload` 記 `{ stage: "recommend", errorClass }`，逾時為 `Timeout`；推薦是附加的，該輪照常成立）。
+`event_type` 值：`Blocked_NSFW`（denylist 命中時 `payload` 記 `{ term }`——命中的詞只進這裡，不回給使用者）、`Blocked_Celebrity`、`Blocked_Output`、`Blocked_Upstream`（上游模型拒絕產出，§6.2；與 `Blocked_NSFW` 分開記，`payload` 記 `{ reason, stage, attempts?, upstream?: { kind, reason, safetyRatings } }`）、`Tool_Invoked`（`payload` 記 `{ name, args, result }`，一般截到 200 字；2026-09-29 起 `SearchPresets` 與 `FinalizePrompt` 存完整，查 tag 問題時要看得到檢索查了什麼、撈到什麼）、`Tool_Budget_Exhausted`、`Protocol_Violation`、`Turn_Failed`（一輪失敗一筆，`payload` 記 `{ stage, errorClass, message, attempts?, upstream? }`，`upstream` 在上游回非 2xx 時是 `{ status, body }`、逾時時是 `{ calls, pendingMs? }`，§4.6）、`Saved_To_Shared`（`/save-to-shared` 寫入成功）、`Turn_Completed`（含 token 與延遲，`payload` 另記 `outcome`、`toolCalls`、`rejections`、`askedFacetIds?`、`waivedFacetIds`、`retrieval`（`on`／`off`），§5.1；定稿那一輪另記 `tagOrigins: { rag, adopted, llm, base }`，positive 各來源的 tag 數，§9；2026-09-25 起另記 `recommendations: { dimensions: [{ dimension, anchored, presetIds }] }`（該輪有發推薦事件）與 `adoption: { presetId, dimension, take, filled, replaced }`（該輪是採用輪），見 `2026-09-25-set-recommendations-design.md` §8）、`Recommendation_Failed`（2026-09-25，整套組合推薦失敗，`payload` 記 `{ stage: "recommend", errorClass }`，逾時為 `Timeout`；推薦是附加的，該輪照常成立）。
 
 `attempts` 只有在例外是由重試層（§4.6）包出來、知道自己實際打了幾次時才寫；不知道就不寫，不硬塞 0。
 

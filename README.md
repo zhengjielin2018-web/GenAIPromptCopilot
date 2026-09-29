@@ -73,6 +73,7 @@ docker compose up
 
 - 沒填 `GEMINI_API_KEY`：整套照樣起來，但每一輪對話都會失敗（`docker compose logs api` 開頭有一行警告）。填好後 `docker compose up -d api` 重建 api 容器即可。
 - 重置知識庫：`docker compose down -v` 刪掉資料庫 volume，下次 `up` 重新建表並灌種子。
+- 看一輪發生什麼事：`docker compose logs -f api`，每輪結束有一行 `Turn <session>#<turn> <事件> …`，每次呼叫 Gemini 有一行 `Gemini <狀態碼> …`。完整紀錄在資料庫的 `audit_logs`（查法見 [manual-tests/README.md](manual-tests/README.md) 第 5 節）。
 
 ## 本機開發
 

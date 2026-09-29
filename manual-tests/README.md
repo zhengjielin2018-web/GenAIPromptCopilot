@@ -101,6 +101,13 @@ docker compose exec db psql -U postgres -d prompt_copilot -c "SELECT turn_index,
 ```
 
 正常的一輪是 `Turn_Completed`；要注意的是 `Turn_Failed`、`Protocol_Violation`、`Blocked_*`。
+`Blocked_Upstream` 與 `Turn_Failed` 的 payload 可能帶 `upstream`：被 Gemini 擋時是哪一種攔截（`input_blocked`／`output_blocked`）與 `safetyRatings`，上游回 400 之類時是狀態碼與回應本文，逾時時是打了幾次 Gemini、最後一次卡了多久（`pendingMs`）。看 payload：
+
+```bash
+docker compose exec db psql -U postgres -d prompt_copilot -c "SELECT turn_index, event_type, payload FROM audit_logs WHERE session_id = '<SID>' AND event_type IN ('Blocked_Upstream', 'Turn_Failed') ORDER BY created_at;"
+```
+
+不想開資料庫時，API 的 log（`start_api.py` 的終端機，或 `docker compose logs -f api`）每輪結束有一行 `Turn <session>#<turn> <事件> <細節> tools=<工具呼叫數> gemini=<Gemini 呼叫數> <毫秒> ms`，每次呼叫 Gemini 有一行 `Gemini <狀態碼> <毫秒> ms finish=… block=…`。
 `.env` 的 `POSTGRES_USER`／`POSTGRES_DB` 不是預設值的話，把指令裡的 `postgres`／`prompt_copilot` 換掉。
 
 ## 6. 自動化測試

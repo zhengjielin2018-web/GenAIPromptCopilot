@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.ChatCompletion;
@@ -51,6 +52,9 @@ public class AgenticOrchestratorTests
         /// <summary>預設不推薦：既有測試不該因為推薦而多出事件。</summary>
         public IRecommendationService Recommendations { get; set; } = new StubRecommendations(_ => Task.FromResult<RecommendationsEvent?>(null));
 
+        /// <summary>要驗每輪摘要 log 時換成 ListLogger。</summary>
+        public ILogger<AgenticOrchestrator> Logger { get; set; } = NullLogger<AgenticOrchestrator>.Instance;
+
         public AgenticOrchestrator Build()
         {
             var llm = Microsoft.Extensions.Options.Options.Create(new LlmOptions());
@@ -60,7 +64,7 @@ public class AgenticOrchestratorTests
                 ? new ResilientChatCompletion(Chat, llm, (_, _) => Task.CompletedTask)
                 : Chat;
             return new AgenticOrchestrator(chat, Catalog, guard, prompts, SinkOverride ?? Audit, Options,
-                new SafetyClassifier(ClassifierChat, llm), NullLogger<AgenticOrchestrator>.Instance, Recommendations,
+                new SafetyClassifier(ClassifierChat, llm), Logger, Recommendations,
                 kernelFactory: (turn, tools, _) =>
                 {
                     var k = Kernel.CreateBuilder().Build();
@@ -735,5 +739,183 @@ public class AgenticOrchestratorTests
         Assert.Single(events.OfType<ErrorEvent>());
         Assert.Empty(h.Session.Adoptions);
         Assert.False(h.Session.Ledger.Contains(41720));
+    }
+
+    // ---- known-issues #7：上游觀察紀錄進 audit、每輪一行摘要 log ----
+
+    private static readonly UpstreamSafetyRating Explicit = new("HARM_CATEGORY_SEXUALLY_EXPLICIT", "MEDIUM", true);
+
+    /// <summary>例外的 reason 是從訊息字面猜的；handler 從回應本文讀到的才可靠，audit 與使用者看到的都用它。</summary>
+    [Fact]
+    public async Task Upstream_block_uses_the_reason_and_ratings_the_handler_saw()
+    {
+        var h = new Harness();
+        h.Chat.Then(_ =>
+        {
+            var d = UpstreamDiagnostics.Current!;
+            d.CallStarted();
+            d.CallCompleted(null, new UpstreamBlock("input_blocked", "PROHIBITED_CONTENT", new[] { Explicit, new UpstreamSafetyRating("HARM_CATEGORY_HARASSMENT", "NEGLIGIBLE", null) }));
+            throw new UpstreamBlockedException("SAFETY", attempts: 2);
+        });
+        var events = await h.RunAsync("一個少女");
+
+        Assert.Contains("PROHIBITED_CONTENT", Assert.Single(events.OfType<BlockedEvent>()).Message);
+        var row = Assert.Single(h.Audit.Entries, a => a.EventType == "Blocked_Upstream");
+        Assert.Equal("""{"reason":"PROHIBITED_CONTENT","stage":"loop","attempts":2,"upstream":{"kind":"input_blocked","reason":"PROHIBITED_CONTENT","safetyRatings":[{"category":"HARM_CATEGORY_SEXUALLY_EXPLICIT","probability":"MEDIUM","blocked":true},{"category":"HARM_CATEGORY_HARASSMENT","probability":"NEGLIGIBLE"}]}}""", row.PayloadJson);
+    }
+
+    [Fact]
+    public async Task Output_block_seen_by_the_handler_is_recorded_as_output_blocked()
+    {
+        var h = new Harness();
+        h.Chat.Then(_ =>
+        {
+            UpstreamDiagnostics.Current!.CallCompleted(null, new UpstreamBlock("output_blocked", "SAFETY", new[] { Explicit }));
+            throw new UpstreamBlockedException("SAFETY");
+        });
+        await h.RunAsync("一個少女");
+
+        var row = Assert.Single(h.Audit.Entries, a => a.EventType == "Blocked_Upstream");
+        Assert.Contains("""upstream":{"kind":"output_blocked","reason":"SAFETY","safetyRatings":[{"category":"HARM_CATEGORY_SEXUALLY_EXPLICIT","probability":"MEDIUM","blocked":true}]}""", row.PayloadJson!);
+    }
+
+    /// <summary>handler 沒看到攔截（例如 fake、或 connector 換版改走別的路）：照舊用例外的 reason，不硬塞空的 upstream。</summary>
+    [Fact]
+    public async Task Upstream_block_without_a_handler_record_keeps_the_old_payload()
+    {
+        var h = new Harness();
+        h.Chat.Throw(new UpstreamBlockedException("SAFETY"));
+        await h.RunAsync("x");
+
+        var row = Assert.Single(h.Audit.Entries, a => a.EventType == "Blocked_Upstream");
+        Assert.Equal("""{"reason":"SAFETY","stage":"loop"}""", row.PayloadJson);
+    }
+
+    /// <summary>#3：connector 只留 "400 (Bad Request)"，上游到底嫌哪裡要看本文。</summary>
+    [Fact]
+    public async Task Http_error_turn_failed_carries_the_upstream_status_and_body()
+    {
+        var h = new Harness();
+        const string body = """{"error":{"code":400,"message":"Please ensure that function call turn comes immediately after a user turn","status":"INVALID_ARGUMENT"}}""";
+        h.Chat.Then(_ =>
+        {
+            var d = UpstreamDiagnostics.Current!;
+            d.CallStarted();
+            d.CallCompleted(new UpstreamHttpError(400, body), null);
+            throw new HttpOperationException(System.Net.HttpStatusCode.BadRequest, body, "Response status code does not indicate success: 400 (Bad Request).", null);
+        });
+        await h.RunAsync("一個女生");
+
+        var row = Assert.Single(h.Audit.Entries, a => a.EventType == "Turn_Failed");
+        using var doc = JsonDocument.Parse(row.PayloadJson!);
+        var p = doc.RootElement;
+        Assert.Equal("HttpOperationException", p.GetProperty("errorClass").GetString());
+        Assert.Equal("Response status code does not indicate success: 400 (Bad Request).", p.GetProperty("message").GetString());
+        Assert.Equal(400, p.GetProperty("upstream").GetProperty("status").GetInt32());
+        Assert.Equal(body, p.GetProperty("upstream").GetProperty("body").GetString());
+    }
+
+    [Fact]
+    public async Task Failure_without_an_http_error_record_has_no_upstream_field()
+    {
+        var h = new Harness();
+        h.Chat.Then(_ =>
+        {
+            UpstreamDiagnostics.Current!.CallCompleted(null, null);           // 最近一次是 200
+            throw new InvalidOperationException("boom");
+        });
+        await h.RunAsync("一個少女");
+
+        Assert.DoesNotContain("upstream", Assert.Single(h.Audit.Entries, a => a.EventType == "Turn_Failed").PayloadJson!);
+    }
+
+    /// <summary>逾時：看得出這一輪打了幾次 Gemini、最後一次是不是卡在那裡。</summary>
+    [Fact]
+    public async Task Timeout_turn_failed_carries_the_call_count_and_the_pending_call()
+    {
+        var h = new Harness();
+        h.Options.TurnTimeoutSeconds = 1;
+        h.Chat.ThenAsync(async (hist, k, tct) =>
+        {
+            var d = UpstreamDiagnostics.Current!;
+            d.CallStarted(); d.CallCompleted(null, null);
+            d.CallStarted();                                          // 第二次一直沒回來
+            await Task.Delay(Timeout.Infinite, tct);
+            return Array.Empty<ChatMessageContent>();
+        });
+        await h.RunAsync("一個少女");
+
+        var row = Assert.Single(h.Audit.Entries, a => a.EventType == "Turn_Failed");
+        using var doc = JsonDocument.Parse(row.PayloadJson!);
+        var p = doc.RootElement;
+        Assert.Equal("Timeout", p.GetProperty("errorClass").GetString());
+        var upstream = p.GetProperty("upstream");
+        Assert.Equal(2, upstream.GetProperty("calls").GetInt32());
+        Assert.InRange(upstream.GetProperty("pendingMs").GetInt64(), 500, 60_000);
+    }
+
+    [Fact]
+    public async Task Timeout_with_no_call_in_flight_omits_pending_ms()
+    {
+        var h = new Harness();
+        h.Options.TurnTimeoutSeconds = 1;
+        h.Chat.ThenAsync(async (hist, k, tct) =>
+        {
+            var d = UpstreamDiagnostics.Current!;
+            d.CallStarted(); d.CallCompleted(null, null);
+            await Task.Delay(Timeout.Infinite, tct);                  // 卡在我們自己這邊，不是 Gemini
+            return Array.Empty<ChatMessageContent>();
+        });
+        await h.RunAsync("一個少女");
+
+        var row = Assert.Single(h.Audit.Entries, a => a.EventType == "Turn_Failed");
+        Assert.Contains("""
+            "upstream":{"calls":1}
+            """, row.PayloadJson!);
+    }
+
+    [Fact]
+    public async Task Each_turn_ends_with_one_summary_log_line()
+    {
+        var log = new ListLogger<AgenticOrchestrator>();
+        var h = new Harness { Logger = log };
+        h.Chat.ThenAsync(async (hist, k) =>
+        {
+            UpstreamDiagnostics.Current!.CallStarted();
+            await Invoke(hist, k!, "Session", "SetProfile", new { profile = "portrait" });
+            return new[] { await Invoke(hist, k!, "Dialog", "AskUser", AskArgs()) };
+        });
+        await h.RunAsync("一個銀髮少女");
+        h.Chat.Then(_ =>
+        {
+            UpstreamDiagnostics.Current!.CallStarted();
+            UpstreamDiagnostics.Current!.CallStarted();
+            throw new UpstreamBlockedException("SAFETY");
+        });
+        await h.RunAsync("她穿圍裙");
+
+        var lines = log.Lines.Where(l => l.Message.StartsWith("Turn ")).ToList();
+        Assert.Equal(2, lines.Count);
+        Assert.All(lines, l => Assert.Equal(LogLevel.Information, l.Level));
+        // 工具數：這個 harness 沒掛 filter，ToolCalls 不會累加，所以是 0
+        Assert.Matches(@"^Turn s1#1 Turn_Completed AskOutcome tools=0 gemini=1 \d+ ms$", lines[0].Message);
+        // 每輪一個新的 holder：第二輪從 0 算起；被擋的輪次 TurnIndex 回滾了，log 仍記它是第 2 輪
+        Assert.Matches(@"^Turn s1#2 Blocked_Upstream SAFETY tools=0 gemini=2 \d+ ms$", lines[1].Message);
+    }
+
+    [Fact]
+    public async Task Summary_log_covers_guard_blocks_and_failures_too()
+    {
+        var log = new ListLogger<AgenticOrchestrator>();
+        var h = new Harness { Logger = log };
+        h.GuardChat.Then(FakeChatCompletion.Text("""{"nsfw":true,"realPerson":false,"personName":null,"wantsAutoComplete":false,"reason":"r"}"""));
+        await foreach (var _ in h.Build().RunTurnAsync(h.Session, new TurnInput("x"), default)) { }
+        h.Chat.Throw(new InvalidOperationException("boom"));
+        await h.RunAsync("一個少女");
+
+        var lines = log.Lines.Where(l => l.Message.StartsWith("Turn ")).Select(l => l.Message).ToList();
+        Assert.Equal(2, lines.Count);
+        Assert.Matches(@"^Turn s1#1 Blocked_NSFW - tools=0 gemini=0 \d+ ms$", lines[0]);
+        Assert.Matches(@"^Turn s1#1 Turn_Failed InvalidOperationException tools=0 gemini=0 \d+ ms$", lines[1]);
     }
 }

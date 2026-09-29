@@ -273,6 +273,37 @@ public class FiltersTests
         Assert.Null(turn.CurrentCallId);              // 跑完就清掉，不會漏到下一個 tool
     }
 
+    /// <summary>known-issues #7：查 tag 問題時要從 audit 看得到檢索查了什麼、撈到什麼、定稿寫了什麼。</summary>
+    [Theory]
+    [InlineData("SearchPresets")]
+    [InlineData("FinalizePrompt")]
+    public async Task Audit_keeps_full_args_and_result_for_retrieval_and_finalize(string name)
+    {
+        var (k, _, _) = Kernel();
+        var sink = new MemorySink();
+        var arg = "silver hair, " + new string('a', 500);
+        var result = "{\"hits\":\"" + new string('b', 800) + "\"}";
+        await new AuditFilter(sink, NullLogger<AuditFilter>.Instance).OnAutoFunctionInvocationAsync(
+            Ctx(k, name, ("queries", arg)), c => { c.Result = new FunctionResult(c.Function, result); return Task.CompletedTask; });
+
+        using var doc = JsonDocument.Parse(Assert.Single(sink.Entries).PayloadJson!);
+        Assert.Equal(arg, doc.RootElement.GetProperty("args").GetString());
+        Assert.Equal(result, doc.RootElement.GetProperty("result").GetString());
+    }
+
+    [Fact]
+    public async Task Audit_still_truncates_other_tools_at_200()
+    {
+        var (k, _, _) = Kernel();
+        var sink = new MemorySink();
+        await new AuditFilter(sink, NullLogger<AuditFilter>.Instance).OnAutoFunctionInvocationAsync(
+            Ctx(k, "AskUser", ("preamble", new string('a', 500))), c => { c.Result = new FunctionResult(c.Function, new string('b', 800)); return Task.CompletedTask; });
+
+        using var doc = JsonDocument.Parse(Assert.Single(sink.Entries).PayloadJson!);
+        Assert.Equal(new string('a', 200) + "…", doc.RootElement.GetProperty("args").GetString());
+        Assert.Equal(new string('b', 200), doc.RootElement.GetProperty("result").GetString());
+    }
+
     [Fact]
     public async Task Audit_failure_does_not_fail_the_tool_call()
     {

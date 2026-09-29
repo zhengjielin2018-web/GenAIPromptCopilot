@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Text.Json;
 using Microsoft.SemanticKernel;
 using PromptCopilot.Api.Data;
+using PromptCopilot.Api.Orchestration;
 using PromptCopilot.Api.Streaming;
 
 namespace PromptCopilot.Api.Filters;
@@ -18,10 +19,13 @@ public sealed class AuditFilter(IAuditSink sink, ILogger<AuditFilter> logger) : 
         try { await next(context); }
         finally { turn.CurrentCallId = null; }
         var result = context.Result.ToString();
+        // 檢索與定稿存完整：查 tag 問題時要看得到查了什麼、撈到什麼、寫了什麼，截到 200 字就只能重跑推斷（known-issues #7）。
+        // 其他 tool 的參數與結果沒那麼常要回頭看，照舊截短。
+        var max = context.Function.Name is ToolNames.SearchPresets or ToolNames.FinalizePrompt ? int.MaxValue : 200;
         try
         {
             await sink.WriteAsync(new AuditEntry(turn.Session.Id, turn.TurnIndex, "Tool_Invoked",
-                PayloadJson: JsonSerializer.Serialize(new { name = context.Function.Name, args = TurnContextExtensions.Summary(context.Arguments, 200), result = result.Length > 200 ? result[..200] : result }),
+                PayloadJson: JsonSerializer.Serialize(new { name = context.Function.Name, args = TurnContextExtensions.Summary(context.Arguments, max), result = result.Length > max ? result[..max] : result }),
                 LatencyMs: (int)sw.ElapsedMilliseconds), context.CancellationToken);
         }
         catch (Exception e) when (e is not OperationCanceledException)
