@@ -214,4 +214,6 @@ prompt_version 都是 `8c10dcfe1f16`，跟子專案 3 驗收時能正常追問�
 
 **驗收**：單元測試（`AdoptionComposerTests`、`SystemPromptBuilderTests`、`TagAttributionTests`）；瀏覽器重跑 T5，看定稿裡上半身／材質只剩這套的 tag、`adopted` chip 只標這套的原字。
 
+2026-09-29 實測（`fix/adopt-replace` 建的 compose，前端操作）：不用 T5 的內容（開著審查會被 `Blocked_Output`），改用「一個少女穿紫色連帽外套和牛仔短褲、白色運動鞋」→ 定稿 `purple hoodie`、`denim shorts`、`white sneakers` → 採用 #41618「率性秋季日常裝」全部照它的。組句是「上半身照它的（crop top, white shirt, brown overcoat, open coat, long sleeves，取代原本的 purple hoodie）、下半身照它的（denim shorts, blue shorts，取代原本的 denim shorts）…；鞋履、配件飾品保留我的」；新定稿沒有 `purple hoodie`，上半身、下半身、頭部配件、材質只剩這套的 9 個 tag（全是 adopted），留我的 `white sneakers` 仍是 rag。儀表板「借用 3 筆」與定稿卡「檢索貢獻」的 3 列一致。小瑕疵：新舊 tag 相同時仍會寫「取代原本的 denim shorts」。
+
 **備註**：同一輪也把儀表板「借用」改成跟定稿卡「檢索貢獻」同一個歸屬（每個 rag tag 只算 `presetIds[0]`，commit `2d82451`）：驗收 R2 儀表板寫「借用 9 筆」、定稿卡只列 5 筆。
