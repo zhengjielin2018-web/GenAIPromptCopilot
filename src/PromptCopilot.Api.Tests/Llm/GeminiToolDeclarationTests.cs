@@ -95,7 +95,8 @@ public class GeminiToolDeclarationTests
         Assert.Equal(new[] { "query" }, required);
         var props = items.GetProperty("properties");
         Assert.Equal("string", props.GetProperty("query").GetProperty("type").GetString());
-        foreach (var optional in new[] { "dimension", "facetId" })
+        // tags 同理（2026-09-29）：它是 init 屬性，不進建構子，否則 SK 會把它列成 required。
+        foreach (var optional in new[] { "dimension", "facetId", "tags" })
         {
             Assert.Equal("string", props.GetProperty(optional).GetProperty("type").GetString());
             Assert.True(props.GetProperty(optional).GetProperty("nullable").GetBoolean());

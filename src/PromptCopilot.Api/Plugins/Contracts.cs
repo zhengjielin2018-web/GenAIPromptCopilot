@@ -20,19 +20,22 @@ public sealed record AskItem(
 /// facetId 把候選池縮到單一 facet（使用者講到的每個 facet 各一項），dimension 查整個維度（沒講的維度給兩個對比方向，可重複）。</summary>
 public sealed record SearchQuery
 {
-    public SearchQuery(string? dimension, string query, string? facetId = null)
+    public SearchQuery(string? dimension, string query, string? facetId = null, string? tags = null)
     {
-        Dimension = dimension; Query = query; FacetId = facetId;
+        Dimension = dimension; Query = query; FacetId = facetId; Tags = tags;
     }
 
     // 反序列化與 SK 產 schema 都走這個建構子。SK 把「沒有預設值的建構子參數」一律列進 required（不看 nullable），
-    // 寫成三個參數的 positional record 時 dimension 會變成必填；這裡只讓 query 當建構子參數，dimension／facetId 是可省略的 init 屬性。
+    // 寫成多參數的 positional record 時 dimension 會變成必填；這裡只讓 query 當建構子參數，其餘是可省略的 init 屬性。
     [JsonConstructor]
     private SearchQuery(string query) => Query = query;
 
     [JsonPropertyName("dimension")] public string? Dimension { get; init; }
     [JsonPropertyName("query")] public string Query { get; init; }
     [JsonPropertyName("facetId")] public string? FacetId { get; init; }
+    /// <summary>facet 項目專用（2026-09-29，facet 向量設計 §5.1）：使用者對這個 facet 的描述翻成的英文 SD tag，逗號分隔，寫法同 SetFacetStates 的 tags。
+    /// 查詢句會組成「原話（tags）」；維度項目帶了也忽略。伺服器不拿它更新 session.FacetTags。</summary>
+    [JsonPropertyName("tags")] public string? Tags { get; init; }
 }
 
 /// <summary>一輪的結果。終止型 tool 成功時由 plugin 設到 TurnContext；迴圈看到非 null 就停。</summary>
