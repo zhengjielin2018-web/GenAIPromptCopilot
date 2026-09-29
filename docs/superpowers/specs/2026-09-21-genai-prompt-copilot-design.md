@@ -97,7 +97,7 @@ LLM：**`gemini-3.5-flash-lite`**（子專案 1 執行時實測定案。注意�
 | Plugin.Function | 參數 | 性質 |
 | :--- | :--- | :--- |
 | `KnowledgePlugin.SearchSimilarPrompts` | `intent: string, topK: int = 3` | 可重複；RAG 1，查 `shared_prompt_histories`，以 session profile 過濾 |
-| `KnowledgePlugin.SearchPresets` | `queries: {dimension?, facetId?, query}[]`（≤ 24） | RAG 2，**分維度檢索** `prompt_knowledge_presets`：一次呼叫帶本輪所有要查的項目，每項一個 facet 或一個維度的專屬語句，同維度可重複（對比方向），見 §9 |
+| `KnowledgePlugin.SearchPresets` | `queries: {dimension?, facetId?, query, tags?}[]`（≤ 24；`tags` 只用於 facet 項目，2026-09-29） | RAG 2，**分維度檢索** `prompt_knowledge_presets`：一次呼叫帶本輪所有要查的項目，每項一個 facet 或一個維度的專屬語句，同維度可重複（對比方向），見 §9 |
 | `SessionPlugin.SetProfile` | `profile: portrait \| landscape \| object \| vehicle` | 可重複；設定題材 profile，重置 facet 狀態 |
 | `SessionPlugin.SetFacetStates` | `updates: FacetStateEntry[]` | 可重複；第一輪先標使用者已描述的 facet 為 covered，再檢索；也用於 `waived` 與委託 note；covered 的 facet 附 `tags`（英文，2026-09-25，整套組合推薦的錨） |
 | `DialogPlugin.AskUser` | `preamble: string, asks: { dimension, question, missingFacetIds, options }[], facetStates: FacetStateEntry[]` | **終止型**；`asks` 1–3 則，每則 `options` 2–4 個 |
@@ -113,7 +113,7 @@ LLM：**`gemini-3.5-flash-lite`**（子專案 1 執行時實測定案。注意�
 
 **`facetStates` 是陣列不是 dictionary。** `FacetStateEntry = { facetId: string, state: FacetState, note?: string, tags?: string }`，與 `SetFacetStates.updates` 同一個型別。SK 由 C# 型別產 function declaration 給 Gemini，`Dictionary<string, X>` 會變成「任意鍵的物件」——Gemini 的 schema 不支援開放鍵的 map，描述不出「鍵必須是 facet id」。陣列則能把 `facetId` 寫成具名欄位，順便讓 `note`（「使用者委託此項」）有地方放。`tags`（2026-09-25）是模型把使用者那一項翻成的英文 tag，只在 covered 時存進 `Session.FacetTags`，見 `2026-09-25-set-recommendations-design.md` §5.5。
 
-**`SearchPresets` 的每個項目只收 `dimension` 或 `facetId` 加上 `query`，`facetIds` 集合與 `k` 由伺服器導出。** 維度 → facet 集合是 `facets.yaml` 加 session profile 的函式，LLM 傳進來只是多一個可被捏造的欄位（同 §9 的 `grounded` 原則）；`facetId`（2026-09-25 起）是單一 facet，伺服器驗證它屬於本 profile 後候選池只剩它，維度取它所屬的（[批次設計 §8](2026-09-24-batch-search-presets-design.md)）；`k` 則取決於該維度 grounded 與否（grounded 5、missing 3），也是伺服器才知道的事。
+**`SearchPresets` 的每個項目只收 `dimension` 或 `facetId` 加上 `query`，`facetIds` 集合與 `k` 由伺服器導出。** 維度 → facet 集合是 `facets.yaml` 加 session profile 的函式，LLM 傳進來只是多一個可被捏造的欄位（同 §9 的 `grounded` 原則）；`facetId`（2026-09-25 起）是單一 facet，伺服器驗證它屬於本 profile 後候選池只剩它，維度取它所屬的（[批次設計 §8](2026-09-24-batch-search-presets-design.md)）；`k` 則取決於該維度 grounded 與否（grounded 5、missing 3），也是伺服器才知道的事。facet 項目另可選填 `tags`（2026-09-29，英文 SD tag；查詢句組成「原話（tags）」；維度項目帶了也忽略，見 [facet 向量設計](2026-09-29-facet-vector-retrieval-design.md) §5.1）。
 
 **`AskUser` 完整簽名**
 
@@ -733,7 +733,7 @@ scripts/
 4. **有錨**：只留 covered facet 底下有 tag 等於錨、或以「空白＋錨」結尾的片段，再依距離取 3 筆（`MATERIALIZED` CTE 精確排序，不走 HNSW，罕見的錨不會被掃描上限漏掉）。**不足 2 筆先試近似錨**（2026-09-29：該 facet 的 `FacetTags` 向量對子表同一 facet 的向量，距離 ≤ 0.23 且仍是組合的列，各 covered facet 合併取最小距離；≥ 2 筆顯示「接近你講的 …」），仍不足就改成不過濾、依距離取 3 筆（HNSW），不跟前面的結果合併。
 5. **沒錨**：直接走第 4 步的「不過濾」那條。
 
-兩條都依同一個向量排序；錨只決定排序前要不要先縮小範圍。卡片上有錨的顯示「含你講的 sandals」，退回的顯示「最接近你描述的組合」。細節見 [整套組合推薦設計](2026-09-25-set-recommendations-design.md) §4.4、§5.3。
+有錨與沒錨兩條依第 1 步的查詢向量排序；不足 2 筆時試的近似錨（2026-09-29）改依錨的 facet 向量比子表同一 facet 的向量排序，不是查詢向量，見 [facet 向量設計](2026-09-29-facet-vector-retrieval-design.md) §6。卡片上有錨的顯示「含你講的 sandals」、近似錨顯示「接近你講的 …」，都沒有則顯示「最接近你描述的組合」。細節見 [整套組合推薦設計](2026-09-25-set-recommendations-design.md) §4.4、§5.3。
 
 查詢向量於 runtime 以同一 embedding 模型計算；多個維度的查詢語句合併為單次 `embed_batch` 呼叫（2026-09-24 起 C# 端也是：批次簽名的緣由見 [批次 SearchPresets 設計](2026-09-24-batch-search-presets-design.md)）。
 
@@ -768,7 +768,7 @@ scripts/
 | :--- | :--- | :--- |
 | `session` | `{ sessionId, turnIndex, status, text? }` | 初始化。`text`（2026-09-25）只在採用輪出現，是伺服器組的採用句，前端用它換掉使用者泡泡 |
 | `tool_call` | `{ callId, name, argsSummary }` | 對話流插入行內卡片 |
-| `tool_result` | `{ callId, name, summary, presets?: [{id, title, imageUrl, sourceRef?}], detail? }` | 展開卡片；餵抽屜。`callId` **等於**對應 `tool_call` 的 `callId`（同一次呼叫的兩個事件），前端據此配對。`sourceRef`（2026-09-25 起）是資料來源識別，縮圖依前綴標來源名（`docs/資料來源.md`「署名機制」）。`detail`（2026-09-25 起）只有 `SearchPresets`（`{ items: [{ dimension, facetId?, label, query, grounded, poolSize, k, error?, hits: [{ id, title, band, dist, usable, facets }] }] }`）與 `SearchSimilarPrompts`（`{ hits: [{ intent, profile, dist }] }`）帶，給「顯示檢索細節」用，不含 snippet 本文；見 `2026-09-25-retrieval-switch-and-trace-design.md` §3.5 |
+| `tool_result` | `{ callId, name, summary, presets?: [{id, title, imageUrl, sourceRef?}], detail? }` | 展開卡片；餵抽屜。`callId` **等於**對應 `tool_call` 的 `callId`（同一次呼叫的兩個事件），前端據此配對。`sourceRef`（2026-09-25 起）是資料來源識別，縮圖依前綴標來源名（`docs/資料來源.md`「署名機制」）。`detail`（2026-09-25 起）只有 `SearchPresets`（`{ items: [{ dimension, facetId?, label, query, tags?, method, grounded, poolSize, k, error?, hits: [{ id, title, band, dist, usable, facets }] }] }`，`tags`／`method` 2026-09-29 起：`tags` 是這一項用了什麼英文（沒有就 null）、`method` 是 `facet` 或退路 `preset`，見 [facet 向量設計](2026-09-29-facet-vector-retrieval-design.md) §5.5）與 `SearchSimilarPrompts`（`{ hits: [{ intent, profile, dist }] }`）帶，給「顯示檢索細節」用，不含 snippet 本文；見 `2026-09-25-retrieval-switch-and-trace-design.md` §3.5 |
 | `dimensions` | `{ profile, facetStates: {facetId: state}, facetTags?: {facetId: "sandals"} }` | 儀表板更新 |
 | `recommendations` | `{ turnIndex, dimensions: [{ dimension, label, anchored, anchorTags, sets: [{ presetId, title, imageUrl?, sourceRef?, dist, facets: [{ facetId, label, state, tags }] }] }] }` | 整套組合推薦（2026-09-25）：追問時只有被問的維度、定稿時全部維度，跟在 `final`＋`dimensions` 之後；掛在該輪的追問卡／定稿卡下方。`retrieval: off` 的對話沒有。見 `2026-09-25-set-recommendations-design.md` §5 |
 | `token` | `{ text }` | 接到最近一則討論訊息後面。**後端現況不發**（回覆內容都是終止型 tool 的參數，一次到位）；前端 reducer 保留處理，但不對一次到位的文字做假的逐字動畫（子專案 3 設計 §1.2） |
@@ -1050,7 +1050,7 @@ Azure 部署排除。
 | 資料存取 | Npgsql + Pgvector 原生 SQL，不用 EF Core | 查詢全帶 `<=>` 與 `&&`，EF 對兩者都要走 raw SQL，多一層翻譯沒有收益（§7） |
 | embedding 客戶端 | 自己打 REST `:batchEmbedContents` | 要鎖住 `taskType`／`outputDimensionality`／L2 正規化與 Python 管線一致，SK 抽象當時蓋不到（§9） |
 | `facetStates` 形狀 | `FacetStateEntry[]`，不是 dictionary | Gemini 的 function declaration schema 描述不出開放鍵的 map；陣列還能放 `note`（§4.2） |
-| `SearchPresets` 參數 | 只收 `dimension` 或 `facetId` 與 `query` | `facetIds` 集合與 `k` 都是伺服器算得出來的，傳進來只是多一個可被捏造的欄位；`facetId` 是單一 facet，伺服器驗證屬於本 profile（§4.2、§9） |
+| `SearchPresets` 參數 | 只收 `dimension` 或 `facetId` 與 `query`；facet 項目另可選填 `tags`（2026-09-29） | `facetIds` 集合與 `k` 都是伺服器算得出來的，傳進來只是多一個可被捏造的欄位；`facetId` 是單一 facet，伺服器驗證屬於本 profile（§4.2、§9）；`tags` 是 facet 向量查詢句的一部分，模型不給就退回只用中文原話（§9、facet 向量設計 §5.1） |
 | `SearchPresets` 批次簽名 | `queries: {dimension, query}[]`，一輪一次呼叫 | 逐維度呼叫的規則跟預算 8 在算術上不相容（人像 6 維 + 對比方向 > 8），第一輪就強制定稿；Python 管線本來就是一次 `embed_batch`（known-issues #1、[批次設計](2026-09-24-batch-search-presets-design.md)） |
 | facet 層級查詢 | 項目可用 `facetId`（≤ 24 項） | 一句複合描述撈不到單品（`sandals` 19 筆卻沒進 ledger）；模型自發用 `facetId` 呼叫（[批次設計 §8](2026-09-24-batch-search-presets-design.md)） |
 | `MaxToolCallsPerTurn` | 16（原 8） | 批次後預期一輪 4–5 次；16 是模型仍逐維度呼叫時的保險，不是設計目標 |
