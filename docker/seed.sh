@@ -23,10 +23,20 @@ warn_unfilled() {
   fi
 }
 
+# facet 向量子表（2026-09-29）：v2 以前的種子沒有這張表的資料，SearchPresets 的 facet 項目會退回整套向量。
+warn_no_facet_vectors() {
+  presets=$(psql -tAc "SELECT count(*) FROM prompt_knowledge_presets")
+  vectors=$(psql -tAc "SELECT count(*) FROM preset_facet_embeddings")
+  if [ "$presets" -gt 0 ] && [ "$vectors" -eq 0 ]; then
+    echo "seed: preset_facet_embeddings 是空的，facet 檢索會退回整套向量。跑 scripts/embed_facet_tags.py，或改用 seed-v3 以上的種子。"
+  fi
+}
+
 count=$(psql -tAc "SELECT count(*) FROM prompt_knowledge_presets")
 if [ "$count" -gt 0 ]; then
   echo "seed: 已有資料 ${count} 筆，跳過。"
   warn_unfilled
+  warn_no_facet_vectors
   exit 0
 fi
 
@@ -43,4 +53,5 @@ rm -f /tmp/seed.dump
 psql -tAc "SELECT 'seed: presets ' || count(*) FROM prompt_knowledge_presets
            UNION ALL SELECT 'seed: histories ' || count(*) FROM shared_prompt_histories"
 warn_unfilled
+warn_no_facet_vectors
 echo "seed: 完成。"
