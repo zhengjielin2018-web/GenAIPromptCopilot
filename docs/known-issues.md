@@ -242,7 +242,7 @@ prompt_version 都是 `8c10dcfe1f16`，跟子專案 3 驗收時能正常追問�
 - 原本列的方向「正規化成 `FunctionResultContent`」走不通：connector 序列化時直接丟 `NotSupportedException: Unsupported content type. FunctionResultContent is not supported by Gemini.`。
 - `GeminiFunctionToolResult`、`FunctionResult` 都沒有公開的 setter，只能整則重建。
 
-**修正**（分支 `fix/history-trimmer-gemini`）：採「重建 Gemini 訊息」。
+**修正**（分支 `fix/history-trimmer-gemini`，commit `13a5a6d`）：採「重建 Gemini 訊息」。
 
 - `CompressTurn` 碰到帶 `CalledToolResults` 的 `GeminiChatMessageContent`，逐一用原本的 `CompressResult` 規則壓；壓得動的換成 `new GeminiFunctionToolResult(call, new FunctionResult(原結果, 壓縮字串))`，其餘沿用原物件，再在同一個 index 換掉整則訊息。`call` 從前一則 model 訊息公開的 `ToolCalls` 按名稱找回來（結果只從它取 `FullyQualifiedName`）。
 - 單一結果用公開的建構子，補回 `ModelId`、`Metadata`；多個結果的建構子是 internal，用反射呼叫（不能拆成多則：Gemini 要求 functionResponse 的 part 數跟 call 數一樣）。找不到建構子或重建出錯就不壓這則，不丟例外。
