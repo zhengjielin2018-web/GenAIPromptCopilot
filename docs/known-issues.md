@@ -38,6 +38,8 @@
 
 **修正方向**：#7 已完成，`Blocked_Upstream` 現在記得到攔截種類與 `safetyRatings`。下一步是重送「中年阿姨在廚房夾菜，穿著圍裙」，讀 payload 的 `upstream.kind` 與 `upstream.safetyRatings`，確認上面的假設。可以考慮的處理：調整 Gemini 的 `safetySettings` 門檻（要評估對 NSFW 防線的影響）、或在 `blocked` 的前端文案提示「換個說法」。這一項跟 NSFW 過濾範圍無關，過濾範圍已定案。
 
+**#7 的實測結果**（2026-09-29）：「中年阿姨在廚房夾菜，穿著圍裙」連送三次都是**輸入被拒**（`promptFeedback.blockReason = PROHIBITED_CONTENT`），`safetyRatings` 是空的；同一輪先跑的輸入分類器呼叫（同一個模型、同一句話）是 `STOP` 放行，被拒的是帶 system prompt 與工具定義的主迴圈第一次呼叫。`PROHIBITED_CONTENT` 不屬於 `safetySettings` 可調門檻的四個 harm 類別（那些會附 `safetyRatings`），所以「調 `safetySettings` 門檻」這條路走不通。上面「女性＋只穿圍裙＋廚房」的假設仍未證實也未排除；觸發點看起來是「生圖提示詞的語境＋這句話」的組合，而不是這句話本身。
+
 ## 8. `HistoryTrimmer` 對 Gemini 的工具結果從未生效（可觀測性／成本，中）
 
 - 現象：Google connector 把工具結果放在 `GeminiChatMessageContent.CalledToolResult`，tool 訊息的 `Items` 只有一個空的 `TextContent`，所以 `HistoryTrimmer.CompressTurn` 的 `Items.OfType<FunctionResultContent>()` 找不到東西，多輪 §6.3 的壓縮實際上一次都沒跑；下一輪請求仍帶完整片段本文。Reviewer 用 connector 真實產生的 history 實測確認（2026-09-24）。
@@ -207,7 +209,7 @@ prompt_version 都是 `8c10dcfe1f16`，跟子專案 3 驗收時能正常追問�
 - `Tool_Invoked` 的 `SearchPresets`、`FinalizePrompt` 存完整的 args 與 result，其他 tool 照舊截 200 字。
 - 主規格 §4.6、§6.2、§7 的 audit 欄位同步。
 
-**驗收**：單元測試（`GeminiDiagnosticsHandlerTests`、`AgenticOrchestratorTests`、`FiltersTests`）。上面的實測驗收（重送圍裙那句、看 `docker compose logs api`）還沒跑。
+**驗收**：單元測試（`GeminiDiagnosticsHandlerTests`、`AgenticOrchestratorTests`、`FiltersTests`）。2026-09-29 實測（`fix/upstream-diagnostics` 建的 api）：圍裙那句連送三次，三次都是 `Blocked_Upstream`，payload `upstream: {"kind":"input_blocked","reason":"PROHIBITED_CONTENT","safetyRatings":[]}`、`attempts: 2`；對照句「一隻橘貓睡在窗台上」正常追問。`docker compose logs api` 每次呼叫一行（例：`Gemini 200 696 ms finish=- block=PROHIBITED_CONTENT`）、每輪一行（`Turn 0c1c0ac7…#1 Blocked_Upstream PROHIBITED_CONTENT tools=0 gemini=3 2343 ms`），沒有 embedding 請求的 `System.Net.Http` 行。結果寫回 #4。
 
 ### 10. 「照它的」取代 covered facet 時，舊 tag 沒被拿掉
 
