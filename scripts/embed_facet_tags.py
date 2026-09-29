@@ -46,6 +46,8 @@ class Plan:
     upserts: list[Item] = field(default_factory=list)
     deletes: list[tuple[int, str]] = field(default_factory=list)
     unchanged: int = 0
+    # upserts 裡屬於「更新」的 (preset_id, facet_id)；不在裡面的 upserts 是「新增」
+    replacing: frozenset[tuple[int, str]] = field(default_factory=frozenset)
 
 
 def make_plan(presets: list[tuple[int, dict[str, list[str]]]], existing: dict[tuple[int, str], str]) -> Plan:
@@ -53,6 +55,7 @@ def make_plan(presets: list[tuple[int, dict[str, list[str]]]], existing: dict[tu
     upserts: list[Item] = []
     unchanged = 0
     wanted: set[tuple[int, str]] = set()
+    replacing: set[tuple[int, str]] = set()
     for pid, facet_tags in presets:
         for facet_id, tags in facet_tags.items():
             key = tag_key(tags)
@@ -63,8 +66,10 @@ def make_plan(presets: list[tuple[int, dict[str, list[str]]]], existing: dict[tu
                 unchanged += 1
             else:
                 upserts.append((pid, facet_id, key, embedding_text(tags)))
+                if (pid, facet_id) in existing:          # 子表已有這一列、只是 tag_key 不同：算「更新」不是「新增」
+                    replacing.add((pid, facet_id))
     deletes = sorted(k for k in existing if k not in wanted)
-    return Plan(upserts=upserts, deletes=deletes, unchanged=unchanged)
+    return Plan(upserts=upserts, deletes=deletes, unchanged=unchanged, replacing=frozenset(replacing))
 
 
 def load_plan(conn) -> Plan:
@@ -82,8 +87,9 @@ def run(conn, client, *, workers: int = WORKERS, batch_size: int = BATCH_SIZE, l
     started = time.monotonic()
     plan = load_plan(conn)
     todo = plan.upserts if limit is None else plan.upserts[:limit]
-    stats: dict = {"upserted": 0, "deleted": 0, "unchanged": plan.unchanged, "failed_batches": [],
-                   "planned_upserts": len(todo), "planned_deletes": len(plan.deletes), "elapsed_s": 0.0}
+    stats: dict = {"upserted": 0, "inserted": 0, "updated": 0, "deleted": 0, "unchanged": plan.unchanged,
+                   "failed_batches": [], "planned_upserts": len(todo), "planned_deletes": len(plan.deletes),
+                   "elapsed_s": 0.0}
     log(f"embed_facet_tags: 待算 {len(todo)}（共 {len(plan.upserts)}）、刪 {len(plan.deletes)}、不變 {plan.unchanged}")
     if dry_run:
         for item in todo[:10]:
@@ -100,7 +106,12 @@ def run(conn, client, *, workers: int = WORKERS, batch_size: int = BATCH_SIZE, l
     batches = _chunks(todo, batch_size)
 
     def embed(batch: list[Item]) -> tuple[list[Item], list[list[float]]]:
-        return batch, client.embed_batch([it[3] for it in batch], task_type="RETRIEVAL_DOCUMENT")
+        vectors = client.embed_batch([it[3] for it in batch], task_type="RETRIEVAL_DOCUMENT")
+        if len(vectors) != len(batch):
+            # Gemini 回傳的向量數跟送出的文字數對不上（漏字）：當成這一批失敗，不要用位置對齊硬寫，
+            # 也不要讓後面的 zip(strict=True) 自己炸——那樣這一批會整批丟例外但訊息看不出是這個原因。
+            raise ValueError(f"Gemini 回傳 {len(vectors)} 個向量，預期 {len(batch)} 個")
+        return batch, vectors
 
     # 送出在執行緒池、寫入在主執行緒：as_completed 誰先回來誰先寫，每批一個交易。
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
@@ -113,9 +124,16 @@ def run(conn, client, *, workers: int = WORKERS, batch_size: int = BATCH_SIZE, l
                 stats["failed_batches"].append([(it[0], it[1]) for it in batch])
                 log(f"  批次失敗（{len(batch)} 筆）：{type(e).__name__} {e}")
                 continue
+            # 這裡的資料庫錯誤（連線斷掉等）不攔截、直接往外炸掉整個 run：那不是「這一批」的問題，
+            # 硬要當成失敗批記下來、continue 下一批，只會在同一條斷掉的連線上再炸一次。已經 commit
+            # 的批次不會因此消失，重跑照常只補沒寫進去的。
             with conn.cursor() as cur:
                 for (pid, fid, key, _), vec in zip(items, vectors, strict=True):
                     cur.execute(UPSERT_SQL, (pid, fid, key, Vector(vec)))
+                    if (pid, fid) in plan.replacing:
+                        stats["updated"] += 1
+                    else:
+                        stats["inserted"] += 1
             conn.commit()
             stats["upserted"] += len(items)
             log(f"embed_facet_tags: {stats['upserted']}/{len(todo)} 已寫入")
@@ -138,8 +156,8 @@ def main(argv: list[str] | None = None) -> int:
     with connect() as conn:
         stats = run(conn, default_client(), workers=args.workers, batch_size=args.batch_size,
                     limit=args.limit, dry_run=args.dry_run)
-    print(f"完成：寫入 {stats['upserted']}、刪除 {stats['deleted']}、"
-          f"不變 {stats['unchanged']}，{stats['elapsed_s']:.0f} 秒")
+    print(f"完成：新增 {stats['inserted']}、更新 {stats['updated']}、刪除 {stats['deleted']}、"
+          f"不變（略過）{stats['unchanged']}，耗時 {stats['elapsed_s']:.0f} 秒")
     if stats["failed_batches"]:
         n = sum(len(b) for b in stats["failed_batches"])
         print(f"失敗 {len(stats['failed_batches'])} 批、{n} 筆，重跑會再試。第一批：{stats['failed_batches'][0][:5]}")

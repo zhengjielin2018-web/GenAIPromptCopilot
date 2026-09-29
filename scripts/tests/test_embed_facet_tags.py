@@ -25,6 +25,8 @@ def test_make_plan_upserts_missing_rows_skips_unchanged_and_deletes_vanished_fac
         (1, "clothing.upper", "kimono", "kimono"),               # 去重後只剩一個
         (2, "clothing.footwear", "sandals", "sandals"),
     ]
+    # (1, upper) 子表已有列、只是 tag 改過 → 更新；(2, footwear) 子表沒有這一列 → 新增，不在 replacing 裡
+    assert plan.replacing == frozenset({(1, "clothing.upper")})
 
 
 def test_make_plan_skips_facets_whose_tags_normalize_to_nothing():
@@ -143,6 +145,34 @@ def test_failed_batch_leaves_others_written_and_is_retried_next_run():
     conn2 = FakeConn(presets, [(1, "style.genre", "good"), (3, "style.genre", "fine")])
     stats2 = run(conn2, FakeClient(), workers=2, batch_size=1, log=lambda *_: None)
     assert _upserts(conn2) == [(2, "style.genre", "bad")] and stats2["unchanged"] == 2
+
+
+def test_run_reports_inserted_and_updated_separately():
+    presets = [(1, {"style.genre": ["new"]}), (2, {"style.genre": ["changed"]})]
+    conn = FakeConn(presets, [(2, "style.genre", "old")])   # (1,genre) 沒有既有列→新增；(2,genre) 改過→更新
+    stats = run(conn, FakeClient(), log=lambda *_: None)
+    assert stats["inserted"] == 1 and stats["updated"] == 1 and stats["upserted"] == 2
+
+
+class ShortClient:
+    """對某一批少回一個向量，模擬 Gemini 漏字（不是拋例外，是正常回應但數量對不上）。"""
+
+    def __init__(self, short_on: str):
+        self.short_on = short_on
+
+    def embed_batch(self, texts, *, task_type):
+        vectors = [[float(len(t))] + [0.0] * 767 for t in texts]
+        return vectors[:-1] if any(self.short_on in t for t in texts) else vectors
+
+
+def test_batch_with_mismatched_vector_count_is_recorded_as_failed():
+    # Review round 1, Finding 2：向量數跟送出的文字數對不上時，這一批要算失敗、不能拖垮其他批
+    presets = [(1, {"style.genre": ["good"]}), (2, {"style.genre": ["short"]}), (3, {"style.genre": ["fine"]})]
+    conn = FakeConn(presets, [])
+    stats = run(conn, ShortClient("short"), workers=2, batch_size=1, log=lambda *_: None)
+    assert sorted(_upserts(conn)) == [(1, "style.genre", "good"), (3, "style.genre", "fine")]
+    assert stats["failed_batches"] == [[(2, "style.genre")]]
+    assert stats["upserted"] == 2
 
 
 def test_dry_run_plans_but_neither_embeds_nor_writes():
