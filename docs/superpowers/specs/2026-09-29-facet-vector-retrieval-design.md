@@ -67,7 +67,7 @@ CREATE TABLE IF NOT EXISTS preset_facet_embeddings (
     PRIMARY KEY (preset_id, facet_id)
 );
 CREATE INDEX IF NOT EXISTS idx_pfe_facet ON preset_facet_embeddings (facet_id);
--- 刻意不建 HNSW：單一 facet 的池最多約 4,000 筆，B-tree 縮池後精確排序就夠快，
+-- 刻意不建 HNSW：單一 facet 的池最多約 3,700 筆，B-tree 縮池後精確排序就夠快，
 -- 也沒有「HNSW 先搜再過濾」漏筆的問題（known-issues #2）。理由見 facet 向量設計 §7。
 ```
 
@@ -93,12 +93,13 @@ CREATE INDEX IF NOT EXISTS idx_pfe_facet ON preset_facet_embeddings (facet_id);
 - `docker/seed.sh` 匯入後多一條提醒：片段有資料但 `preset_facet_embeddings` 是空的，印「facet 檢索會退回整套向量；跑 `scripts/embed_facet_tags.py` 或改用 seed-v3 以上的種子」。
 - 大小：seed-v2 是 105MB，37k 個 768 維向量幾乎壓不下去，v3 估計約 210MB。
 - compose 預設 `SEED_URL` 改指向 v3，**要等 Release 上傳之後**另外一個 commit（§11）。
+- 子表對 `prompt_knowledge_presets` 有外鍵。`pg_dump --data-only` 會依外鍵順序輸出（先片段再子表），`export_seed.py` 本來就會把 dump 灌回全新 schema 驗證一次，這一步順便證明順序沒問題。`seed.sh` 是先跑 migrations（含 `003`）再 `pg_restore`，所以匯入時子表已存在。v2 dump 灌進新 schema 仍可用，只是子表是空的、走退路。
 
 ## 5. `SearchPresets`
 
 ### 5.1 介面
 
-`SearchQuery` 加選填 `tags`（英文 SD tag，逗號分隔）。只有 facet 項目用；維度項目帶了也忽略。
+`SearchQuery` 加選填 `tags`（英文 SD tag，逗號分隔）。只有 facet 項目用；維度項目帶了也忽略。實作上要跟 `dimension`／`facetId` 一樣做成 `init` 屬性、不進建構子：SK 把沒有預設值的建構子參數一律列成 required（`Contracts.cs` 的註解），寫成建構子參數模型就會被迫每項都填。
 
 - 工具與參數說明：facet 項目附上使用者對這個 facet 的描述翻成的英文 tag，寫法跟 `SetFacetStates` 的 `tags` 一樣。
 - `system.md`／`SystemPromptBuilder` 第 1 條的範例改成 `clothing.footwear`＋「拖鞋」＋`slippers`、`appearance.hair`＋「銀色雙馬尾」＋`silver hair, twintails`。
@@ -125,9 +126,9 @@ ORDER BY d.dist
 LIMIT @k
 ```
 
-- 回傳仍是 `PresetHit`（整筆片段），只是排序與 `dist` 來自 facet 向量。ledger、「可借入／僅供建議」、facet 覆蓋標記、`HistoryTrimmer` 壓縮都不用改。
-- **候選池筆數**：facet 項目改報 `preset_facet_embeddings` 裡該 facet 的列數（有這個 facet tag 的片段數；鞋履 396 → 338），這才是被搜的範圍。
-- **舊資料庫退路**：該 facet 在子表是 0 筆 → 走原本的 `SearchAsync`（`facet_ids` 過濾＋整套向量）與原本的池計數。
+- 回傳仍是 `PresetHit`（整筆片段），只是排序與 `dist` 來自 facet 向量。`k` 照舊（grounded 5、否則 3）。ledger、「可借入／僅供建議」、facet 覆蓋標記、`HistoryTrimmer` 壓縮都不用改。
+- **候選池筆數**：facet 項目改報 `preset_facet_embeddings` 裡該 facet 的**列數**（有這個 facet tag 的片段數，不是去重後的 `tag_key` 數；鞋履 396 → 338），這才是被搜的範圍。池計數是看知識庫缺口用的，數片段比數 tag 組合直觀。儀表板的池 chip 會跟著變小，屬預期。
+- **舊資料庫退路**：上面那個計數同時就是退路判斷——0 筆 → 走原本的 `SearchAsync`（`facet_ids` 過濾＋整套向量）與原本的池計數，不多一次查詢。子表只回填了一部分時（例如重跑 backfill 後還沒重算），只搜有列的那些片段，不混用兩種向量。
 - 維度項目不變。
 
 ### 5.4 分級門檻
@@ -150,7 +151,7 @@ facet 項目改用另一組常數：**高 < 0.22、中 < 0.27**（實驗 V4d 前
 `RecommendationService.BuildAsync` 每個維度：
 
 1. **字面錨**（不變）：錨＝covered facet 的 `FacetTags`＋定稿 positive；`RecommendAsync` 過濾後命中 ≥ 2 → `anchored`。
-2. **近似錨**（新）：字面錨不到 2 筆時，對這個維度裡「covered 且有 `FacetTags`」的每個 facet，拿該 facet 的錨去比子表裡同一個 facet 的向量；距離在門檻內、且符合組合條件的列取前 `RecommendationTake` 筆。各 facet 的結果合併，同一片段取最小距離，依距離排序取前 `RecommendationTake`。≥ 2 筆 → `similar`。
+2. **近似錨**（新）：字面錨不到 2 筆時，對這個維度裡「covered 且有 `FacetTags`」的每個 facet，拿該 facet 的錨去比子表裡同一個 facet 的向量；距離在門檻內、且符合組合條件的列取前 `RecommendationTake` 筆。各 facet 的結果合併，同一片段取最小距離，依距離排序取前 `RecommendationTake`。≥ 2 筆 → `similar`。字面錨命中的那 0–1 筆若也在門檻內會一起出現，不用特別排除。
 3. **無錨**（不變）：上面都不到 2 筆。
 
 子表是空的（舊資料庫）就跳過第 2 步，行為跟現在一樣。
@@ -182,7 +183,7 @@ LIMIT @take
 
 ### 6.5 事件、前端、audit
 
-- `RecommendedDimension` 加 `Similar`（bool）。`Anchored` 仍只代表字面命中；兩者不會同時為 true。`AnchorTags` 在近似時列出真的有命中的錨（該 facet 的 `FacetTags`，正規化後）。
+- `RecommendedDimension` 加 `Similar`（bool）。`Anchored` 仍只代表字面命中；兩者不會同時為 true。`AnchorTags` 在近似時列出「有貢獻」的錨：哪些 facet 的近似查詢至少有一筆進了最後的前 `RecommendationTake`，就列那些 facet 的 `FacetTags`（正規化後、去重、保序）。
 - 前端 `types/api.ts` 加 `similar`；`RecommendationStrip.vue` 的文案：`anchored` →「含你講的 …」、`similar` →「接近你講的 …」、否則「最接近你描述的組合」。
 - audit `Turn_Completed` 的 `recommendations.dimensions[]` 加 `similar`，之後看得出近似錨出現的頻率。
 - 採用（`AdoptionComposer`）不變，照舊從 `facet_tags` 拿 tag。
@@ -218,7 +219,7 @@ LIMIT @take
 
 ## 9. 驗收
 
-1. **離線重跑實驗**：同一組 17 題，查詢句照 §5.2（英文 tag 用實驗紀錄結果表的「英文 tag」欄，跟實驗同一組），走正式的 `SearchFacetAsync`。預期前 5 名命中約 76、相異組合約 85。結果補進實驗紀錄。
+1. **離線重跑實驗**：同一組 17 題，查詢句照 §5.2（英文 tag 用實驗紀錄結果表的「英文 tag」欄，跟實驗同一組），對回填好的子表跑 §5.3 那條 SQL（Python 一次性腳本即可，不必經過 C#；只要 SQL 逐字相同）。預期前 5 名命中約 76、相異組合約 85；數字會跟實驗略有出入，因為正式版剝了權重、`tag_key` 不看順序。結果補進實驗紀錄。
 2. **查詢速度**：`scene.location` 跑 `EXPLAIN ANALYZE`，記下耗時。
 3. **線上**（Claude 用 Playwright 驅動 headless Edge，對新分支建的 compose，實際呼叫 Gemini），案例寫進 `docs/eval-cases.md` 新的一節：
    - R2 同一句「一個銀髮少女穿涼鞋站在雨夜街頭」：鞋履前 5 名是不同寫法的涼鞋；工具卡顯示「涼鞋（sandals）」與 `method: facet`。
@@ -247,5 +248,6 @@ LIMIT @take
 - **翻譯錯**：`tags` 翻錯時中文原話還在查詢句裡；比只用英文穩，但無法完全抵銷。
 - **分級門檻**：0.22／0.27 只來自 17 題。驗收後若「高」太少或太多再調。
 - **近似錨門檻**：0.23 是從 facet 查詢的分布推的，錨的文字（多個 tag 串接）可能讓距離整體偏移；驗收實測決定。
+- **近似錨仍用 `session.FacetTags`**：所以 known-issues §10「換了內容沒重給 `tags` 時舊錨留著」的問題會跟著進來——跟現有的字面錨一樣，不是本案新增的風險。`SearchPresets` 不用 `FacetTags` 就是為了不把這個問題帶進借 tag 的主路徑。
 - **seed 變大**：約 210MB；真的造成困擾就把子表換成 `halfvec`。
 - **`facet_tags` 本身的錯誤**：回填歸錯 facet 的 tag 會被算進錯的 facet 向量；這是回填品質問題，不在本案處理。
