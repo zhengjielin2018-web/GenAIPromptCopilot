@@ -271,6 +271,20 @@ public class TagAttributionTests
         Assert.Equal("llm", Assert.Single(TagAttribution.Attribute("shirt", Ledger(), negative: true, a)).Origin);
     }
 
+    /// <summary>與 scripts/pipeline/tags.py 的 SHARED_CASES 同一份：facet 向量的文字由 Python 算、C# 查詢時比對，兩邊正規化不能有一字之差。改一邊就要改另一邊。</summary>
+    [Theory]
+    [InlineData("(Sandals:1.2)", "sandals")]
+    [InlineData("platform_sandals", "platform sandals")]
+    [InlineData("((tag))", "tag")]
+    [InlineData("(a) (b)", "(a) (b)")]
+    [InlineData("  Long   Hair ", "long hair")]
+    [InlineData("(masterpiece:1.2)", "masterpiece")]
+    [InlineData("tag:0.8", "tag")]
+    [InlineData("( :1.2)", "")]
+    [InlineData("sandals", "sandals")]
+    [InlineData("(Long_Hair:1.2)", "long hair")]
+    public void Normalize_matches_the_shared_cases(string raw, string expected) => Assert.Equal(expected, TagAttribution.Normalize(raw));
+
     [Fact]
     public void Split_normalize_and_endswithword_are_public_and_shared()
     {
