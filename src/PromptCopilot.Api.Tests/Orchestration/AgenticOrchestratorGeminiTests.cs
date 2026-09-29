@@ -13,7 +13,7 @@ namespace PromptCopilot.Api.Tests.Orchestration;
 /// HTTP 用假 handler，不打 Gemini；組法跟 Program.cs 一樣經過 GeminiRoleFixHandler。</summary>
 public class AgenticOrchestratorGeminiTests
 {
-    /// <summary>2026-09-29 對 gemini-3.5-flash-lite（v1beta generateContent）實打拿到的本文：contents 以 model 結尾，
+    /// <summary>2026-09-29 對 gemini-3.5-flash-lite（v1beta generateContent）實打拿到的狀態與訊息（外層照 Gemini 一般的錯誤格式包）：contents 以 model 結尾，
     /// 有沒有帶 tools 都一樣；後面補一則 user 就 200。</summary>
     private const string EndsWithModel400 =
         """{"error":{"code":400,"message":"Requests ending with a model turn are not supported.","status":"INVALID_ARGUMENT"}}""";
