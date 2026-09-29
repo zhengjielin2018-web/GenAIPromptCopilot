@@ -5,7 +5,7 @@
     <div v-for="d in recs.dimensions" :key="d.dimension" class="mt-2.5">
       <p class="flex flex-wrap items-baseline gap-x-2 text-xs">
         <span class="font-medium">{{ d.label }}</span>
-        <span class="text-[11px] text-muted">{{ d.anchored ? `含你講的 ${d.anchorTags.join(', ')}` : '最接近你描述的組合' }}</span>
+        <span class="text-[11px] text-muted">{{ recommendationLead(d) }}</span>
       </p>
       <ul class="mt-1.5 flex gap-2 overflow-x-auto pb-1">
         <li v-for="set in d.sets" :key="set.presetId" class="w-28 shrink-0">
@@ -30,7 +30,7 @@
 
 <script setup lang="ts">
 import type { Recommendations } from '../types/api'
-import { sourceName } from '../lib/copy'
+import { recommendationLead, sourceName } from '../lib/copy'
 /** recs：該輪的 recommendations 事件；turnIndex：卡片的輪次。只有最新一張追問卡／定稿卡可以採用（舊卡的狀態已失效）。 */
 const props = defineProps<{ recs: Recommendations; turnIndex: number }>()
 const s = useSessionStore()

@@ -14,6 +14,10 @@ export interface SearchPresetsHit { id: number; title: string; band: string; dis
 export interface SearchPresetsItem {
   dimension: string; facetId?: string | null; label: string; query: string
   grounded: boolean; poolSize: number; k: number; error?: string | null; hits: SearchPresetsHit[]
+  /** facet 項目這次用的英文 tag（2026-09-29）；沒有、或舊資料沒這欄就當沒有 */
+  tags?: string | null
+  /** facet：facet 向量子表；preset：整套向量（維度項目，或子表沒資料的退路）。舊資料沒這欄當 preset */
+  method?: 'facet' | 'preset'
 }
 export interface SearchPresetsDetail { items: SearchPresetsItem[] }
 export interface SearchSimilarHit { intent: string; profile: string; dist: number }
@@ -41,7 +45,8 @@ export type FinalData =
 /** 整套組合推薦（2026-09-25，設計 §5.4）：跟在 final 之後，掛在該輪的追問卡／定稿卡上。facets 列該維度全部 facet，state 是本輪結束時的四態。 */
 export interface RecommendedFacet { facetId: string; label: string; state: FacetState; tags: string[] }
 export interface RecommendedSet { presetId: number; title: string; imageUrl?: string | null; sourceRef?: string | null; dist: number; facets: RecommendedFacet[] }
-export interface RecommendedDimension { dimension: string; label: string; anchored: boolean; anchorTags: string[]; sets: RecommendedSet[] }
+/** similar（2026-09-29）：字面錨抓不到、改用 facet 向量離錨夠近的組合；與 anchored 不會同時為 true。舊資料沒這欄當 false */
+export interface RecommendedDimension { dimension: string; label: string; anchored: boolean; similar?: boolean; anchorTags: string[]; sets: RecommendedSet[] }
 export interface Recommendations { turnIndex: number; dimensions: RecommendedDimension[] }
 
 /** POST /api/sessions/{id}/messages 的 adopt：照它的 facet 清單，其餘該維度 facet 保留使用者原本的。 */

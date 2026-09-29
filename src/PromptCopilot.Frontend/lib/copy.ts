@@ -44,3 +44,21 @@ export function sourceNotice(sourceRef: string | null | undefined): { name: stri
   const s = sourceOf(sourceRef)
   return { name: s?.name ?? null, text: s?.notice ?? GENERIC_NOTICE }
 }
+
+/** 推薦區塊每個維度的說明（facet 向量設計 §6.5）。 */
+export function recommendationLead(d: { anchored: boolean; similar?: boolean; anchorTags: string[] }): string {
+  if (d.anchored) return `含你講的 ${d.anchorTags.join(', ')}`
+  if (d.similar) return `接近你講的 ${d.anchorTags.join(', ')}`
+  return '最接近你描述的組合'
+}
+
+/** 工具卡的查詢句：facet 項目帶英文時顯示「原話（英文）」，跟送去 embedding 的字串同形。 */
+export function queryLabel(it: { query: string; tags?: string | null }): string {
+  return it.tags ? `${it.query}（${it.tags}）` : it.query
+}
+
+/** 只有 facet 項目標示走哪種向量；維度項目本來就只有整套向量，不標。 */
+export function methodLabel(it: { facetId?: string | null; method?: 'facet' | 'preset' }): string | null {
+  if (!it.facetId) return null
+  return it.method === 'facet' ? 'facet 向量' : '整套向量'
+}
