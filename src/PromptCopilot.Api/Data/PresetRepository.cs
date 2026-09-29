@@ -19,7 +19,7 @@ public sealed record PresetCandidate(long Id, string Title, IReadOnlyList<string
 
 public class PresetRepository(NpgsqlDataSource ds)
 {
-    // 與 scripts/pipeline/retrieval.py 的 PRESETS_SQL 一致：GIN 過濾該維度 facet，HNSW 依「這一句自己的向量」排序，不設門檻
+    // 維度項目與舊資料庫退路用；與 scripts/pipeline/retrieval.py 的 PRESETS_SQL 一致。facet 項目走 SearchFacetSql（2026-09-29）：GIN 過濾該維度 facet，HNSW 依「這一句自己的向量」排序，不設門檻
     private const string SearchSql = """
         SELECT id, title, category, facet_ids, prompt_snippet, negative_snippet, image_url,
                preset_embedding <=> @q AS dist, source_ref
@@ -72,6 +72,32 @@ public class PresetRepository(NpgsqlDataSource ds)
         ORDER BY dist
         LIMIT @take
         """;
+    // facet 層級向量（facet 向量設計 §5.3）：子表以 facet_id 的 B-tree 縮池，之後精確算距離。
+    // 不建 HNSW：池最多約 3,700 筆，而且要依 tag_key 去重（同一組 tag 的片段向量一模一樣，不去重前 5 名常是 5 筆 sandals）——去重要看完整個池，近似索引幫不上（設計 §7）。
+    private const string FacetPoolSql = "SELECT count(*) FROM preset_facet_embeddings WHERE facet_id = @facet";
+    private const string SearchFacetSql = """
+        WITH d AS (
+            SELECT DISTINCT ON (tag_key) preset_id, embedding <=> @q AS dist
+            FROM preset_facet_embeddings
+            WHERE facet_id = @facet
+            ORDER BY tag_key, dist
+        )
+        SELECT p.id, p.title, p.category, p.facet_ids, p.prompt_snippet, p.negative_snippet, p.image_url, d.dist, p.source_ref
+        FROM d JOIN prompt_knowledge_presets p ON p.id = d.preset_id
+        ORDER BY d.dist
+        LIMIT @k
+        """;
+    // 近似錨（設計 §6.3）：字面錨不到 2 筆時，拿該 facet 的錨去比同一個 facet 的向量，門檻內、且仍是「組合」的列。不去重：整套穿搭不同才是要給使用者比的。
+    private const string RecommendSimilarSql = $"""
+        SELECT p.id, p.title, p.facet_ids, p.facet_tags::text, p.image_url, p.source_ref, e.embedding <=> @a AS dist
+        FROM preset_facet_embeddings e
+        JOIN prompt_knowledge_presets p ON p.id = e.preset_id
+        WHERE e.facet_id = @facet
+          AND e.embedding <=> @a <= @maxDist
+          AND {SetFilter}
+        ORDER BY dist
+        LIMIT @take
+        """;
 
     public virtual async Task<IReadOnlyList<PresetHit>> SearchAsync(float[] query, IReadOnlyList<string> facetIds, int k, CancellationToken ct)
     {
@@ -79,13 +105,7 @@ public class PresetRepository(NpgsqlDataSource ds)
         cmd.Parameters.AddWithValue("q", new Vector(query));
         cmd.Parameters.AddWithValue("facets", facetIds.ToArray());
         cmd.Parameters.AddWithValue("k", k);
-        var list = new List<PresetHit>();
-        await using var r = await cmd.ExecuteReaderAsync(ct);
-        while (await r.ReadAsync(ct))
-            list.Add(new PresetHit(r.GetInt64(0), r.GetString(1), r.GetString(2), r.GetFieldValue<string[]>(3), r.GetString(4),
-                r.IsDBNull(5) ? null : r.GetString(5), r.IsDBNull(6) ? null : r.GetString(6), r.GetDouble(7),
-                r.IsDBNull(8) ? null : r.GetString(8)));
-        return list;
+        return await ReadHitsAsync(cmd, ct);
     }
 
     public virtual async Task<long> PoolSizeAsync(IReadOnlyList<string> facetIds, CancellationToken ct)
@@ -109,6 +129,52 @@ public class PresetRepository(NpgsqlDataSource ds)
             cmd.Parameters.AddWithValue("anchorTags", anchorTags.ToArray());
             cmd.Parameters.AddWithValue("anchorSuffixes", anchorTags.Select(t => "% " + EscapeLike(t)).ToArray());
         }
+        return await ReadCandidatesAsync(cmd, ct);
+    }
+
+    public virtual async Task<long> FacetPoolSizeAsync(string facetId, CancellationToken ct)
+    {
+        await using var cmd = ds.CreateCommand(FacetPoolSql);
+        cmd.Parameters.AddWithValue("facet", facetId);
+        return (long)(await cmd.ExecuteScalarAsync(ct))!;
+    }
+
+    public virtual async Task<IReadOnlyList<PresetHit>> SearchFacetAsync(float[] query, string facetId, int k, CancellationToken ct)
+    {
+        await using var cmd = ds.CreateCommand(SearchFacetSql);
+        cmd.Parameters.AddWithValue("q", new Vector(query));
+        cmd.Parameters.AddWithValue("facet", facetId);
+        cmd.Parameters.AddWithValue("k", k);
+        return await ReadHitsAsync(cmd, ct);
+    }
+
+    public virtual async Task<IReadOnlyList<PresetCandidate>> RecommendSimilarAsync(float[] anchor, string facetId, IReadOnlyList<string> dimensionFacets,
+        double maxDist, int take, CancellationToken ct)
+    {
+        await using var cmd = ds.CreateCommand(RecommendSimilarSql);
+        cmd.Parameters.AddWithValue("a", new Vector(anchor));
+        cmd.Parameters.AddWithValue("facet", facetId);
+        cmd.Parameters.AddWithValue("facets", dimensionFacets.ToArray());
+        cmd.Parameters.AddWithValue("maxDist", maxDist);
+        cmd.Parameters.AddWithValue("take", take);
+        return await ReadCandidatesAsync(cmd, ct);
+    }
+
+    /// <summary>SearchAsync／SearchFacetAsync 共用：欄位順序相同（9 欄），差別只在 SQL 怎麼算 dist。</summary>
+    private static async Task<List<PresetHit>> ReadHitsAsync(NpgsqlCommand cmd, CancellationToken ct)
+    {
+        var list = new List<PresetHit>();
+        await using var r = await cmd.ExecuteReaderAsync(ct);
+        while (await r.ReadAsync(ct))
+            list.Add(new PresetHit(r.GetInt64(0), r.GetString(1), r.GetString(2), r.GetFieldValue<string[]>(3), r.GetString(4),
+                r.IsDBNull(5) ? null : r.GetString(5), r.IsDBNull(6) ? null : r.GetString(6), r.GetDouble(7),
+                r.IsDBNull(8) ? null : r.GetString(8)));
+        return list;
+    }
+
+    /// <summary>RecommendAsync／RecommendSimilarAsync 共用：欄位順序相同（7 欄）。</summary>
+    private static async Task<List<PresetCandidate>> ReadCandidatesAsync(NpgsqlCommand cmd, CancellationToken ct)
+    {
         var list = new List<PresetCandidate>();
         await using var r = await cmd.ExecuteReaderAsync(ct);
         while (await r.ReadAsync(ct))

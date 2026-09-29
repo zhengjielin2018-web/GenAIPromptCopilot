@@ -11,6 +11,16 @@ public class RepositoryIntegrationTests(ITestOutputHelper output) : IAsyncLifeti
     private NpgsqlDataSource _ds = null!;
     private static readonly string Ref = $"test:{Guid.NewGuid():N}";
     private static readonly string Ref2 = Ref + ":1";
+    // facet 向量測試專用列（測試穿搭二／測試穿搭三／測試單品）；Ref3/Ref4/Ref5 必須排在 Ref 之後宣告，C# 靜態欄位按宣告順序初始化。
+    private static readonly string Ref3 = Ref + ":2";
+    private static readonly string Ref4 = Ref + ":3";
+    private static readonly string Ref5 = Ref + ":4";
+    // 測試專用 facet 命名空間：開發庫之後會塞進約 37k 筆真實 preset_facet_embeddings（光 clothing.footwear 就約 338 筆），
+    // 斷言精確筆數／精確排序的測試不能撞到真實資料，所以不用 clothing.* 這種真實 facet id，改用 GUID 派生的獨有 facet id。
+    private static readonly string Fx = $"t{Guid.NewGuid():N}";
+    private static readonly string FxUpper = Fx + ".upper";
+    private static readonly string FxLower = Fx + ".lower";
+    private static readonly string FxFootwear = Fx + ".footwear";
     private static float[] Unit(int hot) { var v = new float[768]; v[hot] = 1f; return v; }
 
     public async Task InitializeAsync()
@@ -20,19 +30,44 @@ public class RepositoryIntegrationTests(ITestOutputHelper output) : IAsyncLifeti
             INSERT INTO prompt_knowledge_presets (source_ref, title, category, description, tags, facet_ids, prompt_snippet, negative_snippet, preset_embedding, facet_tags)
             VALUES (@r, '測試片段', 'Style', 'd', ARRAY['x'], ARRAY['style.genre'], 'photo realism', NULL, @e, NULL),
                    (@r2, '測試穿搭', 'Clothing', 'd', ARRAY['x'], ARRAY['clothing.upper','clothing.lower','clothing.footwear'], 'white shirt, platform sandals', NULL, @e,
-                    '{"clothing.upper":["white shirt"],"clothing.lower":[],"clothing.footwear":["platform sandals"]}'::jsonb)
+                    '{"clothing.upper":["white shirt"],"clothing.lower":[],"clothing.footwear":["platform sandals"]}'::jsonb),
+                   (@r3, '測試穿搭二', 'Clothing', 'd', ARRAY['x'], ARRAY[@fxUpper,@fxLower,@fxFootwear], 'white shirt, platform sandals', NULL, @e,
+                    jsonb_build_object(@fxUpper, ARRAY['white shirt'], @fxLower, ARRAY[]::text[], @fxFootwear, ARRAY['platform sandals'])),
+                   (@r4, '測試穿搭三', 'Clothing', 'd', ARRAY['x'], ARRAY[@fxUpper,@fxFootwear], 'black shirt, platform sandals', NULL, @e,
+                    jsonb_build_object(@fxUpper, ARRAY['black shirt'], @fxFootwear, ARRAY['platform sandals'])),
+                   (@r5, '測試單品', 'Clothing', 'd', ARRAY['x'], ARRAY[@fxFootwear], 'sneakers', NULL, @e,
+                    jsonb_build_object(@fxFootwear, ARRAY['sneakers']))
+            RETURNING id
             """);
-        cmd.Parameters.AddWithValue("r", Ref);
-        cmd.Parameters.AddWithValue("r2", Ref2);
+        cmd.Parameters.AddWithValue("r", Ref); cmd.Parameters.AddWithValue("r2", Ref2);
+        cmd.Parameters.AddWithValue("r3", Ref3); cmd.Parameters.AddWithValue("r4", Ref4); cmd.Parameters.AddWithValue("r5", Ref5);
+        cmd.Parameters.AddWithValue("fxUpper", FxUpper); cmd.Parameters.AddWithValue("fxLower", FxLower); cmd.Parameters.AddWithValue("fxFootwear", FxFootwear);
         cmd.Parameters.AddWithValue("e", new Pgvector.Vector(Unit(0)));
-        await cmd.ExecuteNonQueryAsync();
+        var ids = new List<long>();
+        await using (var r = await cmd.ExecuteReaderAsync()) while (await r.ReadAsync()) ids.Add(r.GetInt64(0));
+        // 子表：測試穿搭二／測試穿搭三的鞋履 tag_key 相同（platform sandals）、向量也相同 → SearchFacetAsync 去重只留一筆；測試單品的 sneakers 較遠
+        await using var sub = _ds.CreateCommand("""
+            INSERT INTO preset_facet_embeddings (preset_id, facet_id, tag_key, embedding) VALUES
+              (@p3, @footwear, 'platform sandals', @near),
+              (@p4, @footwear, 'platform sandals', @near),
+              (@p5, @footwear, 'sneakers', @far),
+              (@p3, @upper, 'white shirt', @far)
+            """);
+        sub.Parameters.AddWithValue("p3", ids[2]); sub.Parameters.AddWithValue("p4", ids[3]); sub.Parameters.AddWithValue("p5", ids[4]);
+        sub.Parameters.AddWithValue("footwear", FxFootwear); sub.Parameters.AddWithValue("upper", FxUpper);
+        sub.Parameters.AddWithValue("near", new Pgvector.Vector(Unit(1)));
+        sub.Parameters.AddWithValue("far", new Pgvector.Vector(Unit(2)));
+        await sub.ExecuteNonQueryAsync();
     }
 
     public async Task DisposeAsync()
     {
-        await using var cmd = _ds.CreateCommand("DELETE FROM prompt_knowledge_presets WHERE source_ref = @r OR source_ref = @r2");
+        await using var cmd = _ds.CreateCommand("DELETE FROM prompt_knowledge_presets WHERE source_ref IN (@r, @r2, @r3, @r4, @r5)");
         cmd.Parameters.AddWithValue("r", Ref);
         cmd.Parameters.AddWithValue("r2", Ref2);
+        cmd.Parameters.AddWithValue("r3", Ref3);
+        cmd.Parameters.AddWithValue("r4", Ref4);
+        cmd.Parameters.AddWithValue("r5", Ref5);
         await cmd.ExecuteNonQueryAsync();
         await using var cmd2 = _ds.CreateCommand("DELETE FROM shared_prompt_histories WHERE user_intent = @i");
         cmd2.Parameters.AddWithValue("i", Ref);
@@ -48,6 +83,43 @@ public class RepositoryIntegrationTests(ITestOutputHelper output) : IAsyncLifeti
         Assert.Contains(hits, h => h.Title == "測試片段" && h.Dist < 1e-6 && h.SourceRef == Ref);
         Assert.Empty(await repo.SearchAsync(Unit(0), new[] { "nope.facet" }, 5, default));
         Assert.True(await repo.PoolSizeAsync(new[] { "style.genre" }, default) >= 1);
+    }
+
+    [IntegrationFact]
+    public async Task Facet_search_ranks_by_the_facet_vector_and_keeps_one_row_per_tag_key()
+    {
+        var repo = new PresetRepository(_ds);
+        Assert.Equal(3, await repo.FacetPoolSizeAsync(FxFootwear, default));          // 列數，不是去重後的組合數
+        Assert.Equal(0, await repo.FacetPoolSizeAsync("nope.facet", default));
+
+        var hits = await repo.SearchFacetAsync(Unit(1), FxFootwear, 5, default);
+        Assert.Equal(2, hits.Count);                                                  // platform sandals 兩筆去重成一筆＋sneakers
+        Assert.Equal("sneakers", hits[1].PromptSnippet);
+        Assert.True(hits[0].Dist < 1e-6 && hits[1].Dist > 0.5);                       // Dist 是 facet 距離
+        Assert.Contains(hits[0].Title, new[] { "測試穿搭二", "測試穿搭三" });
+        Assert.Equal(Ref5, hits[1].SourceRef);
+    }
+
+    [IntegrationFact]
+    public async Task Similar_recommendation_respects_the_distance_cap_and_the_set_filter()
+    {
+        var repo = new PresetRepository(_ds);
+        var clothing = new[] { FxUpper, FxLower, FxFootwear };
+        // 錨＝Unit(1)：platform sandals 距離 0、sneakers 距離 1。單品（測試單品）只有 1 個 facet 有 tag，不算組合。
+        var hits = await repo.RecommendSimilarAsync(Unit(1), FxFootwear, clothing, 0.23, 3, default);
+        Assert.Equal(2, hits.Count);                                                  // 不去重：兩套 platform sandals 都在
+        Assert.All(hits, h => Assert.Equal(new[] { "platform sandals" }, h.FacetTags[FxFootwear]));
+        Assert.DoesNotContain(hits, h => h.Title == "測試單品");
+        // 錨換成 Unit(2)（sneakers 的方向）：platform sandals 距離 1 > 0.23 被門檻擋掉；sneakers 那筆是單品、不算組合 → 空
+        Assert.Empty(await repo.RecommendSimilarAsync(Unit(2), FxFootwear, clothing, 0.23, 3, default));
+    }
+
+    [IntegrationFact]
+    public async Task Facet_search_returns_fewer_rows_than_k_when_there_are_fewer_tag_keys()
+    {
+        var repo = new PresetRepository(_ds);
+        var hits = await repo.SearchFacetAsync(Unit(1), FxUpper, 5, default);
+        Assert.Single(hits);                                                          // 只有 white shirt 一組
     }
 
     [IntegrationFact]
