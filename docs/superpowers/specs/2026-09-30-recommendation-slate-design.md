@@ -168,7 +168,7 @@
 
 ## 8. 效能
 
-實測環境：開發庫 `prompt-copilot-db`（19,354 筆 preset）。查詢向量與字面錨取自 preset id 8886（`clothing.footwear = sandals`）；`@facets` 用 portrait 的 clothing 六個 facet（`clothing.head`／`clothing.upper`／`clothing.lower`／`clothing.footwear`／`clothing.material`／`clothing.accessories`）；`@anchorFacets = {clothing.footwear}`、`@anchorTags = {sandals}`；`RecommendSimilarSql` 的 `@maxDist = 0.30`。每條 `EXPLAIN (ANALYZE, BUFFERS)` 跑 5 次取中位數；完整 5 次原始輸出見 `.superpowers/sdd/2026-09-30-recommendation-slate/task-10-report.md`。
+實測環境：開發庫 `prompt-copilot-db`（19,354 筆 preset）。查詢向量與字面錨取自 preset id 8886（`clothing.footwear = sandals`）；`@facets` 用 portrait 的 clothing 六個 facet（`clothing.head`／`clothing.upper`／`clothing.lower`／`clothing.footwear`／`clothing.material`／`clothing.accessories`）；`@anchorFacets = {clothing.footwear}`、`@anchorTags = {sandals}`；`RecommendSimilarSql` 的 `@maxDist = 0.30`。每條 `EXPLAIN (ANALYZE, BUFFERS)` 跑 5 次取中位數；完整 5 次原始輸出與 13 筆換一批延遲樣本見 `docs/experiments/2026-09-30-recommendation-slate.md` §4。
 
 | 查詢 | LIMIT | 中位數 (ms, n=5) | 頂層節點 |
 | :--- | ---: | ---: | :--- |

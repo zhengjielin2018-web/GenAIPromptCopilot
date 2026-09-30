@@ -123,14 +123,14 @@ public static class SessionEndpoints
         })
         .WithSummary("送一句話，跑一輪對話（SSE 串流）")
         .WithDescription("""
-            body：`{"text": "一個銀髮少女站在雨夜的霓虹街頭"}`；或採用推薦的一套組合 `{"adopt": {"presetId": 41720, "dimension": "clothing", "take": ["clothing.upper", "clothing.head"]}}`（`take` 是「照它的」facet，其餘該維度的 facet 保留使用者原本的；有 `adopt` 時 `text` 忽略，伺服器會組一句「採用〈標題〉（知識庫 #id）：…照它的（tags）；…保留我的。」當使用者訊息，`session` 事件的 `text` 帶回這句）。回應是 `text/event-stream`，每一筆是 `event: <名稱>` 加一行 `data: <JSON>`。
+            body：`{"text": "一個銀髮少女站在雨夜的霓虹街頭"}`；或採用推薦的一套組合 `{"adopt": {"presetId": 41720, "dimension": "clothing", "take": ["clothing.upper", "clothing.head"], "batch": 2}}`（`take` 是「照它的」facet，其餘該維度的 facet 保留使用者原本的；`batch` 是可省的整數，記這套來自定稿卡第幾批（2026-09-30，換一批），只寫進 audit、伺服器不驗證；有 `adopt` 時 `text` 忽略，伺服器會組一句「採用〈標題〉（知識庫 #id）：…照它的（tags）；…保留我的。」當使用者訊息，`session` 事件的 `text` 帶回這句）。回應是 `text/event-stream`，每一筆是 `event: <名稱>` 加一行 `data: <JSON>`。
 
             | 事件 | 內容 |
             | :--- | :--- |
             | `session` | 一定是第一筆：第幾輪（`turnIndex`）、這輪開始時的狀態（`Collecting` 還在收集／`Finalized` 已定稿）；`text?` 採用輪才有，是伺服器組的採用句（2026-09-25），用它換掉使用者泡泡 |
             | `tool_call`／`tool_result` | 模型呼叫的工具與結果，一輪可能好幾次。`tool_result.presets` 是檢索到的 preset（`{id, title, imageUrl, sourceRef}`；`sourceRef` 是資料來源識別，如 `civitai:12345:0`，圖片屬於原作者，顯示時要標出處），可拿 id 去 `GET /api/presets/{id}` |
             | `dimensions` | `{ profile, facetStates: {facetId: state}, facetTags?: {facetId: "sandals"} }`：題材與每個 facet 的狀態，`covered`／`missing`／`waived`（使用者說不指定）／`notApplicable`；`facetTags`（2026-09-25）是模型給已涵蓋 facet 的英文 tag（只有 covered 的有）。輪中有變動就送，成功的一輪最後會再送一次完整的 |
-            | `recommendations` | `{ turnIndex, dimensions: [{ dimension, label, anchored, anchorTags, sets: [{ presetId, title, imageUrl?, sourceRef?, dist, facets: [{ facetId, label, state, tags }] }] }] }`：整套組合推薦（2026-09-25）：追問時只有被問的維度、定稿時全部維度，跟在 `final`＋`dimensions` 之後；掛在該輪的追問卡／定稿卡下方。`retrieval: off` 的對話沒有。見 `2026-09-25-set-recommendations-design.md` §5 |
+            | `recommendations` | `{ turnIndex, dimensions: [{ dimension, label, anchored, anchorTags, similar, batch?, sets: [{ presetId, title, imageUrl?, sourceRef?, dist, facets: [{ facetId, label, state, tags }], reason?, anchorTags?, rank?, prob? }] }] }`：整套組合推薦（2026-09-25）：追問時只有被問的維度、定稿時全部維度，跟在 `final`＋`dimensions` 之後；掛在該輪的追問卡／定稿卡下方。`retrieval: off` 的對話沒有。`similar`（2026-09-29）：字面錨不到、改用 facet 向量近似錨。`batch`、每套的 `reason`／`anchorTags`／`rank`／`prob`（2026-09-30，換一批）只有定稿卡有，追問卡是 `null` 而省略。見 `2026-09-25-set-recommendations-design.md` §5、`2026-09-30-recommendation-slate-design.md` §5.1 |
             | `final` | 這一輪的結果，看 `kind`：`ask` 追問（`preamble`、`asks`）、`message` 討論或回答問題（`message`、`options`）、`finalized` 定稿（`positive`、`negative`、`tips`、`intentSummary`：一句繁中需求描述，可拿來預填 `save-to-shared` 的 `intent`；`positiveSources`／`negativeSources`：逐 tag 的來源 `{tag, origin, presetIds, presetTitle, sourceRef}`，`origin` 是 `rag` 知識庫片段／`adopted` 採用的組合帶進來的／`llm` 模型生成／`base` 基礎詞，由伺服器比對 ledger 與採用紀錄標註）、`save_consent_requested` 使用者要求儲存（見 `save-to-shared`） |
             | `blocked` | 被攔下，`reason`：`Blocked_NSFW`、`Blocked_Celebrity`（輸入端，不會呼叫模型）、`Blocked_Output`（模型輸出被攔）、`Blocked_Upstream`（Gemini 拒絕生成）。session 狀態不變 |
             | `error` | 這一輪失敗，`code`：`timeout`、`protocol_violation`、`turn_failed`。session 已還原到送出前，可以直接重送同一句 |
