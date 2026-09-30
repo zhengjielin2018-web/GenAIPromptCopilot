@@ -54,7 +54,8 @@ public static class SlateSelector
         return list;
     }
 
-    /// <summary>相關位（設計 §3.1）：第 1 位取有效名次最小（同分取原名次小），第 2 位依 exp(−有效名次/τ) 抽。有效名次＝原名次＋P×看過次數。</summary>
+    /// <summary>相關位（設計 §3.1）：第 1 位取有效名次最小（同分取原名次小），第 2 位依 exp(−有效名次/τ) 抽。有效名次＝原名次＋P×看過次數。
+    /// 第 2 位先看來源混搭：有效名次 ≤ <see cref="SourceMixWindow"/> 內有跟第 1 位不同來源的，只從那些抽（Prob 是在這個範圍內的機率）。</summary>
     public static IReadOnlyList<SlatePick> PickRelevant(IReadOnlyList<SlateCandidate> candidates, IReadOnlyDictionary<string, int> seen,
         double penalty, double temperature, Random rng)
     {
@@ -64,6 +65,9 @@ public static class SlateSelector
         var first = candidates.OrderBy(Effective).ThenBy(c => c.Rank).First();
         picks.Add(new SlatePick(first, first.Rank, 1.0));
         var rest = candidates.Where(c => !ReferenceEquals(c, first)).ToList();
+        // 來源混搭（2026-09-30 驗收回饋）：名單前段有另一個來源的，第 2 位只從那些抽；沒有才照原本從全部抽
+        var mixed = rest.Where(c => SourceOf(c) != SourceOf(first) && Effective(c) <= SourceMixWindow).ToList();
+        if (mixed.Count > 0) rest = mixed;
         while (picks.Count < RelevantSlots && rest.Count > 0)
         {
             var (i, prob) = Draw(rest.Select(Effective).ToList(), temperature, rng);
@@ -72,6 +76,13 @@ public static class SlateSelector
         }
         return picks;
     }
+
+    /// <summary>第 2 位優先換來源的範圍：有效名次在這之內的另一個來源才算「名單前段」。
+    /// Kisegae 的描述只講穿著，在錨過濾後的名單裡集中在前段；超過這個範圍就不硬換，免得為了混搭拿太不相關的。</summary>
+    public const int SourceMixWindow = 10;
+
+    /// <summary>source_ref 的前綴（civitai／kisegae）；沒有來源的算同一類。</summary>
+    private static string SourceOf(SlateCandidate c) => c.Preset.SourceRef?.Split(':')[0] ?? "";
 
     /// <summary>探索位（設計 §3.1）：不看錨的純向量候選裡，去掉跟相關位同 key 的、在比較用 facet 上一個 tag 都沒有的（它取代不了任何東西），
     /// 依「跟相關位的差異」由大到小排名（同分照原名次），再用同一個權重與看過延後抽 1 套。相關位一套都沒有時差異全當 1。</summary>
