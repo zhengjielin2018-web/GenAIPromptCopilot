@@ -146,14 +146,14 @@ API 層是用 SSE 直接打分支 `feat/set-recommendations` 的 API（本機 50
 | T6 | 重新整理 | 開關回到開著 | ✅ 重新整理後 `aria-checked=true`、沒有「已關閉」字樣 |
 | T7 | 開關關著跑到定稿，按「存進共享知識庫」送出 | 顯示「這份定稿是在關閉程式端審查時產生的…」，`save-to-shared` 回 409，`shared_prompt_histories` 沒有新列；打開開關再定稿一次後可以存 | ✅ 關著定稿 → 儲存顯示該訊息、`save-to-shared` 409、列數仍 6306。同一段（`8f5b47db…`）打開開關再定稿被 `Blocked_Output` 擋（內容含 see-through，審查確實回來了），所以另開無害對話 `c9cc2f19…` 重跑：關 → 定稿 → 409；開 → 改背景再定稿 → 200、舊卡顯示「已被後面的定稿取代」。存進去的那列驗完已刪除 |
 
-## 2026-09-29 facet 層級向量（待 merge 後跑）
+## 2026-09-29 facet 層級向量（2026-09-30 已跑）
 
-前置：開發庫套 `db/migrations/003`、跑 `scripts/embed_facet_tags.py` 到 `preset_facet_embeddings` 有約 37k 列；用本分支建 compose。Claude 以 Playwright 驅動 headless Edge 跑，實際呼叫 Gemini。
+前置：開發庫套 `db/migrations/003`、跑 `scripts/embed_facet_tags.py`（37,011 筆、0 批失敗、737 秒）；master `d227284` 建的 compose，F3、F5 在 `fix/facet-threshold-and-query`（門檻 0.30、`SearchFacetSql` 先取前 k 再 join）上重跑。Claude 以 Playwright（`playwright-core` 驅動系統的 Edge，headless）跑，實際呼叫 Gemini。
 
 | # | 操作 | 應該看到 | 結果 |
 | :--- | :--- | :--- | :--- |
-| F1 | 送「一個銀髮少女穿涼鞋站在雨夜街頭」，開「顯示檢索細節」 | 鞋履項目的查詢句顯示「涼鞋（sandals）」、標「facet 向量」、池約 338；前 5 名的鞋履 tag 都是 sandal 類且互不相同 | |
-| F2 | 多送 5 句不同描述（含穿著、髮型、場景、風格），查 audit `Tool_Invoked` 的 `SearchPresets` args | facet 項目帶 `tags` 的比例；低於一半就要回頭加強工具說明 | |
-| F3 | 送「一個女生穿拖鞋在海邊」，等追問／定稿的推薦 | 穿著維度若字面錨 `slippers` 命中不到 2 筆，出現「接近你講的 slippers」；audit `recommendations.dimensions[]` 有 `similar:true`；看前 3 套的鞋履 tag 是否合理（門檻 0.23） | |
-| F4 | 對一個 `preset_facet_embeddings` 為空的庫（或暫時 `TRUNCATE` 後還原）送 F1 那句 | 鞋履項目標「整套向量」、池 396、照常回結果 | |
-| F5 | `EXPLAIN ANALYZE` `SearchFacetSql`，`facet_id = 'scene.location'`；`EXPLAIN ANALYZE` `RecommendSimilarSql`，`facet_id = 'clothing.upper'`（衣著類最大的 facet） | 兩者 Execution Time 都是個位數毫秒級 | |
+| F1 | 送「一個銀髮少女穿涼鞋站在雨夜街頭」，開「顯示檢索細節」 | 鞋履項目的查詢句顯示「涼鞋（sandals）」、標「facet 向量」、池約 338；前 5 名的鞋履 tag 都是 sandal 類且互不相同 | ✅ `952caf30…`：「涼鞋（sandals）」「facet 向量」「池 338 → 5」，前 5 名 `sandals`、`tabi, sandals`、`white sandals`、`sandals with straps`、`toeless footwear, high heel sandals`（0.197–0.278，與離線重跑逐筆相同）。髮型項目「銀髮少女（silver hair）」也走 facet 向量 |
+| F2 | 多送 5 句不同描述（含穿著、髮型、場景、風格），查 audit `Tool_Invoked` 的 `SearchPresets` args | facet 項目帶 `tags` 的比例；低於一半就要回頭加強工具說明 | ✅ 連同 F1、F3 共 9 次 `SearchPresets`、39 個 facet 項目，39 個都帶 `tags`（100%）。翻譯例：窗台 → `on a windowsill`、俯視角度 → `bird's-eye view, from above`、撐傘 → `holding umbrella` |
+| F3 | 送「一個女生穿拖鞋在海邊」，等追問／定稿的推薦 | 穿著維度若字面錨 `slippers` 命中不到 2 筆，出現「接近你講的 slippers」；audit `recommendations.dimensions[]` 有 `similar:true`；看前 3 套的鞋履 tag 是否合理（門檻 0.30，驗收時由 0.23 放寬） | ⚠️ 路徑正確，但線上 6 次都沒走到近似錨，原因都在模型行為：拖鞋 → `slippers` 字面 3 筆，顯示「含你講的 slippers」（正確）；夾腳拖、木屐 → 追問輪沒問穿著，穿著沒推薦；夾腳拖＋「直接給我」 → 定稿 positive 有 `sandals`，字面錨命中（正確）；木鞋＋「直接給我」 → 第二輪 `Protocol_Violation` 後 `Turn_Failed`（`ProtocolViolationException`，沒有 400，#3 的修正有效）；「衣服還沒想好」 → 模型把鞋履標成 missing（note「使用者委託此項」），沒有錨。改用正式 SQL＋真 embedding 驗模型實際給過的錨：`flip-flops` 字面 1 筆 → 近似 3 筆（本身 0.137、兩套 `sandals` 0.294）→ 「接近你講的 flip-flops」；`slippers` → 字面 3 筆；`wooden clogs`、`geta` → 0.30 內不到 2 筆 → 無錨。門檻實測表見設計 §6.4 |
+| F4 | 對一個 `preset_facet_embeddings` 為空的庫（或暫時 `TRUNCATE` 後還原）送 F1 那句 | 鞋履項目標「整套向量」、池 396、照常回結果 | ✅ 刪掉鞋履 338 列後 `bbce8b18…`：「整套向量」「池 396 → 5」、分級用 0.25／0.30（0.283 中、0.301 低），照常回結果；之後 `embed_facet_tags.py` 補回 338 列（5 秒，其餘 36,673 不變） |
+| F5 | `EXPLAIN ANALYZE` `SearchFacetSql`，`facet_id = 'scene.location'`；`EXPLAIN ANALYZE` `RecommendSimilarSql`，`facet_id = 'clothing.upper'`（衣著類最大的 facet） | 兩者 Execution Time 都是個位數毫秒級 | ⚠️ 不是個位數，但可接受。原 `SearchFacetSql` 地點類型中位數 69 ms：去重後 2,904 組直接 join，規劃器把片段表 19,354 列全表掃一遍建 hash。改成先取前 k 再 join 後 33.2 ms（上半身 22.2、鞋履 2.4 ms），結果逐筆相同；只算距離的下限約 14 ms。`RecommendSimilarSql` 上半身 0.23 時 29.6 ms、0.30 時 27.0 ms（主鍵 nested loop，無全表掃描）。拆解與為什麼不是改 HNSW 見設計 §7.1 |

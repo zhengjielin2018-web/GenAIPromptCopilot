@@ -77,17 +77,21 @@ public class PresetRepository(NpgsqlDataSource ds)
     private const string FacetPoolSql = "SELECT count(*) FROM preset_facet_embeddings WHERE facet_id = @facet";
     // ORDER BY 最後加 preset_id：同一組 tag 的片段向量完全相同，dist 打平時排序原本沒有 tie-breaker，
     // 挑到哪個 preset／排在第幾名會不穩定（不同次查詢可能不同）；加了 preset_id 之後同分永遠同序，結果可重現（設計 §7）。
+    // 先在 top 取前 k 筆再 join（2026-09-30）：原本去重後的整批（地點類型約 2,900 組）直接 join 片段表，
+    // 規劃器選 hash join、把片段表 1.9 萬列全表掃一遍建 hash，才排序取前 k；改成只拿 k 個 id 走主鍵，
+    // 地點類型中位數 69 → 31 ms，結果逐筆相同。實測與執行計畫見設計 §7。
     private const string SearchFacetSql = """
         WITH d AS (
             SELECT DISTINCT ON (tag_key) preset_id, embedding <=> @q AS dist
             FROM preset_facet_embeddings
             WHERE facet_id = @facet
             ORDER BY tag_key, dist, preset_id
+        ), top AS (
+            SELECT preset_id, dist FROM d ORDER BY dist, preset_id LIMIT @k
         )
-        SELECT p.id, p.title, p.category, p.facet_ids, p.prompt_snippet, p.negative_snippet, p.image_url, d.dist, p.source_ref
-        FROM d JOIN prompt_knowledge_presets p ON p.id = d.preset_id
-        ORDER BY d.dist, d.preset_id
-        LIMIT @k
+        SELECT p.id, p.title, p.category, p.facet_ids, p.prompt_snippet, p.negative_snippet, p.image_url, top.dist, p.source_ref
+        FROM top JOIN prompt_knowledge_presets p ON p.id = top.preset_id
+        ORDER BY top.dist, top.preset_id
         """;
     // 近似錨（設計 §6.3）：字面錨不到 2 筆時，拿該 facet 的錨去比同一個 facet 的向量，門檻內、且仍是「組合」的列。不去重：整套穿搭不同才是要給使用者比的。
     // 同理加 p.id 當 tie-breaker（見 SearchFacetSql 上面那則說明）。

@@ -273,6 +273,8 @@ prompt_version 都是 `8c10dcfe1f16`，跟子專案 3 驗收時能正常追問�
 
 **根因**：facet 項目過濾後仍拿整套片段向量（`title。description。全部 tag`）排序，穿著片段被上下身主導；錨比對只做字面。
 
-**修正**（分支 `feat/facet-vector-retrieval`，commit `<hash>`）：子表 `preset_facet_embeddings` 存每個片段每個 facet 的向量（`scripts/embed_facet_tags.py` 從 `facet_tags` 算，seed-v3 帶著）；`SearchPresets` facet 項目改比 facet 向量、依 `tag_key` 去重、查詢句「原話（模型給的英文 tags）」、分級門檻 0.22／0.27；推薦字面錨不到 2 筆先試近似錨（facet 距離 ≤ 0.23），前端標「接近你講的 …」。不建 HNSW（設計 §7）。設計：`docs/superpowers/specs/2026-09-29-facet-vector-retrieval-design.md`；實驗：`docs/experiments/2026-09-29-facet-vector-text.md`。
+**修正**（分支 `feat/facet-vector-retrieval`，merge commit `d227284`；2026-09-30 驗收後的門檻與查詢調整見下方「驗收」）：子表 `preset_facet_embeddings` 存每個片段每個 facet 的向量（`scripts/embed_facet_tags.py` 從 `facet_tags` 算，seed-v3 帶著）；`SearchPresets` facet 項目改比 facet 向量、依 `tag_key` 去重、查詢句「原話（模型給的英文 tags）」、分級門檻 0.22／0.27；推薦字面錨不到 2 筆先試近似錨（facet 距離 ≤ 0.30，驗收後由 0.23 放寬），前端標「接近你講的 …」。不建 HNSW（設計 §7）。設計：`docs/superpowers/specs/2026-09-29-facet-vector-retrieval-design.md`；實驗：`docs/experiments/2026-09-29-facet-vector-text.md`。
 
 **驗收**：單元測試（`KnowledgePluginTests`、`RecommendationServiceTests`、`test_embed_facet_tags.py`、`test_tags.py`）、整合測試 `RepositoryIntegrationTests`。離線重跑與線上驗收見實驗紀錄與 `docs/eval-cases.md` 2026-09-29 facet 向量一節。
+
+2026-09-30 實測（master `d227284` 建的 compose，開發庫跑 `embed_facet_tags.py`：37,011 筆、0 批失敗、737 秒）：17 題走正式 SQL，前 5 名命中 75／85、相異組合 85／85（現行 67／76）；R2「涼鞋」前 5 名 5 種不同的涼鞋；模型 39／39 個 facet 項目都有帶 `tags`；子表清掉鞋履時照常退回整套向量。驗收時再改兩處（分支 `fix/facet-threshold-and-query`）：近似錨門檻 0.23 → 0.30（單一詞的同義詞落在 0.28–0.34，0.23 等於不會觸發，實測表見設計 §6.4）；`SearchFacetSql` 改成先取前 k 筆再 join，地點類型 69 → 33 ms（原寫法為了 join 把片段表全表掃一遍，執行計畫見設計 §7.1）。

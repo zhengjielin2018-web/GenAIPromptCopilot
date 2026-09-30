@@ -730,7 +730,7 @@ scripts/
 1. **查詢向量**：本 session 使用者說過的話（不含伺服器組的採用句）依序串接、取最後 500 字，一輪只嵌入一次，各維度共用。
 2. **候選必須是整套**：已回填 `facet_tags`，且該維度至少 2 個 facet 有 tag。
 3. **錨**：該維度 covered facet 的 `FacetTags`（模型在 `SetFacetStates` 附的英文 tag，如涼鞋 → `sandals`）；定稿時再加 positive 的 tag（基礎畫質詞除外）。
-4. **有錨**：只留 covered facet 底下有 tag 等於錨、或以「空白＋錨」結尾的片段，再依距離取 3 筆（`MATERIALIZED` CTE 精確排序，不走 HNSW，罕見的錨不會被掃描上限漏掉）。**不足 2 筆先試近似錨**（2026-09-29：該 facet 的 `FacetTags` 向量對子表同一 facet 的向量，距離 ≤ 0.23 且仍是組合的列，各 covered facet 合併取最小距離；≥ 2 筆顯示「接近你講的 …」），仍不足就改成不過濾、依距離取 3 筆（HNSW），不跟前面的結果合併。
+4. **有錨**：只留 covered facet 底下有 tag 等於錨、或以「空白＋錨」結尾的片段，再依距離取 3 筆（`MATERIALIZED` CTE 精確排序，不走 HNSW，罕見的錨不會被掃描上限漏掉）。**不足 2 筆先試近似錨**（2026-09-29：該 facet 的 `FacetTags` 向量對子表同一 facet 的向量，距離 ≤ 0.30（`RecommendationSimilarMaxDist`，2026-09-30 驗收後由 0.23 放寬）且仍是組合的列，各 covered facet 合併取最小距離；≥ 2 筆顯示「接近你講的 …」），仍不足就改成不過濾、依距離取 3 筆（HNSW），不跟前面的結果合併。
 5. **沒錨**：直接走第 4 步的「不過濾」那條。
 
 有錨與沒錨兩條依第 1 步的查詢向量排序；不足 2 筆時試的近似錨（2026-09-29）改依錨的 facet 向量比子表同一 facet 的向量排序，不是查詢向量，見 [facet 向量設計](2026-09-29-facet-vector-retrieval-design.md) §6。卡片上有錨的顯示「含你講的 sandals」、近似錨顯示「接近你講的 …」，都沒有則顯示「最接近你描述的組合」。細節見 [整套組合推薦設計](2026-09-25-set-recommendations-design.md) §4.4、§5.3。

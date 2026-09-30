@@ -107,6 +107,38 @@
 - 去重以正規化後的 facet 文字完全相同為準；`sandals` 與 `sandals, white socks` 算不同。也沒有忽略順序：「夕陽」的 V4d 同時留下 `sunset, golden hour` 與 `golden hour, sunset`。正式實作的去重鍵要先把 tag 排序。
 - 中文原話是手寫的短詞（兩三個字）。實際的 `query` 是模型從使用者句子切出來講這個 facet 的那一段。對照 2026-09-29 開發庫 audit 裡完整記下的 `SearchPresets` 參數（#7 之後才有，111 次呼叫中只有 11 個 facet 項目）：長度 2–10 字、中位數 4（「涼鞋」「睡覺」「窗台」「雨夜街頭」「高山上的一間木製小屋」），跟實驗的短詞相近。另有兩種寫法值得注意：模型自己夾英文（`涼鞋 sandals`），以及把 facet 名稱寫進去（「少女年齡性別」）。樣本很少，驗收時用正式路徑重跑再看。
 
+## 驗收：正式路徑重跑（2026-09-30）
+
+開發庫跑 `scripts/embed_facet_tags.py` 產生全部 37,011 個 facet 向量後，同一組 17 題走正式的 `SearchFacetSql`（與 `PresetRepository` 逐字相同，`@k` 取 10），查詢句「中文原話（英文 tag）」，英文 tag 用上面結果表那一欄。
+
+| 查詢 | 英文 tag | p5 | div5 | p10 | 前 5 名距離 |
+| :--- | :--- | :-: | :-: | :-: | :--- |
+| 涼鞋 | sandals | 5 | 5 | 9 | 0.197–0.278 |
+| 運動鞋 | sneakers | 5 | 5 | 10 | 0.233–0.264 |
+| 連帽外套 | hoodie | 5 | 5 | 9 | 0.219–0.271 |
+| 和服 | kimono | 4 | 5 | 9 | 0.219–0.257 |
+| 百褶裙 | pleated skirt | 5 | 5 | 10 | 0.191–0.229 |
+| 牛仔短褲 | denim shorts | 3 | 5 | 4 | 0.214–0.251 |
+| 草帽 | straw hat | 4 | 5 | 5 | 0.172–0.279 |
+| 眼鏡 | glasses | 2 | 5 | 2 | 0.221–0.332 |
+| 雙馬尾 | twin tails | 4 | 5 | 9 | 0.151–0.216 |
+| 銀髮 | silver hair | 5 | 5 | 9 | 0.175–0.228 |
+| 微笑 | smile, open mouth, slight smile | 5 | 5 | 9 | 0.179–0.196 |
+| 海邊 | seashore, beach, ocean | 5 | 5 | 10 | 0.196–0.217 |
+| 下雪 | snow, snowing, winter | 5 | 5 | 10 | 0.182–0.215 |
+| 夕陽 | sunset, golden hour, sunbeam | 5 | 5 | 9 | 0.195–0.217 |
+| 水彩 | traditional media, watercolor, watercolor (medium) | 4 | 5 | 8 | 0.183–0.236 |
+| 俯視 | from above, high angle, overhead | 5 | 5 | 10 | 0.169–0.178 |
+| 坐著 | sitting | 4 | 5 | 9 | 0.184–0.219 |
+| **合計** | | **75** | **85** | **141** | |
+
+- 跟 V4d（76／85）只差 1。差異來自正式版剝了權重、`tag_key` 不看順序，以及 tie-breaker 改變了同距離時留下哪一筆。
+- 沒命中的多半是判準偏嚴：`sit`、`w sitting`、`short jeans`、`twin ponytails`、`afternoon, sun`、`sunglasses`。
+- 相異組合 85／85：去重後前 5 名都是不同的 tag 組合。
+- 線上（F1）R2 那句的鞋履前 5 名與這裡逐筆相同，距離一致。
+
+近似錨的門檻、查詢速度與執行計畫見設計 §6.4、§7.1；線上驗收見 `docs/eval-cases.md` 的 F1–F5。
+
 ## 重跑
 
 實驗腳本沒有進版控（一次性）。要重跑：對上表每一題，從 `prompt_knowledge_presets` 取 `facet_ids && [facet]` 的列與 `facet_tags -> facet`，依上面「比較的組合」算向量、精確排序、取前 5／10，依正解規則計分。實作完成後，同一組 17 題用正式的 `SearchPresets` 路徑再跑一次，當本案的驗收。
