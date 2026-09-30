@@ -92,7 +92,7 @@
 - `PickRelevant(candidates, seen, P, τ, rng)`：回 2 套，第 1 位取有效名次最小（同分取原名次小者），第 2 位依權重抽；每套附 `rank` 與 `prob`（第 1 位 `prob` = 1）。
 - `PickExplore(candidates, relevant, compareFacets, facetVectors, seen, P, τ, rng)`：依 §3.1 探索位規則回 0 或 1 套，附 `rank`（差異排名）與 `prob`。
 - `TagSetKey(facetTags, dimensionFacets)`：該維度全部 facet 的 tag 正規化（`TagAttribution.Normalize`）後排序、去重、串接。
-- `Seed(sessionId, turnIndex, dimension, batch)`：`XxHash64` 算穩定種子。不用 `string.GetHashCode`：它每次程序啟動換隨機值，重啟後無法重現。
+- `Seed(sessionId, turnIndex, dimension, batch)`：SHA-256 取前 4 bytes 當種子（BCL 內建，不用多裝 `System.IO.Hashing`）。不用 `string.GetHashCode`：它每次程序啟動換隨機值，重啟後無法重現。
 
 ### 4.2 `RecommendationService`
 
@@ -103,7 +103,7 @@
 ### 4.3 `PresetRepository`
 
 - 既有三條 SQL 只換 LIMIT 參數（`@take` 傳 `RecommendationPoolSize`）。
-- 新增 `FacetVectorsAsync(presetIds, facetIds)`：`SELECT preset_id, facet_id, embedding FROM preset_facet_embeddings WHERE preset_id = ANY(@ids) AND facet_id = ANY(@facets)`。走主鍵或 `(preset_id, facet_id)` 索引，實際用哪個看 §8 的 EXPLAIN。
+- 新增 `FacetVectorsAsync(presetIds, facetIds)`：`SELECT preset_id, facet_id, embedding FROM preset_facet_embeddings WHERE preset_id = ANY(@ids) AND facet_id = ANY(@facets)`。子表主鍵就是 `(preset_id, facet_id)`，預期走主鍵，實際看 §8 的 EXPLAIN。
 
 ### 4.4 Session
 
@@ -187,7 +187,7 @@
 
 ### 9.2 整合（資料庫）
 
-- `FacetVectorsAsync` 回傳正確的列；三條 SQL 在 LIMIT 30 下結果是 LIMIT 3 的超集且前 3 相同。
+- `FacetVectorsAsync` 回傳正確的列、空 id 清單不查資料庫。LIMIT 30 的前 3 名是否等於 LIMIT 3，靠開發庫真實資料才有意義，放在 §8 量測時一起比對。
 
 ### 9.3 前端（Vitest）
 
