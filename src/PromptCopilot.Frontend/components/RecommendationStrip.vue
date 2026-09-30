@@ -34,6 +34,7 @@
         </template>
         <li v-if="d.batch != null && adoptable" class="w-28 shrink-0">
           <p v-if="batchOf(d.dimension) === 'exhausted'" class="flex h-28 w-28 items-center justify-center rounded-[3px] border border-dashed border-rule p-2 text-center text-[11px] text-muted">這個維度沒有更多了</p>
+          <p v-else-if="batchOf(d.dimension) === 'stale'" class="flex h-28 w-28 items-center justify-center rounded-[3px] border border-dashed border-rule p-2 text-center text-[11px] text-muted">這張卡已不能換一批</p>
           <button v-else type="button" data-action="next-batch" :disabled="batchOf(d.dimension) === 'loading'"
                   class="flex h-28 w-28 flex-col items-center justify-center gap-1 rounded-[3px] border border-ink/60 text-xs hover:bg-ink hover:text-paper disabled:border-rule disabled:text-muted disabled:hover:bg-transparent"
                   @click="s.nextBatch(turnIndex, d.dimension)">

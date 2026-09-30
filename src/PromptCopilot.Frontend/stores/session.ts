@@ -62,8 +62,9 @@ export const useSessionStore = defineStore('session', () => {
   /** 只有最新一張追問卡／定稿卡上的推薦可以採用。 */
   const latestRecommendableTurn = computed<number | null>(() => latestRecommendableTurnOf(state.value.transcript))
 
-  /** 換一批的狀態，key 是 `${turnIndex}:${dimension}`。不存：重載後回到可以再按。 */
-  const batchState = ref<Record<string, 'loading' | 'error' | 'exhausted'>>({})
+  /** 換一批的狀態，key 是 `${turnIndex}:${dimension}`。不存：重載後回到可以再按。
+   *  stale：伺服器回 409（這張卡已經不是最新，或這段對話還有一輪在跑）——不可能靠再按解決，畫面不給重試。 */
+  const batchState = ref<Record<string, 'loading' | 'error' | 'exhausted' | 'stale'>>({})
 
   /** opts.draft 只在送出當下帶原文（輪次中重載時放回輸入框），其餘時候存空字串。 */
   function persist(opts: { draft?: string } = {}) {
@@ -186,7 +187,15 @@ export const useSessionStore = defineStore('session', () => {
       const r = await api.nextRecommendations(id, dimension, turnIndex)
       // 舊對話的回應不能接到新對話：等待期間換了 session 就整批放棄，不動 state／batchState、也不 persist
       if (state.value.sessionId !== id) return
-      if (!r.ok) { batchState.value = { ...batchState.value, [key]: 'error' }; return }
+      if (!r.ok) {
+        // 404：session 過期，跟 runTurn 一樣開新對話、提示（換一批沒有原文要留，不用 EXPIRED_KEPT_TEXT）
+        if (r.status === 404) { await newSession(); notice.value = '上次的對話已過期，已開新對話。'; return }
+        // 409：這張卡已經不是最新、或這段對話還有一輪在跑——不是暫時性的，再按也不會成功，不給重試
+        if (r.status === 409) { batchState.value = { ...batchState.value, [key]: 'stale' }; return }
+        // 503／網路錯誤：可能是暫時的，維持舊文案讓使用者再按一次
+        batchState.value = { ...batchState.value, [key]: 'error' }
+        return
+      }
       if (r.row.sets.length === 0) { batchState.value = { ...batchState.value, [key]: 'exhausted' }; return }
       state.value = appendBatch(state.value, turnIndex, r.row)
       const { [key]: _done, ...rest } = batchState.value
