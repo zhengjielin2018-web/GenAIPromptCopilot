@@ -4,6 +4,8 @@
 來源：`docs/superpowers/plans/2026-09-25-rag-value-and-trace.md` §8，2026-09-25 討論定案。
 前情：知識庫開關與檢索過程顯示已 merge（master `36d635d`，spec `2026-09-25-retrieval-switch-and-trace-design.md`）。計畫 §4.2 的離線 A/B 仍往後排，等本案量過採用率再決定。
 
+後續：定稿卡的組法（2 相關＋1 探索、看過加權延後、換一批）見 `2026-09-30-recommendation-slate-design.md`；追問卡維持本文件的做法。
+
 ---
 
 ## 1. 問題與定位
