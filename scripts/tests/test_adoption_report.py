@@ -174,6 +174,14 @@ def test_old_rows_without_sets_infer_reason_from_row_flags():
     assert "| 0 | 0 | 0 |" in text                                   # 舊資料沒有名次，不進分桶
 
 
+def test_explore_set_at_rank_0_does_not_enter_the_original_rank_bucket():
+    # Final-review finding 2：探索位的 rank 是跟相關位的差異排名，不是原名次；SLATE 的 explore 套剛好也是 rank 0，
+    # 混進去分桶「0」會虛報成 2（跟相關位那套疊在一起），只算相關位才是 1
+    text = build_report([fin("a", 1, rec=SLATE)])
+    assert "| 0 | 1 | 0 |" in text
+    assert "| 1–4 | 1 | 0 |" in text
+
+
 def test_no_final_card_recommendations_means_no_slate_section():
     assert "定稿卡推薦組法" not in build_report([ask("a", 1, rec=REC_CLOTHING)])
 

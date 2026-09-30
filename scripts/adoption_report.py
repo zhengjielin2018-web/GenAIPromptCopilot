@@ -13,7 +13,8 @@
 
 定稿卡推薦組法（2026-09-30）：另讀 `Recommendations_Next`，分理由（含你講的／接近你講的／最接近你描述的／換個搭法）
 列採用率與取代率、換一批的比例、依原名次分桶的出現與採用。舊資料沒有每套的理由，照列層級的 anchored／similar
-推回，不進名次分桶。
+推回，不進名次分桶。原名次分桶只算相關位（anchored／similar／query）；探索位的 rank 是跟相關位的差異排名，不是
+原名次，不列入分桶，否則會把兩種不同意義的名次混在一起算。
 """
 
 from __future__ import annotations
@@ -102,7 +103,8 @@ def build_slate_section(completed: list[Turn], nexts: list[Turn]) -> list[str]:
         for sets in rows.values():
             for s in sets:
                 shown[s["reason"]] += 1
-                if (b := _bucket(s.get("rank"))) is not None:
+                # 探索位的 rank 是跟相關位的差異排名，不是原名次；混進原名次分桶會失真，只算相關位（見下方表格說明）
+                if s["reason"] != "explore" and (b := _bucket(s.get("rank"))) is not None:
                     bucket_shown[b] += 1
 
     adopted, adoptions, replaced, replaced_facets, bucket_adopted = Counter(), Counter(), Counter(), Counter(), Counter()
@@ -124,7 +126,7 @@ def build_slate_section(completed: list[Turn], nexts: list[Turn]) -> list[str]:
             if key not in credited:  # 同一套採用兩次只算一次，採用率才不會超過 100%
                 credited.add(key)
                 adopted[r] += 1
-                if (b := _bucket(s.get("rank"))) is not None:
+                if r != "explore" and (b := _bucket(s.get("rank"))) is not None:
                     bucket_adopted[b] += 1
         if t.payload.get("outcome") in (ASK, FINAL):
             card = (t.session_id, t.turn_index)
@@ -141,6 +143,7 @@ def build_slate_section(completed: list[Turn], nexts: list[Turn]) -> list[str]:
         lines.append(f"| {label} | {shown[reason]} | {_pct(adopted[reason], shown[reason])} | {_pct(replaced[reason], adoptions[reason])} | {avg} |")
     lines += ["", f"- 定稿排按過換一批：{_pct(refreshed, len(batches))}；平均每排按 {presses:.1f} 次",
               f"- 採用來自第 2 批以後：{_pct(later, linked)}", "",
+              "原名次分桶只算相關位；探索位的 rank 是差異排名，不列入。", "",
               "| 原名次 | 出現 | 採用 |", "| :--- | ---: | ---: |"]
     lines += [f"| {name} | {bucket_shown[name]} | {bucket_adopted[name]} |" for name, _, _ in BUCKETS]
     return lines
