@@ -63,16 +63,19 @@ public class EndpointTests : IClassFixture<EndpointTests.Factory>
         public Task WriteAsync(AuditEntry entry, CancellationToken ct) => throw new IOException("audit db down");
     }
 
-    /// <summary>不打 DB：camera 維度模擬推薦失敗，其他回固定的第 2 批。</summary>
+    /// <summary>不打 DB：camera 維度模擬推薦失敗，pose 維度模擬「沒有更多了」，其他回固定的第 2 批。</summary>
     public sealed class StubRecommendations : IRecommendationService
     {
         public Task<RecommendationsEvent?> BuildAsync(Session s, TurnOutcome outcome, int turnIndex, CancellationToken ct) => Task.FromResult<RecommendationsEvent?>(null);
-        public Task<RecommendedDimension> NextAsync(Session s, string dimension, CancellationToken ct) => dimension == "camera"
-            ? throw new InvalidOperationException("db down")
-            : Task.FromResult(new RecommendedDimension(dimension, "風格", false, Array.Empty<string>(), new[]
+        public Task<RecommendedDimension> NextAsync(Session s, string dimension, CancellationToken ct) => dimension switch
+        {
+            "camera" => throw new InvalidOperationException("db down"),
+            "pose" => Task.FromResult(new RecommendedDimension(dimension, "姿勢", false, Array.Empty<string>(), Array.Empty<RecommendedSet>(), Batch: 1)),
+            _ => Task.FromResult(new RecommendedDimension(dimension, "風格", false, Array.Empty<string>(), new[]
             {
                 new RecommendedSet(7, "油畫", null, null, 0.2, Array.Empty<RecommendedFacet>(), SlateReason.Query, Array.Empty<string>(), 3, 0.25),
-            }, Batch: 2));
+            }, Batch: 2)),
+        };
     }
 
     public sealed class Factory : WebApplicationFactory<Program>
@@ -474,6 +477,20 @@ public class EndpointTests : IClassFixture<EndpointTests.Factory>
         using var doc = System.Text.Json.JsonDocument.Parse(await r.Content.ReadAsStringAsync());
         Assert.Equal(2, doc.RootElement.GetProperty("batch").GetInt32());
         Assert.Equal("query", doc.RootElement.GetProperty("sets")[0].GetProperty("reason").GetString());
+    }
+
+    /// <summary>Fix round 1: 空批次也是成功的 200（沒有更多了），一樣要記 Recommendations_Next；
+    /// factory 的稽核槽永遠丟例外，這裡也證明稽核失敗不會把這個 200 變 500。</summary>
+    [Fact]
+    public async Task Next_returns_200_with_an_empty_batch_when_there_are_no_more_candidates()
+    {
+        var s = PortraitSession();
+        s.BeginSlate(3, Array.Empty<string>());
+        var r = await _client.PostAsJsonAsync($"/api/sessions/{s.Id}/recommendations/next", new { dimension = "pose", turnIndex = 3 });
+        Assert.Equal(HttpStatusCode.OK, r.StatusCode);
+        using var doc = System.Text.Json.JsonDocument.Parse(await r.Content.ReadAsStringAsync());
+        Assert.Equal(1, doc.RootElement.GetProperty("batch").GetInt32());
+        Assert.Equal(0, doc.RootElement.GetProperty("sets").GetArrayLength());
     }
 
     [Fact]

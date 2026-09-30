@@ -178,13 +178,12 @@ public static class SessionEndpoints
                         PayloadJson: JsonSerializer.Serialize(new { stage = "next", errorClass = e is OperationCanceledException ? "Timeout" : e.GetType().Name })), app.Logger);
                     return Results.Json(new ErrorBody("換一批失敗，再按一次"), statusCode: StatusCodes.Status503ServiceUnavailable);
                 }
-                if (row.Sets.Count > 0)
-                    await TryAuditAsync(audit, new AuditEntry(s.Id, req.TurnIndex, "Recommendations_Next",
-                        PayloadJson: JsonSerializer.Serialize(new
-                        {
-                            dimension = row.Dimension, batch = row.Batch,
-                            sets = row.Sets.Select(x => new { presetId = x.PresetId, reason = x.Reason, rank = x.Rank, prob = x.Prob }),
-                        }), LatencyMs: (int)sw.ElapsedMilliseconds), app.Logger);
+                await TryAuditAsync(audit, new AuditEntry(s.Id, req.TurnIndex, "Recommendations_Next",
+                    PayloadJson: JsonSerializer.Serialize(new
+                    {
+                        dimension = row.Dimension, batch = row.Batch,
+                        sets = row.Sets.Select(x => new { presetId = x.PresetId, reason = x.Reason, rank = x.Rank, prob = x.Prob }),
+                    }), LatencyMs: (int)sw.ElapsedMilliseconds), app.Logger);
                 return Results.Ok(row);
             }
             finally { s.Lock.Release(); }
