@@ -22,9 +22,10 @@ export function takeAll(rows: AdoptRow[]): AdoptRow[] {
   return rows.map(r => (r.available ? { ...r, choice: 'set' } : r))
 }
 
-export function adoptPayload(presetId: number, dimension: string, rows: AdoptRow[]): AdoptRequest | null {
+export function adoptPayload(presetId: number, dimension: string, rows: AdoptRow[], batch?: number | null): AdoptRequest | null {
   const take = rows.filter(r => r.choice === 'set').map(r => r.facetId)
-  return take.length ? { presetId, dimension, take } : null
+  if (!take.length) return null
+  return typeof batch === 'number' ? { presetId, dimension, take, batch } : { presetId, dimension, take }
 }
 
 /** 只有最新一張追問卡或定稿卡上的推薦可以採用：舊卡的狀態已失效。中間的討論氣泡不出新卡、不算新結果，

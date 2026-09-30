@@ -42,15 +42,22 @@ export type FinalData =
   | FinalizedData
   | { kind: 'save_consent_requested' }
 
-/** 整套組合推薦（2026-09-25，設計 §5.4）：跟在 final 之後，掛在該輪的追問卡／定稿卡上。facets 列該維度全部 facet，state 是本輪結束時的四態。 */
+/** 推薦組法（2026-09-30）：定稿卡每套的理由；追問卡沒有 */
+export type SetReason = 'anchored' | 'similar' | 'query' | 'explore'
+
+/** 整套組合推薦（2026-09-25，設計 §5.4）：跟在 final 之後，掛在該輪的追問卡／定稿卡上。facets 列該維度全部 facet，state 是本輪結束時的四態。
+ *  reason／anchorTags／rank／prob（2026-09-30）：只有定稿卡有。batch 是前端蓋上去的：這套來自第幾批（換一批往右接） */
 export interface RecommendedFacet { facetId: string; label: string; state: FacetState; tags: string[] }
-export interface RecommendedSet { presetId: number; title: string; imageUrl?: string | null; sourceRef?: string | null; dist: number; facets: RecommendedFacet[] }
-/** similar（2026-09-29）：字面錨抓不到、改用 facet 向量離錨夠近的組合；與 anchored 不會同時為 true。舊資料沒這欄當 false */
-export interface RecommendedDimension { dimension: string; label: string; anchored: boolean; similar?: boolean; anchorTags: string[]; sets: RecommendedSet[] }
+export interface RecommendedSet { presetId: number; title: string; imageUrl?: string | null; sourceRef?: string | null; dist: number; facets: RecommendedFacet[]
+  reason?: SetReason | null; anchorTags?: string[] | null; rank?: number | null; prob?: number | null; batch?: number | null }
+/** similar（2026-09-29）：字面錨抓不到、改用 facet 向量離錨夠近的組合；與 anchored 不會同時為 true。舊資料沒這欄當 false。
+ *  batch（2026-09-30）：定稿卡目前最新是第幾批；追問卡沒有 */
+export interface RecommendedDimension { dimension: string; label: string; anchored: boolean; similar?: boolean; anchorTags: string[]; sets: RecommendedSet[]; batch?: number | null }
 export interface Recommendations { turnIndex: number; dimensions: RecommendedDimension[] }
 
-/** POST /api/sessions/{id}/messages 的 adopt：照它的 facet 清單，其餘該維度 facet 保留使用者原本的。 */
-export interface AdoptRequest { presetId: number; dimension: string; take: string[] }
+/** POST /api/sessions/{id}/messages 的 adopt：照它的 facet 清單，其餘該維度 facet 保留使用者原本的。
+ *  batch（2026-09-30）：這套來自定稿卡第幾批，只給量測用 */
+export interface AdoptRequest { presetId: number; dimension: string; take: string[]; batch?: number }
 
 export type AgentEvent =
   | { type: 'session'; sessionId: string; turnIndex: number; status: SessionStatus; text?: string | null }

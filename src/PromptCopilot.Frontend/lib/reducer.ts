@@ -1,4 +1,4 @@
-import { TERMINAL_TOOLS, type AgentEvent, type FacetState, type FinalData, type FinalizedData, type PresetRef, type Recommendations, type RetrievalMode, type SessionSnapshotDto, type SessionStatus, type ToolDetail } from '../types/api'
+import { TERMINAL_TOOLS, type AgentEvent, type FacetState, type FinalData, type FinalizedData, type PresetRef, type RecommendedDimension, type Recommendations, type RetrievalMode, type SessionSnapshotDto, type SessionStatus, type ToolDetail } from '../types/api'
 
 export interface UserEntry { kind: 'user'; text: string }
 /** detail 是 2026-09-25 加的：之前存進 sessionStorage 的條目沒有這個鍵。 */
@@ -128,8 +128,13 @@ export function applyEvent(state: ChatState, ev: AgentEvent): ChatState {
       const idx = findLastIndex(state.transcript, e => e.kind === 'final' && e.turnIndex === ev.turnIndex)
       if (idx < 0) return state
       const { type: _t, ...recs } = ev
+      // 定稿卡（有 batch）把批次蓋到每一套上：換一批往右接之後，每套要知道自己是第幾批（畫分隔線、採用時帶上）
+      const stamped: Recommendations = {
+        ...(recs as Recommendations),
+        dimensions: (recs as Recommendations).dimensions.map(d => (d.batch == null ? d : { ...d, sets: d.sets.map(x => ({ ...x, batch: d.batch })) })),
+      }
       const transcript = state.transcript.slice()
-      transcript[idx] = { ...(transcript[idx] as FinalEntry), recommendations: recs as Recommendations }
+      transcript[idx] = { ...(transcript[idx] as FinalEntry), recommendations: stamped }
       return { ...state, transcript }
     }
 
@@ -153,6 +158,21 @@ export function endTurn(state: ChatState): ChatState {
     pending: null,
     transcript: s.transcript.map(e => (e.kind === 'tool' && !e.done ? { ...e, done: true } : e)),
   }
+}
+
+/** 換一批（推薦組法設計 §6）：新的一批接在那一排右邊，每套蓋上自己的批次。同一個 preset 可能在兩批都出現（看過的會被權重輪回來），
+ *  兩筆都留：批次不同就是不同的一套。找不到那張卡或那一排就原樣回傳。 */
+export function appendBatch(state: ChatState, turnIndex: number, row: RecommendedDimension): ChatState {
+  const idx = findLastIndex(state.transcript, e => e.kind === 'final' && e.turnIndex === turnIndex)
+  if (idx < 0) return state
+  const entry = state.transcript[idx] as FinalEntry
+  const recs = entry.recommendations
+  if (!recs || !recs.dimensions.some(d => d.dimension === row.dimension)) return state
+  const dimensions = recs.dimensions.map(d => (d.dimension !== row.dimension ? d
+    : { ...d, batch: row.batch, sets: [...d.sets, ...row.sets.map(x => ({ ...x, batch: row.batch }))] }))
+  const transcript = state.transcript.slice()
+  transcript[idx] = { ...entry, recommendations: { ...recs, dimensions } }
+  return { ...state, transcript }
 }
 
 /** 對話流裡最新一張定稿卡的輪次。save-to-shared 永遠存後端的 LastFinal，所以只有這一張可以存。 */
