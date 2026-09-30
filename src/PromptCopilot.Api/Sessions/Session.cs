@@ -41,6 +41,15 @@ public sealed class Session
     public string RetrievalMode => RetrievalEnabled ? "on" : "off";
     public SemaphoreSlim Lock { get; } = new(1, 1);
 
+    /// <summary>推薦組法（2026-09-30 設計 §4.4）：最新一張定稿卡的輪次，換一批只接受它；出了新的追問卡就清掉。
+    /// 下面這幾個都不進 Snapshot／Restore：推薦在一輪成立之後才產生，被攔截的輪走不到這裡。</summary>
+    public int? LatestSlateTurn { get; private set; }
+    /// <summary>最近一次定稿的 positive tag（已排除基礎詞），換一批時重算錨用。</summary>
+    public IReadOnlyList<string> LastFinalTags { get; private set; } = Array.Empty<string>();
+    private readonly Dictionary<string, Dictionary<string, int>> _seenSets = new();
+    private readonly Dictionary<string, int> _slateBatches = new();
+    private static readonly IReadOnlyDictionary<string, int> NoneSeen = new Dictionary<string, int>();
+
     public Session(string id, bool retrievalEnabled = true) { Id = id; RetrievalEnabled = retrievalEnabled; }
 
     public void ApplyProfile(string profile, FacetCatalog catalog)
@@ -80,6 +89,29 @@ public sealed class Session
         Adoptions.Add(a);
         Ledger.Record(preset, new LedgerHit(a.Dimension, 0, true));
         Ledger.MarkOffered(preset.Id, new OfferedRef(a.TurnIndex, a.Dimension, "採用"));
+    }
+
+    /// <summary>新的定稿卡：批次歸零；看過次數保留，下一張卡才會把看過的往後延（設計 §3.1）。</summary>
+    public void BeginSlate(int turnIndex, IReadOnlyList<string> finalTags)
+    {
+        LatestSlateTurn = turnIndex;
+        LastFinalTags = finalTags.ToList();
+        _slateBatches.Clear();
+    }
+
+    public void EndSlate() => LatestSlateTurn = null;
+
+    /// <summary>該維度的「tag 集合 key → 看過次數」。</summary>
+    public IReadOnlyDictionary<string, int> SeenFor(string dimension) => _seenSets.TryGetValue(dimension, out var d) ? d : NoneSeen;
+
+    /// <summary>該維度目前是第幾批；這張卡還沒出過就是 0。</summary>
+    public int SlateBatch(string dimension) => _slateBatches.GetValueOrDefault(dimension);
+
+    public void RecordSlate(string dimension, int batch, IEnumerable<string> keys)
+    {
+        _slateBatches[dimension] = batch;
+        if (!_seenSets.TryGetValue(dimension, out var d)) _seenSets[dimension] = d = new Dictionary<string, int>();
+        foreach (var k in keys) d[k] = d.GetValueOrDefault(k) + 1;
     }
 
     public SessionSnapshot Snapshot() => new(Status, Profile, AskCount, DiscussStreak, AutoFill,
