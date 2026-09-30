@@ -82,6 +82,47 @@ public class SlateSelectorTests
         Assert.Equal(a, b);
     }
 
+    private static IReadOnlyList<SlateCandidate> Sourced(params (long id, string source)[] items) => SlateSelector.Merge(new[]
+    {
+        new SlateTier(SlateReason.Anchored, items.Select(x => C(x.id, ("clothing.upper", $"u{x.id}"), ("clothing.lower", $"l{x.id}")) with { SourceRef = $"{x.source}:{x.id}" }).ToList(),
+            _ => Array.Empty<string>()),
+    }, Clothing);
+
+    /// <summary>2026-09-30 驗收回饋：Kisegae 的描述只講穿著，在錨過濾後的名單裡集中在前段；第 2 位改成抽樣後少了很多。
+    /// 第 1 位之外，名單前段（有效名次 ≤ SourceMixWindow）有另一個來源的，第 2 位只從那些抽。</summary>
+    [Fact]
+    public void Second_slot_prefers_the_other_source_near_the_top()
+    {
+        var picks = SlateSelector.PickRelevant(Sourced((1, "civitai"), (2, "civitai"), (3, "civitai"), (4, "kisegae")), NoneSeen, 10, 0.01, new Random(1));
+        Assert.Equal(new long[] { 1, 4 }, picks.Select(p => p.Candidate.Preset.Id));
+        Assert.Equal(3, picks[1].Rank);
+        Assert.Equal(1.0, picks[1].Prob, 6);                                           // 符合條件的只有一筆
+    }
+
+    [Fact]
+    public void Second_slot_samples_as_before_when_the_other_source_is_far_down()
+    {
+        var items = Enumerable.Range(1, 12).Select(i => ((long)i, "civitai")).Append((13L, "kisegae")).ToArray();   // kisegae 在名次 12
+        var picks = SlateSelector.PickRelevant(Sourced(items), NoneSeen, 10, 0.01, new Random(1));
+        Assert.Equal(new long[] { 1, 2 }, picks.Select(p => p.Candidate.Preset.Id));
+    }
+
+    [Fact]
+    public void Source_window_counts_the_seen_penalty()
+    {
+        var c = Sourced((1, "civitai"), (2, "civitai"), (3, "kisegae"));
+        var seen = new Dictionary<string, int> { [c[2].Key] = 1 };                     // kisegae 有效名次 2+10=12，超出範圍
+        var picks = SlateSelector.PickRelevant(c, seen, 10, 0.01, new Random(1));
+        Assert.Equal(new long[] { 1, 2 }, picks.Select(p => p.Candidate.Preset.Id));
+    }
+
+    [Fact]
+    public void Second_slot_mixes_sources_the_other_way_round_too()
+    {
+        var picks = SlateSelector.PickRelevant(Sourced((1, "kisegae"), (2, "kisegae"), (3, "civitai")), NoneSeen, 10, 0.01, new Random(1));
+        Assert.Equal(new long[] { 1, 3 }, picks.Select(p => p.Candidate.Preset.Id));
+    }
+
     [Fact]
     public void Pick_relevant_handles_one_and_zero_candidates()
     {

@@ -1,5 +1,5 @@
 <template>
-  <section data-section="recommendations" class="mt-4 border-t border-rule pt-3">
+  <section ref="root" data-section="recommendations" class="mt-4 border-t border-rule pt-3">
     <h4 class="text-xs font-bold">參考組合</h4>
     <p class="mt-0.5 text-[11px] text-muted">知識庫裡真實存在、有圖的整套設定。圖片來自來源網站，著作權屬原作者，點圖看出處。</p>
     <div v-for="d in recs.dimensions" :key="d.dimension" class="mt-2.5" :data-dimension="d.dimension">
@@ -37,7 +37,7 @@
           <p v-else-if="batchOf(d.dimension) === 'stale'" class="flex h-28 w-28 items-center justify-center rounded-[3px] border border-dashed border-rule p-2 text-center text-[11px] text-muted">這張卡已不能換一批</p>
           <button v-else type="button" data-action="next-batch" :disabled="batchOf(d.dimension) === 'loading'"
                   class="flex h-28 w-28 flex-col items-center justify-center gap-1 rounded-[3px] border border-ink/60 text-xs hover:bg-ink hover:text-paper disabled:border-rule disabled:text-muted disabled:hover:bg-transparent"
-                  @click="s.nextBatch(turnIndex, d.dimension)">
+                  @click="nextBatch(d.dimension)">
             <span>{{ batchOf(d.dimension) === 'loading' ? '換一批中…' : '換一批' }}</span>
             <span v-if="batchOf(d.dimension) === 'error'" class="text-[10px] text-magenta">換一批失敗，再按一次</span>
           </button>
@@ -49,6 +49,7 @@
 
 <script setup lang="ts">
 import type { Recommendations } from '../types/api'
+import type { FinalEntry } from '../lib/reducer'
 import { recommendationLead, setReasonLabel, sourceName } from '../lib/copy'
 /** recs：該輪的 recommendations 事件；turnIndex：卡片的輪次。只有最新一張追問卡／定稿卡可以採用與換一批（舊卡的狀態已失效）。 */
 const props = defineProps<{ recs: Recommendations; turnIndex: number }>()
@@ -56,4 +57,18 @@ const s = useSessionStore()
 const broken = reactive(new Set<number>())
 const adoptable = computed(() => s.latestRecommendableTurn === props.turnIndex && !s.busy)
 function batchOf(dimension: string) { return s.batchState[`${props.turnIndex}:${dimension}`] }
+
+const root = ref<HTMLElement | null>(null)
+/** 換一批接上新的一批後，只把那一排橫向捲到新批的分隔線；block: 'nearest' 不動整頁的垂直位置。 */
+async function nextBatch(dimension: string) {
+  // 讀 store 而不是 props：props 要等父層下一次 render 才更新
+  const batchNow = () => s.state.transcript.findLast((e): e is FinalEntry => e.kind === 'final' && e.turnIndex === props.turnIndex)
+    ?.recommendations?.dimensions.find(d => d.dimension === dimension)?.batch
+  const before = batchNow()
+  await s.nextBatch(props.turnIndex, dimension)
+  if (batchNow() === before) return
+  await nextTick()
+  const dividers = root.value?.querySelectorAll(`[data-dimension="${dimension}"] [data-batch-divider]`)
+  dividers?.[dividers.length - 1]?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'start' })
+}
 </script>

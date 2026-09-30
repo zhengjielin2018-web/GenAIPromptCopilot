@@ -30,7 +30,8 @@
 const s = useSessionStore()
 const el = ref<HTMLElement | null>(null)
 
-watch(() => [s.state.transcript.length, s.busy], async () => {
+// 分開當兩個來源：getter 回傳陣列的話每次都是新陣列，state 一被換掉（例如換一批接上新的一批）就被當成變動而捲到底
+watch([() => s.state.transcript.length, () => s.busy], async () => {
   await nextTick()
   el.value?.scrollTo({ top: el.value.scrollHeight, behavior: 'smooth' })
 })
