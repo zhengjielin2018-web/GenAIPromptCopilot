@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { readSse } from '../lib/sse'
-import { initialState, beginTurn, applyEvent, endTurn, failHttp, hydrate, latestFinalizedTurn as latestFinalizedTurnOf, type ChatState } from '../lib/reducer'
+import { initialState, beginTurn, applyEvent, endTurn, failHttp, hydrate, appendBatch, latestFinalizedTurn as latestFinalizedTurnOf, type ChatState } from '../lib/reducer'
 import { loadPersisted, savePersisted } from '../lib/persist'
 import { loadPrefs, savePrefs, type Prefs } from '../lib/prefs'
 import { composeDraft, appendChip, chipKey, type Chip } from '../lib/composer'
@@ -62,6 +62,10 @@ export const useSessionStore = defineStore('session', () => {
   /** 只有最新一張追問卡／定稿卡上的推薦可以採用。 */
   const latestRecommendableTurn = computed<number | null>(() => latestRecommendableTurnOf(state.value.transcript))
 
+  /** 換一批的狀態，key 是 `${turnIndex}:${dimension}`。不存：重載後回到可以再按。
+   *  stale：伺服器回 409（這張卡已經不是最新，或這段對話還有一輪在跑）——不可能靠再按解決，畫面不給重試。 */
+  const batchState = ref<Record<string, 'loading' | 'error' | 'exhausted' | 'stale'>>({})
+
   /** opts.draft 只在送出當下帶原文（輪次中重載時放回輸入框），其餘時候存空字串。 */
   function persist(opts: { draft?: string } = {}) {
     const id = state.value.sessionId
@@ -112,6 +116,7 @@ export const useSessionStore = defineStore('session', () => {
     expandedSaveTurn.value = null; saveState.value = {}; drawerPresetId.value = null
     // 舊對話的組合不能採用到新對話
     adoptTarget.value = null
+    batchState.value = {}
     notice.value = null
     persist()
   }
@@ -172,6 +177,36 @@ export const useSessionStore = defineStore('session', () => {
   }
   function closeAdopt() { adoptTarget.value = null }
 
+  /** 換一批：只有最新一張卡、沒在跑回合時能按（伺服器也會擋）。成功就接在那一排右邊並存檔；空批代表這個維度沒有更多了。 */
+  async function nextBatch(turnIndex: number, dimension: string) {
+    const key = `${turnIndex}:${dimension}`
+    const id = state.value.sessionId
+    if (!id || busy.value || turnIndex !== latestRecommendableTurn.value || batchState.value[key] === 'loading') return
+    batchState.value = { ...batchState.value, [key]: 'loading' }
+    try {
+      const r = await api.nextRecommendations(id, dimension, turnIndex)
+      // 舊對話的回應不能接到新對話：等待期間換了 session 就整批放棄，不動 state／batchState、也不 persist
+      if (state.value.sessionId !== id) return
+      if (!r.ok) {
+        // 404：session 過期，跟 runTurn 一樣開新對話、提示（換一批沒有原文要留，不用 EXPIRED_KEPT_TEXT）
+        if (r.status === 404) { await newSession(); notice.value = '上次的對話已過期，已開新對話。'; return }
+        // 409：這張卡已經不是最新、或這段對話還有一輪在跑——不是暫時性的，再按也不會成功，不給重試
+        if (r.status === 409) { batchState.value = { ...batchState.value, [key]: 'stale' }; return }
+        // 503／網路錯誤：可能是暫時的，維持舊文案讓使用者再按一次
+        batchState.value = { ...batchState.value, [key]: 'error' }
+        return
+      }
+      if (r.row.sets.length === 0) { batchState.value = { ...batchState.value, [key]: 'exhausted' }; return }
+      state.value = appendBatch(state.value, turnIndex, r.row)
+      const { [key]: _done, ...rest } = batchState.value
+      batchState.value = rest
+      persist()
+    } catch {
+      if (state.value.sessionId !== id) return
+      batchState.value = { ...batchState.value, [key]: 'error' }
+    }
+  }
+
   /** 確定採用：關對照表、走一般的一輪。泡泡先顯示「採用〈標題〉…」。 */
   async function adopt(req: AdoptRequest, title: string) {
     closeAdopt()
@@ -227,5 +262,6 @@ export const useSessionStore = defineStore('session', () => {
     prefs, retrievalMismatch, setRetrievalPref, setShowTrace, safetyCanDisable, safetyOff, setSafetyOff,
     boot, newSession, send, retry, setDraft, toggleChip, isChipSelected, openDrawer, closeDrawer, expandSave, save,
     adoptTarget, latestRecommendableTurn, openAdopt, closeAdopt, adopt,
+    batchState, nextBatch,
   }
 })

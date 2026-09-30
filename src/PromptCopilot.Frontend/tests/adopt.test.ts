@@ -48,6 +48,15 @@ describe('adoptRows', () => {
   })
 })
 
+describe('adoptPayload batch', () => {
+  const rows = [{ facetId: 'style.genre', label: '流派', state: 'missing' as const, setTags: ['oil painting'], available: true, choice: 'set' as const }]
+  it('有批次就帶上，沒有就不帶', () => {
+    expect(adoptPayload(7, 'style', rows, 2)).toEqual({ presetId: 7, dimension: 'style', take: ['style.genre'], batch: 2 })
+    expect(adoptPayload(7, 'style', rows)).toEqual({ presetId: 7, dimension: 'style', take: ['style.genre'] })
+    expect(adoptPayload(7, 'style', rows, null)).toEqual({ presetId: 7, dimension: 'style', take: ['style.genre'] })
+  })
+})
+
 describe('latestRecommendableTurn', () => {
   const ask = (t: number): Entry => ({ kind: 'final', turnIndex: t, data: { kind: 'ask', preamble: 'p', asks: [] } })
   const fin = (t: number): Entry => ({ kind: 'final', turnIndex: t, data: { kind: 'finalized', positive: 'p', negative: 'n', tips: 't', intentSummary: 'i' } })

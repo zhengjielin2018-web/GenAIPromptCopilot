@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { initialState, beginTurn, applyEvent, endTurn, failHttp, hydrate, latestFinalizedTurn, type ChatState, type Entry, type ToolEntry } from '../lib/reducer'
-import type { AgentEvent, SessionSnapshotDto, TagSource } from '../types/api'
+import { initialState, beginTurn, applyEvent, endTurn, failHttp, hydrate, latestFinalizedTurn, appendBatch, type ChatState, type Entry, type ToolEntry } from '../lib/reducer'
+import type { AgentEvent, SessionSnapshotDto, TagSource, RecommendedDimension } from '../types/api'
 
 const session = (turnIndex = 1): AgentEvent => ({ type: 'session', sessionId: 's1', turnIndex, status: 'Collecting' })
 const call = (id: string, name = 'SearchPresets'): AgentEvent => ({ type: 'tool_call', callId: id, name, argsSummary: 'dimension: style' })
@@ -289,6 +289,42 @@ describe('latestFinalizedTurn', () => {
 
   it('is null when nothing was finalized', () => {
     expect(latestFinalizedTurn([{ kind: 'user', text: 'x' }, msg(1)])).toBeNull()
+  })
+})
+
+const slateRecs: AgentEvent = { type: 'recommendations', turnIndex: 1, dimensions: [{ dimension: 'style', label: '風格', anchored: false, anchorTags: [], batch: 1, sets: [
+  { presetId: 7, title: '油畫', dist: 0.2, facets: [], reason: 'query', anchorTags: [], rank: 0, prob: 1 },
+  { presetId: 8, title: '水彩', dist: 0.3, facets: [], reason: 'explore', anchorTags: [], rank: 1, prob: 0.4 },
+] }] }
+const batch2: RecommendedDimension = { dimension: 'style', label: '風格', anchored: false, anchorTags: [], batch: 2, sets: [
+  { presetId: 9, title: '版畫', dist: 0.3, facets: [], reason: 'query', anchorTags: [], rank: 3, prob: 0.2 },
+  { presetId: 7, title: '油畫', dist: 0.2, facets: [], reason: 'query', anchorTags: [], rank: 0, prob: 1 },
+] }
+
+describe('slate batches', () => {
+  it('定稿卡的推薦事件把批次蓋到每一套上；追問卡的不動', () => {
+    let s = applyEvent(started(), finalized)
+    s = applyEvent(s, slateRecs)
+    const sets = (s.transcript.at(-1) as any).recommendations.dimensions[0].sets
+    expect(sets.map((x: any) => x.batch)).toEqual([1, 1])
+    let a = applyEvent(started(), ask)
+    a = applyEvent(a, recs)
+    expect((a.transcript.at(-1) as any).recommendations.dimensions[0].sets[0].batch).toBeUndefined()
+  })
+
+  it('appendBatch keeps a repeated preset as a separate set with its own batch', () => {
+    // Review Focus 1
+    let s = applyEvent(applyEvent(started(), finalized), slateRecs)
+    s = appendBatch(s, 1, batch2)
+    const row = (s.transcript.at(-1) as any).recommendations.dimensions[0]
+    expect(row.batch).toBe(2)
+    expect(row.sets.map((x: any) => [x.presetId, x.batch])).toEqual([[7, 1], [8, 1], [9, 2], [7, 2]])
+  })
+
+  it('appendBatch ignores an unknown turn or dimension', () => {
+    const s = applyEvent(applyEvent(started(), finalized), slateRecs)
+    expect(appendBatch(s, 9, batch2)).toBe(s)
+    expect(appendBatch(s, 1, { ...batch2, dimension: 'scene' })).toBe(s)
   })
 })
 

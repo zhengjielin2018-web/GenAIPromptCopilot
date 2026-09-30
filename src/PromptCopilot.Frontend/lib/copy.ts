@@ -1,4 +1,5 @@
 import type { FailureEntry } from './reducer'
+import type { SetReason } from '../types/api'
 
 const TITLES: Record<string, string> = {
   Blocked_NSFW: '輸入被安全規則攔下',
@@ -50,6 +51,18 @@ export function recommendationLead(d: { anchored: boolean; similar?: boolean; an
   if (d.anchored) return `含你講的 ${d.anchorTags.join(', ')}`
   if (d.similar) return `接近你講的 ${d.anchorTags.join(', ')}`
   return '最接近你描述的組合'
+}
+
+/** 定稿卡每一套的理由（推薦組法設計 §6）。沒有 reason（追問卡、舊資料）回 null，畫面改顯示列層級的 recommendationLead。 */
+export function setReasonLabel(set: { reason?: SetReason | null; anchorTags?: string[] | null }): string | null {
+  const tags = (set.anchorTags ?? []).join(', ')
+  switch (set.reason) {
+    case 'anchored': return tags ? `含你講的 ${tags}` : '含你講的'
+    case 'similar': return tags ? `接近你講的 ${tags}` : '接近你講的'
+    case 'query': return '最接近你描述的'
+    case 'explore': return '換個搭法'
+    default: return null
+  }
 }
 
 /** 工具卡的查詢句：facet 項目帶英文時顯示「原話（英文）」，跟送去 embedding 的字串同形。 */

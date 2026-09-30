@@ -84,3 +84,71 @@ FROM seq;
 讀法：P 管「看過的退多少」，τ 管「往深處抽多少」。使用者不要求抽很深，要的是看過的退得夠多，所以選 τ=5、P=10，不選 τ=8。
 
 模擬沒有模型化「tag 集合相同的算同一套」（設計 §3 的合併），實際不重複的比例會再高一點。
+
+## 4. 查詢執行計畫與耗時（2026-09-30 實測）
+
+環境：開發庫 `prompt-copilot-db`（docker，pgvector/pgvector:pg16），19,354 筆 `prompt_knowledge_presets`；API 伺服器跑在 `localhost:5000`（`feat/recommendation-slate` 分支，前面 Task 已完成、瀏覽器驗收過）。查詢向量與字面錨取自 preset id 8886（`clothing.footwear = sandals`）；`@facets` 用 portrait 的 clothing 六個 facet（`clothing.head`／`clothing.upper`／`clothing.lower`／`clothing.footwear`／`clothing.material`／`clothing.accessories`）；`@anchorFacets = {clothing.footwear}`、`@anchorTags = {sandals}`；`RecommendSimilarSql` 的 `@maxDist = 0.30`。索引確認：`idx_presets_embedding`（HNSW，`vector_cosine_ops`）、`idx_presets_facet_ids`（GIN）、`preset_facet_embeddings_pkey`（`(preset_id, facet_id)`）、`idx_pfe_facet`（btree）；`hnsw.ef_search` 為預設值 40。
+
+每條查詢 `EXPLAIN (ANALYZE, BUFFERS)` 跑 5 次。
+
+### `RecommendSql`（純向量，SetFilter + ORDER BY dist LIMIT n）
+
+- LIMIT 3，5 次 `Execution Time`：2.482, 1.840, 1.777, 1.819, 1.964 ms → 中位數 **1.840 ms**
+- LIMIT 30，5 次：3.933, 2.467, 2.323, 2.377, 2.114 ms → 中位數 **2.377 ms**（第一次 3.933ms 略高，判斷是磁碟頁快取尚未熱身，非容器重啟後第一次呼叫，不算異常，中位數計算未排除）
+- 頂層節點（兩種 LIMIT 相同）：`Limit` → `Index Scan using idx_presets_embedding`（HNSW；子查詢 `@q` 走 `prompt_knowledge_presets_pkey`）
+
+HNSW 漏筆檢查（spec §9.2 移過來的檢查，用真實 SELECT 不加 EXPLAIN）：LIMIT 30 的前 5 筆 id 依序為 `8886, 10507, 14229, 41647, 20789`；LIMIT 3 全部 3 筆 id 為 `8886, 10507, 14229`。取兩者的前 3 筆比對，逐筆相同，本次量測沒有出現 HNSW 漏筆。
+
+### `AnchoredRecommendSql`（字面錨，MATERIALIZED CTE）
+
+- LIMIT 3，5 次：15.712, 11.858, 11.578, 11.425, 12.198 ms → 中位數 **11.858 ms**
+- LIMIT 30，5 次：11.449, 11.991, 11.224, 11.765, 10.914 ms → 中位數 **11.449 ms**
+- 頂層節點：`Limit` → `Sort`（LIMIT 3 為 top-N heapsort，LIMIT 30 改 quicksort）← `CTE c` = `Bitmap Heap Scan on prompt_knowledge_presets`（`cost=90.83..33211.05 rows=891`）← `Bitmap Index Scan on idx_presets_facet_ids`（GIN，不走 HNSW）。CTE 內先用 GIN 篩 `facet_ids` 交集，逐列算 `jsonb_each`／`jsonb_array_length`／anchor 的 `EXISTS` 子查詢，兩種 LIMIT 下 CTE 實際都只有 **17 列**（涼鞋錨的候選量級）
+- LIMIT 3 與 LIMIT 30 中位數幾乎相同（11.858 對 11.449ms），印證程式註解「MATERIALIZED 擋住規劃器把 ORDER BY／LIMIT 推進 HNSW，物化的 CTE 本來就把符合的列全算完」
+
+### `RecommendSimilarSql`（近似錨，maxDist=0.30）
+
+- LIMIT 3，5 次：5.636, 4.337, 4.495, 4.406, 4.960 ms → 中位數 **4.495 ms**
+- LIMIT 30，5 次：4.424, 4.276, 4.552, 4.480, 5.061 ms → 中位數 **4.480 ms**
+- 頂層節點：`Limit` → `Sort`（top-N heapsort，LIMIT 3 記憶體 28kB、LIMIT 30 為 59kB）← `Nested Loop`（`cost=6.31..1133.14 rows=7`，`actual rows=329`）：`Bitmap Index Scan on idx_pfe_facet`（`actual rows=338`）join `Index Scan using prompt_knowledge_presets_pkey`（走主鍵，`loops=338`）。`maxDist <= 0.30` 篩完剩 329 列，兩種 LIMIT 下 Nested Loop 結果一致
+
+### `FacetVectorsSql`
+
+`@ids` = `RecommendSql` LIMIT 30 的 30 個 id 再加 2 個（5, 6），共 32 個。
+
+- 單一 facet（`@facets = {clothing.footwear}`），5 次：0.355, 0.186, 0.221, 0.182, 0.178 ms → 中位數 **0.186 ms**；`Index Scan using preset_facet_embeddings_pkey`（純走複合主鍵）
+- 6 個 clothing facet，5 次：0.658, 0.509, 0.491, 0.582, 0.484 ms → 中位數 **0.509 ms**；`Bitmap Heap Scan` ← `BitmapAnd`(`idx_pfe_facet` 交集 `preset_facet_embeddings_pkey`)，規劃器改用 `BitmapAnd`、仍用得到主鍵，只是混用 facet_id 次索引，82 列（32 個 preset 不是每筆都補了全部 6 個 clothing facet）
+
+兩種情況都在 1ms 以內，對整批延遲影響可忽略。
+
+### 換一批延遲（`Recommendations_Next` audit）
+
+Session `a62c51fd8bb74a63b39dff3a7d2189bd`（瀏覽器驗收用、`turnIndex=4`、`status: Finalized`）對 6 個維度各補呼叫 2 次（共 12 次，全部回 200，無 404／409）：
+
+| dimension | batch | latency_ms |
+| --- | ---: | ---: |
+| style | 2 | 585 |
+| style | 3 | 389 |
+| scene | 2 | 538 |
+| scene | 3 | 625 |
+| camera | 2 | 543 |
+| camera | 3 | 484 |
+| appearance | 2 | 513 |
+| appearance | 3 | 535 |
+| pose | 2 | 461 |
+| pose | 3 | 464 |
+| clothing | 2 | 546 |
+| clothing | 3 | 544 |
+
+加上瀏覽器驗收留下的舊樣本（`turn_index=2`、`batch=2`、`latency_ms=2432`），共 13 筆：
+
+```sql
+SELECT count(*), percentile_cont(0.5) WITHIN GROUP (ORDER BY latency_ms), max(latency_ms)
+FROM audit_logs WHERE event_type = 'Recommendations_Next';
+```
+
+→ `count=13, median=538, max=2432`。排除那筆舊樣本後（`turn_index=4` 的 12 筆）：`count=12, median=536.5, max=625, min=389`。2432ms 那筆比其餘 12 筆高出 4 倍以上，判斷是容器重啟後第一次呼叫帶到的 embedding API 暖機時間，不計入常態範圍；這次補測的 12 筆全在伺服器已經跑了一陣子之後呼叫，沒有再遇到第二筆異常高的樣本。
+
+定稿卡整張（6 個維度）推薦延遲：沒有獨立的整批 audit 紀錄，用「換一批單排延遲中位數 × 6」估：538ms × 6 ≈ 3.2 秒（**估計值**，偏高——換一批每次呼叫各自帶一次 embedding API 呼叫，定稿卡實際是 6 個維度共用同一次 embedding 呼叫再依序跑 6 次 SQL，真正的整張延遲應低於這個估計）。
+
+結論已寫入 `docs/superpowers/specs/2026-09-30-recommendation-slate-design.md` §8（表格與結論摘要）；本節保留原始 5 次數字與 13 筆延遲樣本供之後重新量測時對照。

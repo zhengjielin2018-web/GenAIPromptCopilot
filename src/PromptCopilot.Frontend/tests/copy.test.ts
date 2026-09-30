@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { sourceName, sourceNotice } from '../lib/copy'
-import { methodLabel, queryLabel, recommendationLead } from '../lib/copy'
+import { methodLabel, queryLabel, recommendationLead, setReasonLabel } from '../lib/copy'
 
 describe('sourceName', () => {
   it('把 source_ref 前綴翻成給人看的來源名稱', () => {
@@ -62,5 +62,22 @@ describe('queryLabel / methodLabel', () => {
     expect(methodLabel({ facetId: 'clothing.footwear', method: 'preset' })).toBe('整套向量')
     expect(methodLabel({ facetId: 'clothing.footwear' })).toBe('整套向量')
     expect(methodLabel({ facetId: null, method: 'preset' })).toBeNull()
+  })
+})
+
+describe('setReasonLabel', () => {
+  it('四種理由的文案', () => {
+    expect(setReasonLabel({ reason: 'anchored', anchorTags: ['sandals'] })).toBe('含你講的 sandals')
+    expect(setReasonLabel({ reason: 'similar', anchorTags: ['slippers', 'beret'] })).toBe('接近你講的 slippers, beret')
+    expect(setReasonLabel({ reason: 'query', anchorTags: [] })).toBe('最接近你描述的')
+    expect(setReasonLabel({ reason: 'explore', anchorTags: [] })).toBe('換個搭法')
+  })
+  it('setReasonLabel returns null for sets without a reason', () => {
+    // Review Focus 5：追問卡與舊 sessionStorage 的組合沒有 reason，畫面照舊顯示列層級文案
+    expect(setReasonLabel({})).toBeNull()
+    expect(setReasonLabel({ reason: null })).toBeNull()
+  })
+  it('有錨的理由沒有 anchorTags 時不留尾巴空白', () => {
+    expect(setReasonLabel({ reason: 'anchored' })).toBe('含你講的')
   })
 })

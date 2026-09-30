@@ -139,4 +139,43 @@ public class SessionTests
         Assert.Same(s, store.TryGet(s.Id));
         Assert.Null(store.TryGet("nope"));
     }
+
+    [Fact]
+    public void Slate_state_counts_seen_keys_per_dimension_and_resets_batches_on_a_new_card()
+    {
+        var s = new Session("s");
+        Assert.Null(s.LatestSlateTurn);
+        Assert.Empty(s.SeenFor("clothing"));
+        Assert.Equal(0, s.SlateBatch("clothing"));
+
+        s.BeginSlate(3, new[] { "sandals" });
+        s.RecordSlate("clothing", 1, new[] { "k1", "k2" });
+        s.RecordSlate("clothing", 2, new[] { "k1" });
+        Assert.Equal(3, s.LatestSlateTurn);
+        Assert.Equal(new[] { "sandals" }, s.LastFinalTags);
+        Assert.Equal(2, s.SeenFor("clothing")["k1"]);
+        Assert.Equal(1, s.SeenFor("clothing")["k2"]);
+        Assert.Equal(2, s.SlateBatch("clothing"));
+        Assert.Empty(s.SeenFor("style"));
+
+        s.BeginSlate(5, Array.Empty<string>());                  // 新的定稿卡：批次歸零，看過保留（跨卡延後就靠它）
+        Assert.Equal(0, s.SlateBatch("clothing"));
+        Assert.Equal(2, s.SeenFor("clothing")["k1"]);
+        Assert.Empty(s.LastFinalTags);
+
+        s.EndSlate();
+        Assert.Null(s.LatestSlateTurn);
+    }
+
+    [Fact]
+    public void Restore_does_not_touch_slate_state()
+    {
+        var s = new Session("s");
+        var snap = s.Snapshot();
+        s.BeginSlate(2, Array.Empty<string>());
+        s.RecordSlate("style", 1, new[] { "k" });
+        s.Restore(snap);
+        Assert.Equal(2, s.LatestSlateTurn);                       // 推薦在一輪成立後才產生，被攔截的輪走不到這裡（設計 §4.4）
+        Assert.Equal(1, s.SeenFor("style")["k"]);
+    }
 }

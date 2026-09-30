@@ -105,6 +105,13 @@ public class PresetRepository(NpgsqlDataSource ds)
         ORDER BY dist, p.id
         LIMIT @take
         """;
+    // 推薦組法（2026-09-30 設計 §4.3）：探索位要比候選與相關位在比較用 facet 上的向量。子表主鍵就是 (preset_id, facet_id)，
+    // 一次撈回約 60 個 preset × 幾個 facet；執行計畫與耗時見該設計 §8。
+    private const string FacetVectorsSql = """
+        SELECT preset_id, facet_id, embedding
+        FROM preset_facet_embeddings
+        WHERE preset_id = ANY(@ids) AND facet_id = ANY(@facets)
+        """;
 
     public virtual async Task<IReadOnlyList<PresetHit>> SearchAsync(float[] query, IReadOnlyList<string> facetIds, int k, CancellationToken ct)
     {
@@ -165,6 +172,20 @@ public class PresetRepository(NpgsqlDataSource ds)
         cmd.Parameters.AddWithValue("maxDist", maxDist);
         cmd.Parameters.AddWithValue("take", take);
         return await ReadCandidatesAsync(cmd, ct);
+    }
+
+    public virtual async Task<IReadOnlyDictionary<(long PresetId, string FacetId), float[]>> FacetVectorsAsync(IReadOnlyList<long> presetIds,
+        IReadOnlyList<string> facetIds, CancellationToken ct)
+    {
+        var map = new Dictionary<(long PresetId, string FacetId), float[]>();
+        if (presetIds.Count == 0 || facetIds.Count == 0) return map;
+        await using var cmd = ds.CreateCommand(FacetVectorsSql);
+        cmd.Parameters.AddWithValue("ids", presetIds.ToArray());
+        cmd.Parameters.AddWithValue("facets", facetIds.ToArray());
+        await using var r = await cmd.ExecuteReaderAsync(ct);
+        while (await r.ReadAsync(ct))
+            map[(r.GetInt64(0), r.GetString(1))] = r.GetFieldValue<Vector>(2).ToArray();
+        return map;
     }
 
     /// <summary>SearchAsync／SearchFacetAsync 共用：欄位順序相同（9 欄），差別只在 SQL 怎麼算 dist。</summary>

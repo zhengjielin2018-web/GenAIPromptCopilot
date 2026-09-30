@@ -123,3 +123,72 @@ def test_no_adoptions_prints_the_notice_but_still_counts_recommendations():
 
 def test_empty_input():
     assert "沒有 Turn_Completed 紀錄" in build_report([])
+
+
+SLATE = {"dimensions": [{"dimension": "clothing", "anchored": False, "similar": False, "presetIds": [1, 2, 3], "batch": 1, "sets": [
+    {"presetId": 1, "reason": "anchored", "rank": 0, "prob": 1},
+    {"presetId": 2, "reason": "anchored", "rank": 4, "prob": 0.3},
+    {"presetId": 3, "reason": "explore", "rank": 0, "prob": 0.5},
+]}]}
+
+
+def adopt(pid, replaced=(), batch=None):
+    a = {"presetId": pid, "dimension": "clothing", "take": ["clothing.footwear"], "filled": [], "replaced": list(replaced)}
+    if batch is not None:
+        a["batch"] = batch
+    return a
+
+
+def nxt(session, turn, batch, sets):
+    return Turn(session, turn, {"dimension": "clothing", "batch": batch, "sets": sets}, "Recommendations_Next")
+
+
+def test_slate_section_counts_reasons_and_replace_rate():
+    text = build_report([fin("a", 1, rec=SLATE), fin("a", 2, adoption=adopt(3, replaced=["clothing.footwear"]))])
+    assert "## 定稿卡推薦組法" in text
+    assert "| 換個搭法 | 1 | 1/1（100.0%） | 1/1（100.0%） | 1.0 |" in text
+    assert "| 含你講的 | 2 | 0/2（0.0%） | 0/0（—） | — |" in text
+
+
+def test_next_batch_sets_join_the_row_and_adoption_with_batch_links_there():
+    turns = [fin("a", 1, rec=SLATE), nxt("a", 1, 2, [{"presetId": 9, "reason": "query", "rank": 7, "prob": 0.1}]),
+             fin("a", 2, adoption=adopt(9, batch=2))]
+    text = build_report(turns)
+    assert "- 定稿排按過換一批：1/1（100.0%）；平均每排按 1.0 次" in text
+    assert "- 採用來自第 2 批以後：1/1（100.0%）" in text
+    assert "| 5–9 | 1 | 1 |" in text
+
+
+def test_adoption_with_batch_links_to_that_batch_even_if_the_preset_repeats():
+    # Review Focus 1：看過的會被權重輪回來，同一個 preset 可能在兩批都出現
+    turns = [fin("a", 1, rec=SLATE), nxt("a", 1, 2, [{"presetId": 1, "reason": "anchored", "rank": 0, "prob": 1}]),
+             fin("a", 2, adoption=adopt(1, batch=1))]
+    text = build_report(turns)
+    assert "- 採用來自第 2 批以後：0/1（0.0%）" in text
+
+
+def test_old_rows_without_sets_infer_reason_from_row_flags():
+    # Review Focus 5
+    text = build_report([fin("a", 1, rec=REC_CLOTHING), fin("a", 2, adoption=ADOPT_CLOTHING)])
+    assert "| 含你講的 | 3 | 1/3（33.3%） | 1/1（100.0%） | 1.0 |" in text
+    assert "| 0 | 0 | 0 |" in text                                   # 舊資料沒有名次，不進分桶
+
+
+def test_explore_set_at_rank_0_does_not_enter_the_original_rank_bucket():
+    # Final-review finding 2：探索位的 rank 是跟相關位的差異排名，不是原名次；SLATE 的 explore 套剛好也是 rank 0，
+    # 混進去分桶「0」會虛報成 2（跟相關位那套疊在一起），只算相關位才是 1
+    text = build_report([fin("a", 1, rec=SLATE)])
+    assert "| 0 | 1 | 0 |" in text
+    assert "| 1–4 | 1 | 0 |" in text
+
+
+def test_no_final_card_recommendations_means_no_slate_section():
+    assert "定稿卡推薦組法" not in build_report([ask("a", 1, rec=REC_CLOTHING)])
+
+
+def test_empty_next_batch_adds_no_sets_and_no_press():
+    # 控制器裁決：空批次（「沒有更多了」）也會被 audit，sets 是空陣列——不能算進出現數，也不能推高換一批
+    turns = [fin("a", 1, rec=SLATE), nxt("a", 1, 2, []), fin("a", 2, adoption=adopt(3))]
+    text = build_report(turns)
+    assert "| 換個搭法 | 1 | 1/1（100.0%）" in text
+    assert "- 定稿排按過換一批：0/1（0.0%）；平均每排按 0.0 次" in text

@@ -75,6 +75,28 @@ public class RepositoryIntegrationTests(ITestOutputHelper output) : IAsyncLifeti
         await _ds.DisposeAsync();
     }
 
+    private async Task<long> IdOf(string sourceRef)
+    {
+        await using var cmd = _ds.CreateCommand("SELECT id FROM prompt_knowledge_presets WHERE source_ref = @r");
+        cmd.Parameters.AddWithValue("r", sourceRef);
+        return (long)(await cmd.ExecuteScalarAsync())!;
+    }
+
+    [IntegrationFact]
+    public async Task Facet_vectors_returns_rows_for_the_requested_presets_and_facets_only()
+    {
+        var repo = new PresetRepository(_ds);
+        long p3 = await IdOf(Ref3), p4 = await IdOf(Ref4), p5 = await IdOf(Ref5);
+        var v = await repo.FacetVectorsAsync(new[] { p3, p4, p5 }, new[] { FxFootwear }, default);
+        Assert.Equal(3, v.Count);
+        Assert.Equal(1f, v[(p3, FxFootwear)][1]);
+        Assert.Equal(1f, v[(p5, FxFootwear)][2]);
+        Assert.False(v.ContainsKey((p3, FxUpper)));                                  // 沒要的 facet 不回
+        Assert.Equal(1f, (await repo.FacetVectorsAsync(new[] { p3 }, new[] { FxUpper }, default))[(p3, FxUpper)][2]);
+        Assert.Empty(await repo.FacetVectorsAsync(Array.Empty<long>(), new[] { FxFootwear }, default));
+        Assert.Empty(await repo.FacetVectorsAsync(new[] { p3 }, Array.Empty<string>(), default));
+    }
+
     [IntegrationFact]
     public async Task Preset_search_filters_by_facets_and_orders_by_distance()
     {

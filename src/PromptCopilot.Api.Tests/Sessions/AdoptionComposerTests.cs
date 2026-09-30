@@ -116,4 +116,13 @@ public class AdoptionComposerTests
         Assert.Contains("尚未拆分", Assert.Throws<AdoptValidationException>(() => AdoptionComposer.Compose(new AdoptRequest(41720, "clothing", new[] { "clothing.upper" }), Preset(null), Sess(), Catalog, 1)).Message);
         Assert.Contains("題材", Assert.Throws<AdoptValidationException>(() => AdoptionComposer.Compose(new AdoptRequest(41720, "clothing", new[] { "clothing.upper" }), Preset(Tags), new Session("x"), Catalog, 1)).Message);
     }
+
+    [Fact]
+    public void Batch_passes_through_to_the_adoption()
+    {
+        var s = Sess();
+        var c = AdoptionComposer.Compose(new AdoptRequest(41720, "clothing", new[] { "clothing.upper" }, Batch: 2), Preset(Tags), s, Catalog, 1);
+        Assert.Equal(2, c.Adoption.Batch);
+        Assert.Null(AdoptionComposer.Compose(new AdoptRequest(41720, "clothing", new[] { "clothing.upper" }), Preset(Tags), s, Catalog, 1).Adoption.Batch);
+    }
 }

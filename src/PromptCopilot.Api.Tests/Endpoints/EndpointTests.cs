@@ -8,6 +8,7 @@ using Microsoft.SemanticKernel.ChatCompletion;
 using PromptCopilot.Api.Data;
 using PromptCopilot.Api.Llm;
 using PromptCopilot.Api.Orchestration;
+using PromptCopilot.Api.Plugins;
 using PromptCopilot.Api.Sessions;
 using PromptCopilot.Api.Streaming;
 using PromptCopilot.Api.Tests.Fakes;
@@ -62,6 +63,21 @@ public class EndpointTests : IClassFixture<EndpointTests.Factory>
         public Task WriteAsync(AuditEntry entry, CancellationToken ct) => throw new IOException("audit db down");
     }
 
+    /// <summary>不打 DB：camera 維度模擬推薦失敗，pose 維度模擬「沒有更多了」，其他回固定的第 2 批。</summary>
+    public sealed class StubRecommendations : IRecommendationService
+    {
+        public Task<RecommendationsEvent?> BuildAsync(Session s, TurnOutcome outcome, int turnIndex, CancellationToken ct) => Task.FromResult<RecommendationsEvent?>(null);
+        public Task<RecommendedDimension> NextAsync(Session s, string dimension, CancellationToken ct) => dimension switch
+        {
+            "camera" => throw new InvalidOperationException("db down"),
+            "pose" => Task.FromResult(new RecommendedDimension(dimension, "姿勢", false, Array.Empty<string>(), Array.Empty<RecommendedSet>(), Batch: 1)),
+            _ => Task.FromResult(new RecommendedDimension(dimension, "風格", false, Array.Empty<string>(), new[]
+            {
+                new RecommendedSet(7, "油畫", null, null, 0.2, Array.Empty<RecommendedFacet>(), SlateReason.Query, Array.Empty<string>(), 3, 0.25),
+            }, Batch: 2)),
+        };
+    }
+
     public sealed class Factory : WebApplicationFactory<Program>
     {
         protected override void ConfigureWebHost(Microsoft.AspNetCore.Hosting.IWebHostBuilder builder)
@@ -74,6 +90,7 @@ public class EndpointTests : IClassFixture<EndpointTests.Factory>
                 s.AddSingleton<HistoryRepository>(new FakeHistories());
                 s.AddSingleton<PresetRepository>(new FakePresets());
                 s.AddSingleton<IAuditSink>(new ExplodingAudit());                   // 稽核掛掉不該讓 200 變 500
+                s.AddSingleton<IRecommendationService>(new StubRecommendations());
             });
         }
     }
@@ -448,5 +465,81 @@ public class EndpointTests : IClassFixture<EndpointTests.Factory>
         var doc = await _client.GetFromJsonAsync<System.Text.Json.JsonElement>("/api/config/facets");
         Assert.Equal(6, doc.GetProperty("dimensions").GetArrayLength());
         Assert.True(doc.GetProperty("profiles").TryGetProperty("vehicle", out _));
+    }
+
+    [Fact]
+    public async Task Next_returns_the_batch_for_the_latest_final_card()
+    {
+        var s = PortraitSession();
+        s.BeginSlate(3, Array.Empty<string>());
+        var r = await _client.PostAsJsonAsync($"/api/sessions/{s.Id}/recommendations/next", new { dimension = "style", turnIndex = 3 });
+        Assert.Equal(HttpStatusCode.OK, r.StatusCode);
+        using var doc = System.Text.Json.JsonDocument.Parse(await r.Content.ReadAsStringAsync());
+        Assert.Equal(2, doc.RootElement.GetProperty("batch").GetInt32());
+        Assert.Equal("query", doc.RootElement.GetProperty("sets")[0].GetProperty("reason").GetString());
+    }
+
+    /// <summary>Fix round 1: 空批次也是成功的 200（沒有更多了），一樣要記 Recommendations_Next；
+    /// factory 的稽核槽永遠丟例外，這裡也證明稽核失敗不會把這個 200 變 500。</summary>
+    [Fact]
+    public async Task Next_returns_200_with_an_empty_batch_when_there_are_no_more_candidates()
+    {
+        var s = PortraitSession();
+        s.BeginSlate(3, Array.Empty<string>());
+        var r = await _client.PostAsJsonAsync($"/api/sessions/{s.Id}/recommendations/next", new { dimension = "pose", turnIndex = 3 });
+        Assert.Equal(HttpStatusCode.OK, r.StatusCode);
+        using var doc = System.Text.Json.JsonDocument.Parse(await r.Content.ReadAsStringAsync());
+        Assert.Equal(1, doc.RootElement.GetProperty("batch").GetInt32());
+        Assert.Equal(0, doc.RootElement.GetProperty("sets").GetArrayLength());
+    }
+
+    [Fact]
+    public async Task Next_is_409_for_an_older_card_or_after_an_ask_card()
+    {
+        // Review Focus 3
+        var s = PortraitSession();
+        s.BeginSlate(3, Array.Empty<string>());
+        Assert.Equal(HttpStatusCode.Conflict, (await _client.PostAsJsonAsync($"/api/sessions/{s.Id}/recommendations/next", new { dimension = "style", turnIndex = 2 })).StatusCode);
+        s.EndSlate();
+        Assert.Equal(HttpStatusCode.Conflict, (await _client.PostAsJsonAsync($"/api/sessions/{s.Id}/recommendations/next", new { dimension = "style", turnIndex = 3 })).StatusCode);
+    }
+
+    [Fact]
+    public async Task Next_is_409_while_a_turn_holds_the_session_lock()
+    {
+        var s = PortraitSession();
+        s.BeginSlate(3, Array.Empty<string>());
+        await s.Lock.WaitAsync();
+        try { Assert.Equal(HttpStatusCode.Conflict, (await _client.PostAsJsonAsync($"/api/sessions/{s.Id}/recommendations/next", new { dimension = "style", turnIndex = 3 })).StatusCode); }
+        finally { s.Lock.Release(); }
+    }
+
+    [Fact]
+    public async Task Next_is_409_when_retrieval_is_off()
+    {
+        var s = PortraitSession(retrieval: false);
+        s.BeginSlate(3, Array.Empty<string>());
+        Assert.Equal(HttpStatusCode.Conflict, (await _client.PostAsJsonAsync($"/api/sessions/{s.Id}/recommendations/next", new { dimension = "style", turnIndex = 3 })).StatusCode);
+    }
+
+    [Fact]
+    public async Task Next_is_400_for_an_unknown_or_empty_dimension_and_404_for_an_unknown_session()
+    {
+        var s = PortraitSession();
+        s.BeginSlate(3, Array.Empty<string>());
+        Assert.Equal(HttpStatusCode.BadRequest, (await _client.PostAsJsonAsync($"/api/sessions/{s.Id}/recommendations/next", new { dimension = "nope", turnIndex = 3 })).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await _client.PostAsJsonAsync($"/api/sessions/{s.Id}/recommendations/next", new { dimension = (string?)null, turnIndex = 3 })).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await _client.PostAsJsonAsync("/api/sessions/nope/recommendations/next", new { dimension = "style", turnIndex = 3 })).StatusCode);
+    }
+
+    [Fact]
+    public async Task Next_is_503_when_the_recommendation_fails_and_the_lock_is_released()
+    {
+        var s = PortraitSession();
+        s.BeginSlate(3, Array.Empty<string>());
+        var r = await _client.PostAsJsonAsync($"/api/sessions/{s.Id}/recommendations/next", new { dimension = "camera", turnIndex = 3 });
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, r.StatusCode);
+        Assert.Contains("再按一次", await r.Content.ReadAsStringAsync());
+        Assert.True(await s.Lock.WaitAsync(0)); s.Lock.Release();
     }
 }
