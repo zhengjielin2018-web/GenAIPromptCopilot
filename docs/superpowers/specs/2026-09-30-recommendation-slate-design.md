@@ -168,13 +168,28 @@
 
 ## 8. 效能
 
-實作後在開發庫量，結果寫回本節（執行計畫關鍵節點、各段耗時、中位數，與改前比較）：
+實測環境：開發庫 `prompt-copilot-db`（19,354 筆 preset）。查詢向量與字面錨取自 preset id 8886（`clothing.footwear = sandals`）；`@facets` 用 portrait 的 clothing 六個 facet（`clothing.head`／`clothing.upper`／`clothing.lower`／`clothing.footwear`／`clothing.material`／`clothing.accessories`）；`@anchorFacets = {clothing.footwear}`、`@anchorTags = {sandals}`；`RecommendSimilarSql` 的 `@maxDist = 0.30`。每條 `EXPLAIN (ANALYZE, BUFFERS)` 跑 5 次取中位數；完整 5 次原始輸出見 `.superpowers/sdd/2026-09-30-recommendation-slate/task-10-report.md`。
 
-- 字面錨 SQL：LIMIT 3 → 30。物化 CTE 本來就把符合的列全算完，預期差很少。
-- 純向量 SQL：LIMIT 30。走 HNSW，`hnsw.ef_search` 預設 40，LIMIT 30 在範圍內。**池子調到 40 以上要一起調 `ef_search`**，否則 HNSW 回不滿。
-- 近似錨 SQL：LIMIT 30。
-- `FacetVectorsAsync`：約 60 個 preset × 該維度 covered facet 數。
-- 定稿卡整張（6 個維度）推薦總延遲，改前改後各量；換一批單排延遲。
+| 查詢 | LIMIT | 中位數 (ms, n=5) | 頂層節點 |
+| :--- | ---: | ---: | :--- |
+| `RecommendSql`（純向量） | 3 | 1.84 | `Limit` → `Index Scan using idx_presets_embedding`（HNSW） |
+| `RecommendSql`（純向量） | 30 | 2.38 | 同上 |
+| `AnchoredRecommendSql`（字面錨） | 3 | 11.86 | `Limit` → `Sort`(top-N heapsort) ← `CTE c` = `Bitmap Heap Scan` on `idx_presets_facet_ids`（GIN，不走 HNSW），CTE 實際只 17 列 |
+| `AnchoredRecommendSql`（字面錨） | 30 | 11.45 | 同上（`Sort` 改 quicksort，一樣只 17 列） |
+| `RecommendSimilarSql`（近似錨） | 3 | 4.50 | `Limit` → `Sort`(top-N heapsort) ← `Nested Loop`：`Bitmap Index Scan on idx_pfe_facet` join `Index Scan using prompt_knowledge_presets_pkey`（走主鍵），maxDist 內共 329 列 |
+| `RecommendSimilarSql`（近似錨） | 30 | 4.48 | 同上 |
+| `FacetVectorsSql`（1 facet：`clothing.footwear`，32 個 id） | – | 0.19 | `Index Scan using preset_facet_embeddings_pkey`（純走複合主鍵 `(preset_id, facet_id)`） |
+| `FacetVectorsSql`（6 個 clothing facet，32 個 id） | – | 0.51 | `Bitmap Heap Scan` ← `BitmapAnd`(`idx_pfe_facet` 交集 `preset_facet_embeddings_pkey`)，仍用得到主鍵，只是混用 facet_id 次索引，82 列 |
+
+關鍵結論：
+
+- `RecommendSql` 走 HNSW（`idx_presets_embedding`），LIMIT 3→30 中位數只差 0.5ms 上下，池子變大幾乎不增加成本。HNSW 前 3 名比對（spec §9.2 移過來的檢查）：LIMIT 30 前 3 筆 id（8886、10507、14229）與 LIMIT 3 的結果逐筆相同，本次量測沒出現漏筆。`hnsw.ef_search` 預設 40，LIMIT 30 在範圍內；**池子若調到 40 以上要一起調 `ef_search`**，否則 HNSW 回不滿。
+- `AnchoredRecommendSql` 完全不走 HNSW——`idx_presets_facet_ids`（GIN）bitmap scan 篩出候選後才算距離，MATERIALIZED CTE 把符合的列全算完，LIMIT 3 與 30 幾乎同耗時（11.86 對 11.45ms），印證原設計預期；涼鞋錨的池子實測 17 列。
+- `FacetVectorsSql` 查單一 facet 時純走複合主鍵；查全部 6 個 clothing facet 時規劃器改用 `BitmapAnd`（主鍵 bitmap 交集 facet_id 索引 bitmap），仍用得到主鍵，只是混用次索引；兩種情況都在 1ms 以內，對整批延遲影響可忽略。
+
+換一批延遲（`Recommendations_Next` audit）：對 `a62c51fd8bb74a63b39dff3a7d2189bd`（瀏覽器驗收用的 session，turnIndex 4）的 6 個維度各補呼叫 2 次（n=12 新樣本），加上驗收本身留下的 1 筆舊樣本，共 13 筆：中位數 538ms、最大 2432ms。最大值就是那筆驗收留下的舊樣本（turnIndex 2），比其餘 12 筆（389–625ms）高出 4 倍以上——判斷是容器重啟後第一次呼叫帶到的 embedding API 暖機時間，不算進常態範圍；扣掉這筆後 12 筆中位數 536.5ms、最大 625ms、最小 389ms。
+
+定稿卡整張（6 個維度）推薦延遲：沒有獨立的整批 audit 紀錄，用「換一批單排延遲中位數 × 6」估：538ms × 6 ≈ 3.2 秒（**估計值**）。這個估法會偏高：換一批每次呼叫各自帶一次 embedding API 呼叫，定稿卡實際是 6 個維度共用同一次 embedding 呼叫（`EmbedAsync` 一次把查詢句與所有近似錨文字一起送出）再依序跑 6 次 SQL，所以真正的整張延遲應該低於這個估計，缺口大概是少算的 5 次 embedding 往返。
 
 ## 9. 測試
 
