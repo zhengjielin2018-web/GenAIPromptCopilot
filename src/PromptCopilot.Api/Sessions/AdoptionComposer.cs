@@ -3,8 +3,9 @@ using PromptCopilot.Api.Data;
 
 namespace PromptCopilot.Api.Sessions;
 
-/// <summary>POST /messages 的 adopt 欄位（設計 §6.1）。Take：照它的 facet；該維度其餘 facet 視為保留我的。</summary>
-public sealed record AdoptRequest(long PresetId, string Dimension, IReadOnlyList<string>? Take);
+/// <summary>POST /messages 的 adopt 欄位（設計 §6.1）。Take：照它的 facet；該維度其餘 facet 視為保留我的。
+/// Batch（2026-09-30 推薦組法設計 §4.6）：這套來自定稿卡的第幾批，只寫進 audit，不驗證。</summary>
+public sealed record AdoptRequest(long PresetId, string Dimension, IReadOnlyList<string>? Take, int? Batch = null);
 
 /// <summary>請求本身不成立（端點回 400）。retrieval off 與 profile 未設是 409，端點先擋；
 /// Compose 開頭的 profile 檢查只是端點 409 後面的保險，正常走不到。</summary>
@@ -47,7 +48,7 @@ public static class AdoptionComposer
         var keptText = kept.Count == 0 ? "" : $"；{string.Join("、", kept.Select(f => catalog.Facets[f].Label))}保留我的";
         var text = $"{Prefix}{preset.Title}〉（知識庫 #{preset.Id}）：{takeText}{keptText}。";
 
-        var adoption = new Adoption(turnIndex, preset.Id, preset.Title, preset.SourceRef, req.Dimension, taken, kept, filled, replaced);
+        var adoption = new Adoption(turnIndex, preset.Id, preset.Title, preset.SourceRef, req.Dimension, taken, kept, filled, replaced, req.Batch);
         var entry = new LedgerEntry
         {
             Id = preset.Id, Title = preset.Title, PromptSnippet = preset.PromptSnippet, NegativeSnippet = preset.NegativeSnippet,

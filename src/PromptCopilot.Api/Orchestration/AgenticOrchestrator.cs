@@ -186,13 +186,16 @@ public sealed class AgenticOrchestrator(
                     ("tagOrigins", turn.Outcome is FinalizedOutcome fin ? TagOrigins(fin.Final.PositiveSources) : null),
                     ("recommendations", recommended is null ? null : (object)new
                     {
-                        dimensions = recommended.Dimensions.Select(d => new { dimension = d.Dimension, anchored = d.Anchored, similar = d.Similar, presetIds = d.Sets.Select(x => x.PresetId).ToArray() }).ToArray(),
+                        dimensions = recommended.Dimensions.Select(d => Fields(
+                            ("dimension", d.Dimension), ("anchored", d.Anchored), ("similar", d.Similar), ("presetIds", d.Sets.Select(x => x.PresetId).ToArray()),
+                            // 推薦組法（2026-09-30 設計 §5.2）：定稿卡才有；追問卡省略，舊的查詢與報表照舊能讀
+                            ("batch", d.Batch),
+                            ("sets", d.Batch is null ? null : d.Sets.Select(x => new { presetId = x.PresetId, reason = x.Reason, rank = x.Rank, prob = x.Prob }).ToArray()))).ToArray(),
                     }),
-                    ("adoption", input.Adoption is null ? null : (object)new
-                    {
-                        presetId = input.Adoption.PresetId, dimension = input.Adoption.Dimension,
-                        take = input.Adoption.Taken.Keys.ToArray(), filled = input.Adoption.Filled, replaced = input.Adoption.Replaced,
-                    })),
+                    ("adoption", input.Adoption is null ? null : (object)Fields(
+                        ("presetId", input.Adoption.PresetId), ("dimension", input.Adoption.Dimension),
+                        ("take", input.Adoption.Taken.Keys.ToArray()), ("filled", input.Adoption.Filled), ("replaced", input.Adoption.Replaced),
+                        ("batch", input.Adoption.Batch)))),
                 LatencyMs: (int)sw.ElapsedMilliseconds));
         }
         catch (OutputBlockedException e)

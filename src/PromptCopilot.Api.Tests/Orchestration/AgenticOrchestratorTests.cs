@@ -682,6 +682,29 @@ public class AgenticOrchestratorTests
         Assert.Contains("""recommendations":{"dimensions":[{"dimension":"style","anchored":false,"similar":false,"presetIds":[7]}]}""", completed.PayloadJson!);
     }
 
+    /// <summary>2026-09-30 推薦組法設計 §5.2：定稿卡才有 batch 與每套的 reason／rank／prob；追問卡省略。</summary>
+    [Fact]
+    public async Task Slate_recommendations_audit_batch_and_each_set()
+    {
+        var h = new Harness();
+        h.Recommendations = new StubRecommendations(_ => Task.FromResult<RecommendationsEvent?>(new RecommendationsEvent(1, new[]
+        {
+            new RecommendedDimension("style", "風格", false, Array.Empty<string>(), new[]
+            {
+                new RecommendedSet(7, "油畫", null, null, 0.2, Array.Empty<RecommendedFacet>(), "anchored", new[] { "oil painting" }, 0, 1.0),
+                new RecommendedSet(8, "水彩", null, null, 0.3, Array.Empty<RecommendedFacet>(), "explore", Array.Empty<string>(), 2, 0.25),
+            }, Batch: 1),
+        })));
+        h.Chat.ThenAsync(async (hist, k) =>
+        {
+            await Invoke(hist, k!, "Session", "SetProfile", new { profile = "portrait" });
+            return new[] { await Invoke(hist, k!, "Dialog", "AskUser", AskArgs()) };
+        });
+        await h.RunAsync("一個銀髮少女");
+        var completed = Assert.Single(h.Audit.Entries, a => a.EventType == "Turn_Completed");
+        Assert.Contains("""presetIds":[7,8],"batch":1,"sets":[{"presetId":7,"reason":"anchored","rank":0,"prob":1},{"presetId":8,"reason":"explore","rank":2,"prob":0.25}]""", completed.PayloadJson!);
+    }
+
     /// <summary>設計 §9：推薦是附加的。final 已宣告，推薦炸了不能回滾、不能發 error。</summary>
     [Fact]
     public async Task Recommendation_failure_does_not_roll_back_the_turn()
@@ -785,6 +808,24 @@ public class AgenticOrchestratorTests
         Assert.Contains("""adoption":{"presetId":41720,"dimension":"clothing","take":["clothing.upper"],"filled":["clothing.upper"],"replaced":[]}""", completed.PayloadJson!);
         Assert.Contains("""tagOrigins":{"rag":1,"adopted":2,"llm":1,"base":1}""", completed.PayloadJson!);
         Assert.StartsWith("採用〈", completed.RawInput!);
+    }
+
+    /// <summary>2026-09-30 推薦組法設計 §5.2：前端送了 batch 就要進 audit；沒送（既有測試）維持原樣不帶這個鍵。</summary>
+    [Fact]
+    public async Task Adoption_audit_carries_the_batch_when_given()
+    {
+        var h = new Harness();
+        h.Session.ApplyProfile("portrait", Catalog);
+        h.Session.RecordFinalize(new FinalPrompt("1girl", "lowres", "t", "i"));
+        h.Chat.ThenAsync(async (hist, k) => new[] { await Invoke(hist, k!, "Dialog", "FinalizePrompt", new
+        {
+            positivePrompt = "masterpiece, 1girl, purple kimono", negativePrompt = "lowres", tips = "t", intentSummary = "和服少女",
+            facetStates = new[] { new { facetId = "clothing.upper", state = "covered", tags = "purple kimono" } },
+        }) });
+        var input = AdoptInput();
+        await h.RunAsync(input with { Adoption = input.Adoption! with { Batch = 2 } });
+        var completed = Assert.Single(h.Audit.Entries, a => a.EventType == "Turn_Completed");
+        Assert.Contains("""replaced":[],"batch":2}""", completed.PayloadJson!);
     }
 
     /// <summary>全分支審查 #1：在追問卡上採用時 session 還在收集、AskUser 還在清單上；第 6 條要模型照第 1 條走，
