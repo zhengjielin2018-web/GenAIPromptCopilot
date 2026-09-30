@@ -69,7 +69,8 @@ def _bucket(rank) -> str | None:
 
 
 def _row_sets(d: dict) -> list[dict]:
-    """一排的每一套：新資料照 sets；舊資料照列層級的 anchored／similar 推回理由，批次當 1、名次缺值（推薦組法設計 §7）。"""
+    """一排的每一套：新資料照 sets；舊資料照列層級的 anchored／similar 推回理由，
+    批次當 1、名次缺值（推薦組法設計 §7）。"""
     if d.get("sets"):
         return [dict(s, batch=d.get("batch") or 1) for s in d["sets"]]
     reason = "anchored" if d.get("anchored") else "similar" if d.get("similar") else "query"
@@ -96,7 +97,9 @@ def build_slate_section(completed: list[Turn], nexts: list[Turn]) -> list[str]:
     for n in nexts:
         rows = cards.get((n.session_id, n.turn_index))
         if rows is not None:
-            rows.setdefault(n.payload.get("dimension"), []).extend(dict(s, batch=n.payload.get("batch")) for s in n.payload.get("sets", []))
+            batch = n.payload.get("batch")
+            rows.setdefault(n.payload.get("dimension"), []).extend(
+                dict(s, batch=batch) for s in n.payload.get("sets", []))
 
     shown, bucket_shown = Counter(), Counter()
     for rows in cards.values():
@@ -107,7 +110,8 @@ def build_slate_section(completed: list[Turn], nexts: list[Turn]) -> list[str]:
                 if s["reason"] != "explore" and (b := _bucket(s.get("rank"))) is not None:
                     bucket_shown[b] += 1
 
-    adopted, adoptions, replaced, replaced_facets, bucket_adopted = Counter(), Counter(), Counter(), Counter(), Counter()
+    adopted, adoptions, replaced = Counter(), Counter(), Counter()
+    replaced_facets, bucket_adopted = Counter(), Counter()
     credited: set = set()
     linked = later = 0
     session, card = None, None
@@ -140,7 +144,8 @@ def build_slate_section(completed: list[Turn], nexts: list[Turn]) -> list[str]:
              "| 理由 | 出現 | 採用率 | 取代率 | 平均換掉 facet |", "| :--- | ---: | ---: | ---: | ---: |"]
     for reason, label in REASONS:
         avg = f"{replaced_facets[reason] / adoptions[reason]:.1f}" if adoptions[reason] else "—"
-        lines.append(f"| {label} | {shown[reason]} | {_pct(adopted[reason], shown[reason])} | {_pct(replaced[reason], adoptions[reason])} | {avg} |")
+        adopt_rate, replace_rate = _pct(adopted[reason], shown[reason]), _pct(replaced[reason], adoptions[reason])
+        lines.append(f"| {label} | {shown[reason]} | {adopt_rate} | {replace_rate} | {avg} |")
     lines += ["", f"- 定稿排按過換一批：{_pct(refreshed, len(batches))}；平均每排按 {presses:.1f} 次",
               f"- 採用來自第 2 批以後：{_pct(later, linked)}", "",
               "原名次分桶只算相關位；探索位的 rank 是差異排名，不列入。", "",
