@@ -733,7 +733,7 @@ scripts/
 4. **有錨**：只留 covered facet 底下有 tag 等於錨、或以「空白＋錨」結尾的片段，再依距離取 3 筆（`MATERIALIZED` CTE 精確排序，不走 HNSW，罕見的錨不會被掃描上限漏掉）。**不足 2 筆先試近似錨**（2026-09-29：該 facet 的 `FacetTags` 向量對子表同一 facet 的向量，距離 ≤ 0.30（`RecommendationSimilarMaxDist`，2026-09-30 驗收後由 0.23 放寬）且仍是組合的列，各 covered facet 合併取最小距離；≥ 2 筆顯示「接近你講的 …」），仍不足就改成不過濾、依距離取 3 筆（HNSW），不跟前面的結果合併。
 5. **沒錨**：直接走第 4 步的「不過濾」那條。
 
-有錨與沒錨兩條依第 1 步的查詢向量排序；不足 2 筆時試的近似錨（2026-09-29）改依錨的 facet 向量比子表同一 facet 的向量排序，不是查詢向量，見 [facet 向量設計](2026-09-29-facet-vector-retrieval-design.md) §6。卡片上有錨的顯示「含你講的 sandals」、近似錨顯示「接近你講的 …」，都沒有則顯示「最接近你描述的組合」。細節見 [整套組合推薦設計](2026-09-25-set-recommendations-design.md) §4.4、§5.3。
+有錨與沒錨兩條依第 1 步的查詢向量排序；不足 2 筆時試的近似錨（2026-09-29）改依錨的 facet 向量比子表同一 facet 的向量排序，不是查詢向量，見 [facet 向量設計](2026-09-29-facet-vector-retrieval-design.md) §6。卡片上有錨的顯示「含你講的 sandals」、近似錨顯示「接近你講的 …」，都沒有則顯示「最接近你描述的組合」。細節見 [整套組合推薦設計](2026-09-25-set-recommendations-design.md) §4.4、§5.3。2026-09-30 起定稿卡改成 2 套相關＋1 套探索、看過加權延後、可換一批，追問卡不變，見 [推薦組法設計](2026-09-30-recommendation-slate-design.md)。
 
 查詢向量於 runtime 以同一 embedding 模型計算；多個維度的查詢語句合併為單次 `embed_batch` 呼叫（2026-09-24 起 C# 端也是：批次簽名的緣由見 [批次 SearchPresets 設計](2026-09-24-batch-search-presets-design.md)）。
 
@@ -751,6 +751,7 @@ scripts/
 | `GET` | `/api/sessions/{id}` | session 目前的權威狀態（status、profile、facetStates、askCount／askLimit、lastFinal，含 tag 來源、retrieval、facetTags）；前端重載重建用；不拿 session 鎖；`404` 表示不存在或已過期 |
 | `POST` | `/api/sessions/{id}/messages` | body `{ text }` 或 `{ adopt: { presetId, dimension, take } }`（2026-09-25 採用推薦組合，伺服器組句），兩者都可加 `safety: "on" \| "off"`（預設 `on`；`off` 是測試用的審查開關，§6.1）；回 `text/event-stream`；同一 session 已有一輪在跑 → `409`；`adopt` 但 `retrieval: off` 或未判定題材 → `409`；`adopt` 不合法、`safety` 不是 on／off → `400`；`safety: off` 但後端沒開放 → `403` |
 | `POST` | `/api/sessions/{id}/save-to-shared` | body `{ intent }`；需 `Finalized`，否則 `409`；最後一次定稿是在 `safety: off` 時產生的也 `409`；寫 `shared_prompt_histories` 並向量化；**唯一的寫入路徑** |
+| `POST` | `/api/sessions/{id}/recommendations/next` | body `{ dimension, turnIndex }`（2026-09-30；`turnIndex` 是那張定稿卡的輪次，必須是最新一張）；回一個維度的推薦，不經過模型、不算一輪；`404` session 不存在或已過期；`409` 該 session 還有一輪在跑、`turnIndex` 不是最新一張定稿卡、或 `retrieval: off`；`400` `dimension` 空白或不屬於這段對話的題材；`503` 推薦失敗或逾時，可以再按一次 |
 | `GET` | `/api/config/facets` | 回 `facets.yaml` 內容供前端渲染 |
 | `GET` | `/api/config/safety` | `{ canDisable }`：後端 `Safety:AllowDisable` 是否開著；前端據此決定顯不顯示審查開關（2026-09-25） |
 | `GET` | `/api/presets/{id}` | preset 詳情（抽屜用）；含 `sourceRef` 與伺服器算的 `sourceUrl`（出處連結，子專案 4）；`facetTags`（2026-09-25，未回填時為 null） |
@@ -770,7 +771,7 @@ scripts/
 | `tool_call` | `{ callId, name, argsSummary }` | 對話流插入行內卡片 |
 | `tool_result` | `{ callId, name, summary, presets?: [{id, title, imageUrl, sourceRef?}], detail? }` | 展開卡片；餵抽屜。`callId` **等於**對應 `tool_call` 的 `callId`（同一次呼叫的兩個事件），前端據此配對。`sourceRef`（2026-09-25 起）是資料來源識別，縮圖依前綴標來源名（`docs/資料來源.md`「署名機制」）。`detail`（2026-09-25 起）只有 `SearchPresets`（`{ items: [{ dimension, facetId?, label, query, tags?, method, grounded, poolSize, k, error?, hits: [{ id, title, band, dist, usable, facets }] }] }`，`tags`／`method` 2026-09-29 起：`tags` 是這一項用了什麼英文（沒有就 null）、`method` 是 `facet` 或退路 `preset`，見 [facet 向量設計](2026-09-29-facet-vector-retrieval-design.md) §5.5）與 `SearchSimilarPrompts`（`{ hits: [{ intent, profile, dist }] }`）帶，給「顯示檢索細節」用，不含 snippet 本文；見 `2026-09-25-retrieval-switch-and-trace-design.md` §3.5 |
 | `dimensions` | `{ profile, facetStates: {facetId: state}, facetTags?: {facetId: "sandals"} }` | 儀表板更新 |
-| `recommendations` | `{ turnIndex, dimensions: [{ dimension, label, anchored, similar, anchorTags, sets: [{ presetId, title, imageUrl?, sourceRef?, dist, facets: [{ facetId, label, state, tags }] }] }] }` | 整套組合推薦（2026-09-25）：追問時只有被問的維度、定稿時全部維度，跟在 `final`＋`dimensions` 之後；掛在該輪的追問卡／定稿卡下方。`retrieval: off` 的對話沒有。見 `2026-09-25-set-recommendations-design.md` §5。`similar`（`RecommendedDimension.Similar`，2026-09-29）：字面錨不到 2 筆、facet 向量的近似錨找到 ≥ 2 筆時為 true，跟 `anchored` 不會同時為 true；此時 `anchorTags` 列「有貢獻」的近似錨、卡片文案「接近你講的 …」。見 [facet 向量設計](2026-09-29-facet-vector-retrieval-design.md) §6.5 |
+| `recommendations` | `{ turnIndex, dimensions: [{ dimension, label, anchored, similar, anchorTags, sets: [{ presetId, title, imageUrl?, sourceRef?, dist, facets: [{ facetId, label, state, tags }] }] }] }` | 整套組合推薦（2026-09-25）：追問時只有被問的維度、定稿時全部維度，跟在 `final`＋`dimensions` 之後；掛在該輪的追問卡／定稿卡下方。`retrieval: off` 的對話沒有。見 `2026-09-25-set-recommendations-design.md` §5。`similar`（`RecommendedDimension.Similar`，2026-09-29）：字面錨不到 2 筆、facet 向量的近似錨找到 ≥ 2 筆時為 true，跟 `anchored` 不會同時為 true；此時 `anchorTags` 列「有貢獻」的近似錨、卡片文案「接近你講的 …」。見 [facet 向量設計](2026-09-29-facet-vector-retrieval-design.md) §6.5。2026-09-30 起定稿卡多 `batch` 與每套的 `reason`／`anchorTags`／`rank`／`prob`，排層級的 `anchored`／`similar` 固定 `false`；追問卡不變；可用 `POST /api/sessions/{id}/recommendations/next` 換一批，見 [推薦組法設計](2026-09-30-recommendation-slate-design.md) §5.1 |
 | `token` | `{ text }` | 接到最近一則討論訊息後面。**後端現況不發**（回覆內容都是終止型 tool 的參數，一次到位）；前端 reducer 保留處理，但不對一次到位的文字做假的逐字動畫（子專案 3 設計 §1.2） |
 | `final` | 四種 `kind`，見下 | 追問卡／對話氣泡／定稿卡片／高亮入庫按鈕 |
 | `blocked` | `{ reason, message }` | 標記原因，**保留失敗的訊息並附「重試」按鈕；按下把原文填回輸入框**，使用者可改可直接送 |

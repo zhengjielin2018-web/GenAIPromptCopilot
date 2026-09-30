@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json;
 using Microsoft.Extensions.Options;
 using PromptCopilot.Api.Configuration;
@@ -21,6 +22,8 @@ public sealed record FinalDto(string Positive, string Negative, string Tips, str
     IReadOnlyList<TagSource> PositiveSources, IReadOnlyList<TagSource> NegativeSources);
 public sealed record SessionSnapshotDto(string SessionId, string Status, string? Profile, int TurnIndex, int AskCount, int AskLimit,
     IReadOnlyDictionary<string, string> FacetStates, FinalDto? LastFinal, string Retrieval, IReadOnlyDictionary<string, string> FacetTags);
+/// <summary>換一批（2026-09-30 推薦組法設計 §4.5）。TurnIndex：前端那張定稿卡的輪次，必須是最新一張。</summary>
+public sealed record NextRecommendationsRequest(string? Dimension, int TurnIndex);
 
 public static class SessionEndpoints
 {
@@ -150,6 +153,59 @@ public static class SessionEndpoints
         .Produces<ErrorBody>(StatusCodes.Status404NotFound)
         .Produces<ErrorBody>(StatusCodes.Status409Conflict);
 
+        g.MapPost("/{id}/recommendations/next", async (string id, NextRecommendationsRequest req, SessionStore store, IRecommendationService recommendations,
+            FacetCatalog catalog, IAuditSink audit, OrchestratorOptions options, CancellationToken ct) =>
+        {
+            var s = store.TryGet(id);
+            if (s is null) return Results.NotFound(new ErrorBody("session 不存在或已過期"));
+            // 會讀寫看過次數與批次；那一輪還在跑時不能動
+            if (!await s.Lock.WaitAsync(0)) return Results.Conflict(new ErrorBody("這個 session 還有一輪在跑"));
+            try
+            {
+                if (!s.RetrievalEnabled) return Results.Conflict(new ErrorBody("這段對話沒有知識庫，沒有組合可以換"));
+                if (s.LatestSlateTurn is null || s.LatestSlateTurn != req.TurnIndex) return Results.Conflict(new ErrorBody("只有最新一張定稿卡可以換一批"));
+                if (string.IsNullOrWhiteSpace(req.Dimension) || s.Profile is null || !catalog.DimensionsOf(s.Profile).Contains(req.Dimension))
+                    return Results.BadRequest(new ErrorBody("dimension 不屬於這段對話的題材"));
+                var sw = Stopwatch.StartNew();
+                using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                cts.CancelAfter(TimeSpan.FromSeconds(options.RecommendationTimeoutSeconds));
+                RecommendedDimension row;
+                try { row = await recommendations.NextAsync(s, req.Dimension, cts.Token); }
+                catch (Exception e) when (!ct.IsCancellationRequested)
+                {
+                    app.Logger.LogWarning(e, "next recommendations failed for session {SessionId} dimension {Dimension}", s.Id, req.Dimension);
+                    await TryAuditAsync(audit, new AuditEntry(s.Id, req.TurnIndex, "Recommendation_Failed",
+                        PayloadJson: JsonSerializer.Serialize(new { stage = "next", errorClass = e is OperationCanceledException ? "Timeout" : e.GetType().Name })), app.Logger);
+                    return Results.Json(new ErrorBody("換一批失敗，再按一次"), statusCode: StatusCodes.Status503ServiceUnavailable);
+                }
+                if (row.Sets.Count > 0)
+                    await TryAuditAsync(audit, new AuditEntry(s.Id, req.TurnIndex, "Recommendations_Next",
+                        PayloadJson: JsonSerializer.Serialize(new
+                        {
+                            dimension = row.Dimension, batch = row.Batch,
+                            sets = row.Sets.Select(x => new { presetId = x.PresetId, reason = x.Reason, rank = x.Rank, prob = x.Prob }),
+                        }), LatencyMs: (int)sw.ElapsedMilliseconds), app.Logger);
+                return Results.Ok(row);
+            }
+            finally { s.Lock.Release(); }
+        })
+        .WithSummary("定稿卡的某個維度換一批推薦")
+        .WithDescription("""
+            body：`{"dimension": "clothing", "turnIndex": 3}`。`turnIndex` 是那張定稿卡的輪次，必須是這段對話最新一張定稿卡（之後出過追問卡就不行）。不經過模型、不算一輪。
+
+            回一個維度的推薦，形狀同 `recommendations` 事件裡的一排：`{ dimension, label, anchored: false, anchorTags: [], batch, sets: [{ presetId, title, imageUrl?, sourceRef?, dist, facets, reason, anchorTags, rank, prob }] }`。`batch` 是第幾批（定稿卡上的那批是 1）；`reason` 是 `anchored`（含你講的）／`similar`（接近你講的）／`query`（最接近你描述的）／`explore`（換個搭法）。看過的組合會被往後延，但不會被踢掉；`sets` 為空表示這個維度沒有更多了。挑法見 `docs/superpowers/specs/2026-09-30-recommendation-slate-design.md` §3。
+
+            - `404`：session 不存在或已過期
+            - `409`：這個 session 還有一輪在跑；`turnIndex` 不是最新一張定稿卡；這段對話 `retrieval: off`
+            - `400`：`dimension` 空白或不屬於這段對話的題材
+            - `503`：推薦失敗或逾時，可以再按一次
+            """)
+        .Produces<RecommendedDimension>(StatusCodes.Status200OK)
+        .Produces<ErrorBody>(StatusCodes.Status400BadRequest)
+        .Produces<ErrorBody>(StatusCodes.Status404NotFound)
+        .Produces<ErrorBody>(StatusCodes.Status409Conflict)
+        .Produces<ErrorBody>(StatusCodes.Status503ServiceUnavailable);
+
         g.MapPost("/{id}/save-to-shared", async (string id, SaveRequest req, SessionStore store, IEmbeddingClient embed,
             HistoryRepository histories, IAuditSink audit, CancellationToken ct) =>
         {
@@ -190,5 +246,15 @@ public static class SessionEndpoints
         .Produces<ErrorBody>(StatusCodes.Status400BadRequest)
         .Produces(StatusCodes.Status404NotFound)
         .Produces<ErrorBody>(StatusCodes.Status409Conflict);
+    }
+
+    /// <summary>稽核是旁路：寫不進去不能讓已成立的回應變成 500。</summary>
+    private static async Task TryAuditAsync(IAuditSink audit, AuditEntry entry, ILogger logger)
+    {
+        try { await audit.WriteAsync(entry, CancellationToken.None); }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            logger.LogWarning(e, "audit write failed: {EventType} session {SessionId}", entry.EventType, entry.SessionId);
+        }
     }
 }
