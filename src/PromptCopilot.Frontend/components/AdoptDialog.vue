@@ -58,7 +58,7 @@ const rows = ref<AdoptRow[]>([])
 const imgFailed = ref(false)
 const notice = computed(() => sourceNotice(t.value?.set.sourceRef))
 watch(t, (v) => { rows.value = v ? adoptRows(v.set, s.state.facetStates) : []; imgFailed.value = false }, { immediate: true })
-const payload = computed(() => (t.value ? adoptPayload(t.value.set.presetId, t.value.dimension, rows.value) : null))
+const payload = computed(() => (t.value ? adoptPayload(t.value.set.presetId, t.value.dimension, rows.value, t.value.set.batch) : null))
 function confirm() { if (t.value && payload.value) s.adopt(payload.value, t.value.set.title) }
 /** 抽屜在對照表下面，先關對照表；id 要在關之前取，關掉後 t 就是 null。 */
 function viewPreset() {

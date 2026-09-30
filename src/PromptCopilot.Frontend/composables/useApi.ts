@@ -1,8 +1,9 @@
-import type { AdoptRequest, FacetCatalog, PresetDetail, RetrievalMode, SessionCreated, SessionSnapshotDto } from '../types/api'
+import type { AdoptRequest, FacetCatalog, PresetDetail, RecommendedDimension, RetrievalMode, SessionCreated, SessionSnapshotDto } from '../types/api'
 
 export type TurnBody = { text: string } | { adopt: AdoptRequest }
 
 export type SaveResult = { ok: true; id: string } | { ok: false; status: number; error: string }
+export type NextResult = { ok: true; row: RecommendedDimension } | { ok: false; status: number; error: string }
 
 export function useApi() {
   const base = useRuntimeConfig().public.apiBase as string
@@ -56,6 +57,17 @@ export function useApi() {
     return { ok: false, status: r.status, error }
   }
 
+  /** 換一批（推薦組法設計 §4.5）。失敗回狀態碼與後端的理由，由 store 決定怎麼顯示。 */
+  async function nextRecommendations(id: string, dimension: string, turnIndex: number): Promise<NextResult> {
+    const r = await fetch(`${base}/api/sessions/${encodeURIComponent(id)}/recommendations/next`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ dimension, turnIndex }),
+    })
+    if (r.ok) return { ok: true, row: await r.json() }
+    let error = `HTTP ${r.status}`
+    try { error = (await r.json()).error ?? error } catch { /* 沒 body 就用狀態碼 */ }
+    return { ok: false, status: r.status, error }
+  }
+
   /** 不檢查 status：404／409／400／403 的處理在 store。body 是一般訊息或採用（設計 §6.1），可能帶 safety: off（lib/safety）。 */
   function openStream(id: string, body: TurnBody, signal: AbortSignal): Promise<Response> {
     return fetch(`${base}/api/sessions/${encodeURIComponent(id)}/messages`, {
@@ -64,5 +76,5 @@ export function useApi() {
     })
   }
 
-  return { createSession, getSession, getFacets, getSafetyConfig, getPreset, saveToShared, openStream }
+  return { createSession, getSession, getFacets, getSafetyConfig, getPreset, saveToShared, nextRecommendations, openStream }
 }
