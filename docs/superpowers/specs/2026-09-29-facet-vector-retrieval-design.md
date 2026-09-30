@@ -119,11 +119,12 @@ WITH d AS (
     FROM preset_facet_embeddings
     WHERE facet_id = @facet
     ORDER BY tag_key, dist, preset_id   -- 每種 tag 組合只留最近的一筆；preset_id 當 tie-breaker，dist 打平時結果穩定可重現
+), top AS (
+    SELECT preset_id, dist FROM d ORDER BY dist, preset_id LIMIT @k   -- 先取前 k 再 join（2026-09-30，見 §7.1）
 )
-SELECT p.id, p.title, p.facet_ids, p.prompt_snippet, p.negative_snippet, p.image_url, d.dist, p.source_ref
-FROM d JOIN prompt_knowledge_presets p ON p.id = d.preset_id
-ORDER BY d.dist, d.preset_id
-LIMIT @k
+SELECT p.id, p.title, p.facet_ids, p.prompt_snippet, p.negative_snippet, p.image_url, top.dist, p.source_ref
+FROM top JOIN prompt_knowledge_presets p ON p.id = top.preset_id
+ORDER BY top.dist, top.preset_id
 ```
 
 - 回傳仍是 `PresetHit`（整筆片段），只是排序與 `dist` 來自 facet 向量。`k` 照舊（grounded 5、否則 3）。ledger、「可借入／僅供建議」、facet 覆蓋標記、`HistoryTrimmer` 壓縮都不用改。
@@ -179,7 +180,22 @@ LIMIT @take
 
 ### 6.4 門檻
 
-新設定 `OrchestratorOptions.RecommendationSimilarMaxDist`，預設 **0.23**（介於實驗 V3 的正解中位數 0.19 與非正解中位數 0.27 之間）。驗收時用 `slippers`、`flip-flops` 對涼鞋實測，不合理再調。
+新設定 `OrchestratorOptions.RecommendationSimilarMaxDist`，預設 **0.30**。
+
+原本訂 0.23（介於實驗 V3 的正解中位數 0.19 與非正解中位數 0.27 之間），2026-09-30 驗收實測後放寬。實驗的距離是「多個 tag 的查詢」對片段，同義詞是「單一詞」對「單一詞」，分布不一樣。實測（錨對鞋履等 facet 向量、只看符合組合條件的列）：
+
+| 錨 | 最近的不同寫法 | 距離 |
+| :--- | :--- | :-: |
+| `flip-flops` | `sandals` | 0.294 |
+| `clogs` | `crocs` | 0.277 |
+| `slippers` | `ballet slippers` | 0.296 |
+| `geta` | `tabi, sandals` | 0.339 |
+| `culottes` | `wide pants` | 0.319 |
+
+- 0.23 以內只剩字面完全相同的那 1 筆，字面錨本來就抓得到，近似錨等於不會觸發。
+- 同一單品加修飾（`black boots`、`military beret`）落在 0.22–0.26，這些字面錨的字尾規則多半已抓到。
+- 0.29–0.30 開始出現泛稱：`shoes`、`brown footwear`、`sweater`、`hat`、`beanie`；0.30 以上是 `black shoes`、`black footwear` 這類更泛的。
+- 使用者 2026-09-30 選 0.30：抓得到 `flip-flops`、`clogs`、`slippers` 的同義詞，代價是邊界上偶爾把泛稱標成「接近你講的」；`geta` 這類距離較遠的仍抓不到。
 
 ### 6.5 事件、前端、audit
 
@@ -190,12 +206,40 @@ LIMIT @take
 
 ## 7. 為什麼不建 HNSW
 
-1. **池很小**：`facet_id = @facet` 用 B-tree 縮到單一 facet 後，最多約 3,700 列（`scene.location`）。768 維精確距離算 3,700 次，預期只要幾毫秒；驗收時對最大的池跑 `EXPLAIN ANALYZE` 記下來。
+1. **池很小**：`facet_id = @facet` 用 B-tree 縮到單一 facet 後，最多約 3,700 列（`scene.location`）。768 維精確距離算 3,700 次約 14 ms（§7.1 實測；原本預期「幾毫秒」偏樂觀）。
 2. **HNSW 在「先過濾」的查詢上會漏筆**：pgvector 的 HNSW 是先依向量取近鄰再套 `WHERE`。known-issues #2 就是這個問題（候選池幾千筆時回 0 筆），靠 iterative scan 補救；iterative scan 又有 `hnsw.max_scan_tuples` 上限（set-recommendations 設計 §4.4 為此在有錨時改用 `MATERIALIZED` 整批撈）。子表若建 HNSW，`facet_id` 過濾一樣會碰到，而且 37k 列裡單一 facet 常只佔幾百列，比例更差。
 3. **`DISTINCT ON (tag_key)` 本來就要看完整個池**：去重需要池裡每一列的距離，HNSW 的近似取前 N 幫不上忙。
 4. **精確結果可重現**：驗收要跟實驗逐題對照，近似索引會讓數字每次略有不同。
 
 之後單一 facet 的池若長到數萬筆、查詢明顯變慢，再考慮按 facet 分區或建部分索引。
+
+### 7.1 實測與執行計畫（2026-09-30，開發庫、子表 37,011 列）
+
+量法：`EXPLAIN (ANALYZE)` 同一條 SQL 連跑 5 次取中位數，查詢向量用該 facet 第一列的 embedding，`k = 5`。第一次常是冷快取（`SearchFacetSql` 首次 122 ms），不計入中位數。
+
+**`SearchFacetSql`，`scene.location`（3,671 列，去重後 2,904 組）**，原寫法（去重後整批 join，再排序取前 k）一次 46.5 ms 的拆解：
+
+| 節點 | 時間 | 說明 |
+| :--- | :-: | :--- |
+| Bitmap Index Scan `idx_pfe_facet` | 0.2 ms | B-tree 取出 3,671 列 |
+| Bitmap Heap Scan＋逐列算 `<=>` | 約 20 ms | 讀 466 個 heap block、算 3,671 次 768 維距離 |
+| Sort `tag_key, dist, preset_id` → Unique | 約 7 ms | 去重剩 2,904 組 |
+| **Seq Scan `prompt_knowledge_presets`（19,354 列）→ Hash** | **約 15 ms** | 規劃器為了 join 那 2,904 組，選 hash join、把片段表全表掃一遍 |
+| Hash Join → top-N heapsort 取前 5 | 約 4 ms | |
+
+比較過的寫法（同一個查詢向量，5 次中位數）：
+
+| 寫法 | 中位數 | 備註 |
+| :--- | :-: | :--- |
+| 原寫法：去重後整批 join，再 `ORDER BY … LIMIT k` | 69 ms | 片段表全表掃描 |
+| **先在 CTE 取前 k 再 join**（現行，§5.3） | **31 ms** | 只拿 k 個 id 走主鍵；結果逐筆相同 |
+| 只算距離、不去重不 join（下限參考） | 14 ms | `SELECT embedding <=> @q … WHERE facet_id = @facet` |
+
+**為什麼不是改 HNSW：** 慢的那段是片段表的全表掃描（join），不在向量這一側；向量這一側的 14 ms 是去重必須付的（要知道池裡每一列的距離，才能決定每組 tag 留哪一筆），HNSW 的近似前 N 做不到正確去重；而且 `facet_id` 過濾會碰到本節第 2 點的漏筆問題。
+
+**`RecommendSimilarSql`，`clothing.upper`（2,347 列）：** 計畫是 Bitmap Index Scan `idx_pfe_facet` → 逐列算距離並套門檻 → 通過門檻的列各做一次片段表主鍵 Index Scan（nested loop）再套組合條件，沒有全表掃描。門檻 0.23 時通過 939 列、中位數 29.6 ms；0.30 時通過 2,244 列、27.0 ms——每列只多一次主鍵查找，放寬門檻不會變慢。（查詢向量取的是子表裡現有的一列，等於錨恰好命中某個片段，通過門檻的列偏多，算是偏壞的情況。）近似錨只在字面錨不到 2 筆時才跑，每個 covered facet 一次。
+
+**改寫後的 `SearchFacetSql`**（5 次中位數，丟掉第一次）：`scene.location` 33.2 ms、`clothing.upper` 22.2 ms、`clothing.footwear` 2.4 ms。一次 `SearchPresets` 通常 3–6 個 facet 項目、依序查，合計約 0.1 秒，跟 Gemini 一次呼叫的數秒相比可以忽略。
 
 ## 8. 測試
 
@@ -224,7 +268,7 @@ LIMIT @take
 3. **線上**（Claude 用 Playwright 驅動 headless Edge，對新分支建的 compose，實際呼叫 Gemini），案例寫進 `docs/eval-cases.md` 新的一節：
    - R2 同一句「一個銀髮少女穿涼鞋站在雨夜街頭」：鞋履前 5 名是不同寫法的涼鞋；工具卡顯示「涼鞋（sandals）」與 `method: facet`。
    - `tags` 填寫率：多跑幾句不同的描述，從 audit 的 `SearchPresets` 參數統計 facet 項目帶 `tags` 的比例；太低就加強工具說明。
-   - 近似錨：用字面抓不到的描述（拖鞋→`slippers`、夾腳拖→`flip-flops`），推薦出現「接近你講的 …」，檢查門檻 0.23。
+   - 近似錨：用字面抓不到的描述（拖鞋→`slippers`、夾腳拖→`flip-flops`），推薦出現「接近你講的 …」，檢查門檻（2026-09-30 實測後改 0.30，見 §6.4）。
    - 退路：對一個沒有子表資料的庫（或暫時清空子表）確認 `method: preset` 且照常回結果。
 
 ## 10. 文件
@@ -247,7 +291,7 @@ LIMIT @take
 - **模型不填 `tags`**：退回只用中文（實驗 V1d 69，跟現行 67 差不多），不會更差；驗收統計填寫率。
 - **翻譯錯**：`tags` 翻錯時中文原話還在查詢句裡；比只用英文穩，但無法完全抵銷。
 - **分級門檻**：0.22／0.27 只來自 17 題。驗收後若「高」太少或太多再調。
-- **近似錨門檻**：0.23 是從 facet 查詢的分布推的，錨的文字（多個 tag 串接）可能讓距離整體偏移；驗收實測決定。
+- **近似錨門檻**：原訂 0.23 是從 facet 查詢的分布推的，驗收證實單一詞的同義詞距離偏高（0.28–0.34），已改 0.30（§6.4）。0.30 邊界上會把 `shoes`、`hat` 這類泛稱標成「接近你講的」；`geta` 這類距離較遠的同義詞仍抓不到。
 - **近似錨仍用 `session.FacetTags`**：所以 known-issues §10「換了內容沒重給 `tags` 時舊錨留著」的問題會跟著進來——跟現有的字面錨一樣，不是本案新增的風險。`SearchPresets` 不用 `FacetTags` 就是為了不把這個問題帶進借 tag 的主路徑。
 - **seed 變大**：約 210MB；真的造成困擾就把子表換成 `halfvec`。
 - **`facet_tags` 本身的錯誤**：回填歸錯 facet 的 tag 會被算進錯的 facet 向量；這是回填品質問題，不在本案處理。

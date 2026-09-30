@@ -233,7 +233,7 @@ public class RecommendationServiceTests
         Assert.Equal(new long[] { 2, 3 }, d.Sets.Select(x => x.PresetId));
         Assert.Equal(0.18, d.Sets[0].Dist);                                                      // 近似路上的 Dist 是 facet 距離
         var call = Assert.Single(presets.SimilarCalls);
-        Assert.Equal(("clothing.footwear", 0.23, 3), call);
+        Assert.Equal(("clothing.footwear", 0.30, 3), call);                                   // 預設門檻（2026-09-30 驗收後由 0.23 放寬）
         Assert.Single(presets.Calls);                                                            // 沒退到無錨
         Assert.Equal(new[] { "一個少女穿涼鞋", "slippers" }, embed.Texts);                        // 錨向量與查詢向量同一次 embed
     }
