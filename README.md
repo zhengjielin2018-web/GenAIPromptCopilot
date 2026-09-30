@@ -64,7 +64,7 @@ cp .env.example .env        # 填 GEMINI_API_KEY；POSTGRES_PASSWORD 隨意改
 docker compose up
 ```
 
-首次啟動會下載約 100 MB 的知識庫種子灌進資料庫（見下方「資料來源」），之後：
+首次啟動會下載約 250 MB 的知識庫種子灌進資料庫（見下方「資料來源」），之後：
 
 - 前端 <http://localhost:8080>
 - Swagger <http://localhost:5000/swagger>
