@@ -176,3 +176,11 @@ def test_old_rows_without_sets_infer_reason_from_row_flags():
 
 def test_no_final_card_recommendations_means_no_slate_section():
     assert "定稿卡推薦組法" not in build_report([ask("a", 1, rec=REC_CLOTHING)])
+
+
+def test_empty_next_batch_adds_no_sets_and_no_press():
+    # 控制器裁決：空批次（「沒有更多了」）也會被 audit，sets 是空陣列——不能算進出現數，也不能推高換一批
+    turns = [fin("a", 1, rec=SLATE), nxt("a", 1, 2, []), fin("a", 2, adoption=adopt(3))]
+    text = build_report(turns)
+    assert "| 換個搭法 | 1 | 1/1（100.0%）" in text
+    assert "- 定稿排按過換一批：0/1（0.0%）；平均每排按 0.0 次" in text
