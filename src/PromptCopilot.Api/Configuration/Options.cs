@@ -41,6 +41,13 @@ public sealed class OrchestratorOptions
     /// 2026-09-30 驗收由 0.23 放寬：單一詞對單一詞的同義詞落在 0.28–0.34（flip-flops→sandals 0.294、clogs→crocs 0.277），
     /// 0.23 以內只剩字面相同、字面錨早就抓到的那筆；0.30 起開始混進 shoes、hat 這類泛稱。</summary>
     public double RecommendationSimilarMaxDist { get; set; } = 0.30;
+    /// <summary>推薦組法（2026-09-30 設計 §3.1）：定稿卡每層候選取幾筆。純向量那層走 HNSW，hnsw.ef_search 預設 40，
+    /// 調到 40 以上要一起調 ef_search，否則回不滿（設計 §8）。</summary>
+    public int RecommendationPoolSize { get; set; } = 30;
+    /// <summary>看過一次，有效名次往後加幾名。P=10、τ=5 時看過一次權重剩 e^-2 ≈ 13.5%，兩次 1.8%。</summary>
+    public double RecommendationSeenPenalty { get; set; } = 10;
+    /// <summary>名次轉機率的溫度 τ：權重 exp(−有效名次/τ)。越大越往深處抽；使用者要的是看過的退得夠多，不是抽很深。</summary>
+    public double RecommendationTemperature { get; set; } = 5;
 }
 
 public sealed class SafetyOptions

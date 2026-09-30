@@ -31,9 +31,13 @@ public class RecommendationServiceTests
         public List<(string facet, double maxDist, int take)> SimilarCalls { get; } = new();
         public Dictionary<string, IReadOnlyList<PresetCandidate>> SimilarScript { get; } = new();     // key：facetId
         public Dictionary<string, long> FacetPools { get; } = new();                                    // 沒設 → 0 → 跳過近似
+        public string? ThrowOn { get; set; }                                                               // 維度第一個 facet 等於它就丟例外
+        public Dictionary<(long, string), float[]> Vectors { get; } = new();
+        public List<(IReadOnlyList<long> ids, IReadOnlyList<string> facets)> VectorCalls { get; } = new();
         public override Task<IReadOnlyList<PresetCandidate>> RecommendAsync(float[] query, IReadOnlyList<string> dimensionFacets,
             IReadOnlyList<string> anchorFacets, IReadOnlyList<string> anchorTags, int take, CancellationToken ct)
         {
+            if (ThrowOn == dimensionFacets[0]) throw new InvalidOperationException("db down");
             Calls.Add((dimensionFacets[0], anchorFacets, anchorTags, take));
             return Task.FromResult(Script.GetValueOrDefault((dimensionFacets[0], anchorFacets.Count > 0), Array.Empty<PresetCandidate>()));
         }
@@ -43,6 +47,13 @@ public class RecommendationServiceTests
             SimilarCalls.Add((facetId, maxDist, take));
             return Task.FromResult(SimilarScript.GetValueOrDefault(facetId, Array.Empty<PresetCandidate>()));
         }
+        public override Task<IReadOnlyDictionary<(long PresetId, string FacetId), float[]>> FacetVectorsAsync(IReadOnlyList<long> presetIds, IReadOnlyList<string> facetIds, CancellationToken ct)
+        {
+            VectorCalls.Add((presetIds, facetIds));
+            IReadOnlyDictionary<(long PresetId, string FacetId), float[]> r = Vectors.Where(kv => presetIds.Contains(kv.Key.Item1) && facetIds.Contains(kv.Key.Item2))
+                .ToDictionary(kv => (kv.Key.Item1, kv.Key.Item2), kv => kv.Value);
+            return Task.FromResult(r);
+        }
     }
 
     private static PresetCandidate Set(long id, string title, params (string facet, string tags)[] facetTags) => Set(id, title, 0.21, facetTags);
@@ -50,15 +61,29 @@ public class RecommendationServiceTests
         new(id, title, facetTags.Select(f => f.facet).ToList(),
             facetTags.ToDictionary(f => f.facet, f => (IReadOnlyList<string>)f.tags.Split(", ")), "https://img", "civitai:1:0", dist);
 
-    private static (RecommendationService svc, Session s, FakeEmbeddings embed, FakePresets presets) Make(params (string facet, string tags)[] covered)
+    private static (RecommendationService svc, Session s, FakeEmbeddings embed, FakePresets presets) Make(params (string facet, string tags)[] covered) =>
+        MakeWith(new OrchestratorOptions(), covered);
+
+    private static (RecommendationService svc, Session s, FakeEmbeddings embed, FakePresets presets) MakeWith(OrchestratorOptions o, params (string facet, string tags)[] covered)
     {
         var s = new Session("s"); s.ApplyProfile("portrait", Catalog);
         s.ChatHistory.AddSystemMessage("sys");
         s.ChatHistory.AddUserMessage("一個少女穿涼鞋");
         s.ApplyFacetStates(covered.ToDictionary(c => c.facet, _ => FacetState.Covered), Catalog, covered.ToDictionary(c => c.facet, c => c.tags));
         var embed = new FakeEmbeddings(); var presets = new FakePresets();
-        return (new RecommendationService(Catalog, embed, presets, new OrchestratorOptions()), s, embed, presets);
+        return (new RecommendationService(Catalog, embed, presets, o), s, embed, presets);
     }
+
+    /// <summary>τ 很小：第 2 位幾乎必取有效名次次小的，測試結果不受抽樣影響。</summary>
+    private static OrchestratorOptions Greedy() => new() { RecommendationTemperature = 0.01 };
+
+    private static readonly PresetCandidate[] FourSandals =
+    {
+        Set(1, "A", ("clothing.footwear", "sandals"), ("clothing.upper", "shirt")),
+        Set(2, "B", ("clothing.footwear", "sandals"), ("clothing.lower", "skirt")),
+        Set(3, "C", ("clothing.footwear", "sandals"), ("clothing.upper", "tank top")),
+        Set(4, "D", ("clothing.footwear", "sandals"), ("clothing.lower", "shorts")),
+    };
 
     private static AskOutcome Ask(params string[] dims) =>
         new("p", dims.Select(d => new AskItem(d, "q", new[] { Catalog.FacetsOf("portrait", d)[0] }, new[] { new OptionItem("a", "t", null), new OptionItem("b", "t", null) })).ToList());
@@ -305,5 +330,132 @@ public class RecommendationServiceTests
         s.ApplyFacetStates(new Dictionary<string, FacetState> { ["clothing.footwear"] = FacetState.Covered }, Catalog,
             new Dictionary<string, string> { ["clothing.footwear"] = "(Slippers:1.2), flip_flops, slippers" });
         Assert.Equal("slippers, flip flops", RecommendationService.SimilarAnchorText(s, "clothing.footwear"));
+    }
+
+    [Fact]
+    public async Task Final_card_row_has_two_relevant_sets_and_one_explore_set_with_reasons_and_batch_one()
+    {
+        var (svc, s, _, presets) = MakeWith(Greedy(), ("clothing.footwear", "sandals"));
+        presets.Script[("clothing.head", true)] = FourSandals.Take(2).ToList();
+        presets.Script[("clothing.head", false)] = new[]
+        {
+            Set(5, "靴子長裙", ("clothing.footwear", "boots"), ("clothing.lower", "long skirt")),
+            Set(6, "帽T牛仔褲", ("clothing.upper", "hoodie"), ("clothing.lower", "jeans")),         // 沒有鞋履 tag：取代不了使用者講的，不能當探索位
+        };
+        var e = await svc.BuildAsync(s, Finalized("1girl, sandals"), 4, default);
+        var d = e!.Dimensions.Single(x => x.Dimension == "clothing");
+        Assert.Equal(1, d.Batch);
+        Assert.False(d.Anchored); Assert.False(d.Similar); Assert.Empty(d.AnchorTags);
+        Assert.Equal(new long[] { 1, 2, 5 }, d.Sets.Select(x => x.PresetId));
+        Assert.Equal(new[] { "anchored", "anchored", "explore" }, d.Sets.Select(x => x.Reason));
+        Assert.Equal(new[] { "sandals" }, d.Sets[0].AnchorTags);
+        Assert.Equal(1.0, d.Sets[0].Prob); Assert.Equal(0, d.Sets[0].Rank);
+        Assert.Equal(0, d.Sets[2].Rank);
+        Assert.Equal(4, s.LatestSlateTurn);
+        Assert.Equal(1, s.SlateBatch("clothing"));
+        Assert.Equal(3, s.SeenFor("clothing").Count);
+        Assert.All(presets.Calls, c => Assert.Equal(30, c.take));                                     // 每層取 PoolSize
+        Assert.Equal(new[] { "clothing.footwear" }, presets.VectorCalls.Last().facets);                 // 比較用 facet = covered
+    }
+
+    [Fact]
+    public async Task Final_card_queries_every_tier_even_when_the_literal_anchor_has_enough_hits()
+    {
+        var (svc, s, _, presets) = MakeWith(Greedy(), ("clothing.footwear", "sandals"));
+        presets.FacetPools["clothing.footwear"] = 338;
+        presets.Script[("clothing.head", true)] = FourSandals;
+        await svc.BuildAsync(s, Finalized("1girl"), 1, default);
+        Assert.Equal(("clothing.footwear", 0.30, 30), Assert.Single(presets.SimilarCalls));
+        Assert.Contains(presets.Calls, c => c.firstFacet == "clothing.head" && c.anchorTags.Count > 0);
+        Assert.Contains(presets.Calls, c => c.firstFacet == "clothing.head" && c.anchorTags.Count == 0);
+    }
+
+    [Fact]
+    public async Task Seen_sets_are_pushed_back_on_the_next_final_card()
+    {
+        var (svc, s, _, presets) = MakeWith(Greedy(), ("clothing.footwear", "sandals"));
+        presets.Script[("clothing.head", true)] = FourSandals;
+        var first = (await svc.BuildAsync(s, Finalized("1girl"), 1, default))!.Dimensions.Single(x => x.Dimension == "clothing");
+        var second = (await svc.BuildAsync(s, Finalized("1girl"), 3, default))!.Dimensions.Single(x => x.Dimension == "clothing");
+        Assert.Equal(new long[] { 1, 2 }, first.Sets.Select(x => x.PresetId));
+        Assert.Equal(new long[] { 3, 4 }, second.Sets.Select(x => x.PresetId));
+        Assert.Equal(1, second.Batch);
+    }
+
+    [Fact]
+    public async Task Identical_tag_sets_collapse_into_one_candidate()
+    {
+        var (svc, s, _, presets) = MakeWith(Greedy(), ("clothing.footwear", "sandals"));
+        presets.Script[("clothing.head", true)] = new[] { FourSandals[0], Set(9, "A 的雙胞胎", ("clothing.upper", "Shirt"), ("clothing.footwear", "sandals")), FourSandals[1] };
+        var d = (await svc.BuildAsync(s, Finalized("1girl"), 1, default))!.Dimensions.Single(x => x.Dimension == "clothing");
+        Assert.Equal(new long[] { 1, 2 }, d.Sets.Select(x => x.PresetId));
+    }
+
+    [Fact]
+    public async Task Explore_compares_every_dimension_facet_when_nothing_is_covered()
+    {
+        var (svc, s, _, presets) = MakeWith(Greedy());
+        presets.Script[("style.genre", false)] = new[]
+        {
+            Set(11, "油畫", ("style.genre", "oil painting"), ("style.palette", "muted")),
+            Set(12, "動漫", ("style.genre", "anime"), ("style.palette", "vivid")),
+            Set(13, "水彩", ("style.genre", "watercolor"), ("style.palette", "pastel")),
+        };
+        var d = (await svc.BuildAsync(s, Finalized("1girl"), 1, default))!.Dimensions.Single(x => x.Dimension == "style");
+        Assert.Equal(new[] { "query", "query", "explore" }, d.Sets.Select(x => x.Reason));
+        Assert.Equal(13, d.Sets[2].PresetId);
+        Assert.Equal(Catalog.FacetsOf("portrait", "style"), presets.VectorCalls.First(c => c.ids.Contains(13)).facets);
+    }
+
+    [Fact]
+    public async Task Ask_outcome_ends_the_slate()
+    {
+        // Review Focus 3
+        var (svc, s, _, presets) = MakeWith(Greedy());
+        presets.Script[("style.genre", false)] = new[] { Set(11, "油畫", ("style.genre", "oil painting"), ("style.palette", "muted")) };
+        await svc.BuildAsync(s, Finalized("1girl"), 1, default);
+        Assert.Equal(1, s.LatestSlateTurn);
+        var ask = await svc.BuildAsync(s, Ask("style"), 2, default);
+        Assert.Null(s.LatestSlateTurn);
+        Assert.Null(ask!.Dimensions[0].Batch);                                                        // 追問卡不帶批次與理由
+        Assert.Null(ask.Dimensions[0].Sets[0].Reason);
+    }
+
+    [Fact]
+    public async Task Failed_final_card_records_nothing_as_seen()
+    {
+        // Review Focus 2
+        var (svc, s, _, presets) = MakeWith(Greedy());
+        presets.Script[("style.genre", false)] = new[] { Set(11, "油畫", ("style.genre", "oil painting"), ("style.palette", "muted")) };
+        presets.ThrowOn = "clothing.head";                                                            // 最後一個維度才炸
+        await Assert.ThrowsAsync<InvalidOperationException>(() => svc.BuildAsync(s, Finalized("1girl"), 1, default));
+        Assert.Empty(s.SeenFor("style"));
+    }
+
+    [Fact]
+    public async Task Next_returns_batch_two_avoids_the_first_batch_and_reuses_the_final_tags_as_anchors()
+    {
+        var (svc, s, _, presets) = MakeWith(Greedy(), ("clothing.footwear", "sandals"));
+        presets.Script[("clothing.head", true)] = FourSandals;
+        await svc.BuildAsync(s, Finalized("masterpiece, 1girl, sandals, white socks"), 1, default);
+        var next = await svc.NextAsync(s, "clothing", default);
+        Assert.Equal(2, next.Batch);
+        Assert.Equal(new long[] { 3, 4 }, next.Sets.Select(x => x.PresetId));
+        Assert.Equal(2, s.SlateBatch("clothing"));
+        Assert.Contains("white socks", presets.Calls.Last(c => c.anchorTags.Count > 0).anchorTags);
+        Assert.DoesNotContain("masterpiece", presets.Calls.Last(c => c.anchorTags.Count > 0).anchorTags);
+    }
+
+    [Fact]
+    public async Task Next_without_candidates_returns_an_empty_row_and_does_not_advance()
+    {
+        var (svc, s, _, _) = MakeWith(Greedy());
+        s.BeginSlate(1, Array.Empty<string>());
+        var next = await svc.NextAsync(s, "style", default);
+        Assert.Empty(next.Sets);
+        Assert.Equal(1, next.Batch);
+        Assert.Equal("風格", next.Label);
+        Assert.Equal(0, s.SlateBatch("style"));
+        Assert.Empty(s.SeenFor("style"));
     }
 }

@@ -652,6 +652,7 @@ public class AgenticOrchestratorTests
     {
         public int Calls { get; private set; }
         public Task<RecommendationsEvent?> BuildAsync(Session s, TurnOutcome outcome, int turnIndex, CancellationToken ct) { Calls++; return impl(outcome); }
+        public Task<RecommendedDimension> NextAsync(Session s, string dimension, CancellationToken ct) => throw new NotSupportedException();
     }
 
     private static RecommendationsEvent SomeRecommendations(int turnIndex) => new(turnIndex, new[]
@@ -726,6 +727,7 @@ public class AgenticOrchestratorTests
             await Task.Delay(Timeout.Infinite, ct);
             return null;
         }
+        public Task<RecommendedDimension> NextAsync(Session s, string dimension, CancellationToken ct) => throw new NotSupportedException();
     }
 
     [Fact]
