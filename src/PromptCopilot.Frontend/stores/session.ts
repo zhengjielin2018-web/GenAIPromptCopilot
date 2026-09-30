@@ -184,6 +184,8 @@ export const useSessionStore = defineStore('session', () => {
     batchState.value = { ...batchState.value, [key]: 'loading' }
     try {
       const r = await api.nextRecommendations(id, dimension, turnIndex)
+      // 舊對話的回應不能接到新對話：等待期間換了 session 就整批放棄，不動 state／batchState、也不 persist
+      if (state.value.sessionId !== id) return
       if (!r.ok) { batchState.value = { ...batchState.value, [key]: 'error' }; return }
       if (r.row.sets.length === 0) { batchState.value = { ...batchState.value, [key]: 'exhausted' }; return }
       state.value = appendBatch(state.value, turnIndex, r.row)
@@ -191,6 +193,7 @@ export const useSessionStore = defineStore('session', () => {
       batchState.value = rest
       persist()
     } catch {
+      if (state.value.sessionId !== id) return
       batchState.value = { ...batchState.value, [key]: 'error' }
     }
   }
