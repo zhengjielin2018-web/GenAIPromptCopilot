@@ -125,15 +125,17 @@ def test_empty_input():
     assert "沒有 Turn_Completed 紀錄" in build_report([])
 
 
-SLATE = {"dimensions": [{"dimension": "clothing", "anchored": False, "similar": False, "presetIds": [1, 2, 3], "batch": 1, "sets": [
-    {"presetId": 1, "reason": "anchored", "rank": 0, "prob": 1},
-    {"presetId": 2, "reason": "anchored", "rank": 4, "prob": 0.3},
-    {"presetId": 3, "reason": "explore", "rank": 0, "prob": 0.5},
-]}]}
+SLATE = {"dimensions": [{
+    "dimension": "clothing", "anchored": False, "similar": False, "presetIds": [1, 2, 3], "batch": 1, "sets": [
+        {"presetId": 1, "reason": "anchored", "rank": 0, "prob": 1},
+        {"presetId": 2, "reason": "anchored", "rank": 4, "prob": 0.3},
+        {"presetId": 3, "reason": "explore", "rank": 0, "prob": 0.5},
+    ]}]}
 
 
 def adopt(pid, replaced=(), batch=None):
-    a = {"presetId": pid, "dimension": "clothing", "take": ["clothing.footwear"], "filled": [], "replaced": list(replaced)}
+    a = {"presetId": pid, "dimension": "clothing", "take": ["clothing.footwear"],
+         "filled": [], "replaced": list(replaced)}
     if batch is not None:
         a["batch"] = batch
     return a
