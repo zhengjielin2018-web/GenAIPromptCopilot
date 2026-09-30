@@ -196,7 +196,9 @@ public sealed class RecommendationService(FacetCatalog catalog, IEmbeddingClient
 
         var sets = picks.Select(p => ToSet(s, facets, p.Candidate.Preset) with
         {
-            Reason = p.Candidate.Reason, AnchorTags = p.Candidate.AnchorTags, Rank = p.Rank, Prob = Math.Round(p.Prob, 4),
+            // Prob 不四捨五入：抽中機率低的套（例如探索位深名次）捨到小數 4 位常常變 0，
+            // 之後拿 prob 做逆傾向分析（inverse propensity）會被這個 0 除以，不能存捨入後的值（review finding #4）。
+            Reason = p.Candidate.Reason, AnchorTags = p.Candidate.AnchorTags, Rank = p.Rank, Prob = p.Prob,
         }).ToList();
         var row = new RecommendedDimension(dim, catalog.DimensionLabel(dim, s.Profile!), false, Array.Empty<string>(), sets, Batch: batch);
         return (row, picks.Select(p => p.Candidate.Key).ToList());

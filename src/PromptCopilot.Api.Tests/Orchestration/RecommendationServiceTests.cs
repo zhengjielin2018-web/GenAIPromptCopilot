@@ -358,6 +358,23 @@ public class RecommendationServiceTests
         Assert.Equal(new[] { "clothing.footwear" }, presets.VectorCalls.Last().facets);                 // 比較用 facet = covered
     }
 
+    /// <summary>final-review finding #8：定稿卡也要走近似錨那條路，不是只有追問卡（Literal_anchor_short_of_two_hits...）測過。
+    /// 字面錨沒有命中（沒設 `("clothing.head", true)` 的 Script），近似錨找到兩套涼鞋，該套要標 similar、AnchorTags 是有貢獻的錨。</summary>
+    [Fact]
+    public async Task Final_card_uses_the_similar_tier_when_the_literal_anchor_has_no_hits()
+    {
+        var (svc, s, _, presets) = MakeWith(Greedy(), ("clothing.footwear", "slippers"));
+        presets.FacetPools["clothing.footwear"] = 338;
+        presets.SimilarScript["clothing.footwear"] = new[]
+        {
+            Set(2, "涼鞋一", 0.18, ("clothing.footwear", "sandals"), ("clothing.upper", "a")),
+            Set(3, "涼鞋二", 0.21, ("clothing.footwear", "sandals"), ("clothing.lower", "b")),
+        };
+        var d = (await svc.BuildAsync(s, Finalized("1girl"), 1, default))!.Dimensions.Single(x => x.Dimension == "clothing");
+        var set = d.Sets.First(x => x.Reason == "similar");    // 只有近似錨兩套候選，兩個相關位都會是 similar
+        Assert.Equal(new[] { "slippers" }, set.AnchorTags);
+    }
+
     [Fact]
     public async Task Final_card_queries_every_tier_even_when_the_literal_anchor_has_enough_hits()
     {
@@ -444,6 +461,24 @@ public class RecommendationServiceTests
         Assert.Equal(2, s.SlateBatch("clothing"));
         Assert.Contains("white socks", presets.Calls.Last(c => c.anchorTags.Count > 0).anchorTags);
         Assert.DoesNotContain("masterpiece", presets.Calls.Last(c => c.anchorTags.Count > 0).anchorTags);
+    }
+
+    /// <summary>final-review finding #8：換一批查資料庫失敗時不能悄悄把批次往前推或多記看過——使用者根本沒看到這批。</summary>
+    [Fact]
+    public async Task Next_failure_does_not_advance_the_batch_or_record_anything_as_seen()
+    {
+        var (svc, s, _, presets) = MakeWith(Greedy(), ("clothing.footwear", "sandals"));
+        presets.Script[("clothing.head", true)] = FourSandals.Take(2).ToList();
+        presets.Script[("clothing.head", false)] = new[]
+        {
+            Set(5, "靴子長裙", ("clothing.footwear", "boots"), ("clothing.lower", "long skirt")),
+            Set(6, "帽T牛仔褲", ("clothing.upper", "hoodie"), ("clothing.lower", "jeans")),
+        };
+        await svc.BuildAsync(s, Finalized("1girl, sandals"), 4, default);   // 2 相關 + 1 探索，SeenFor 記 3 筆
+        presets.ThrowOn = "clothing.head";
+        await Assert.ThrowsAsync<InvalidOperationException>(() => svc.NextAsync(s, "clothing", default));
+        Assert.Equal(1, s.SlateBatch("clothing"));
+        Assert.Equal(3, s.SeenFor("clothing").Count);
     }
 
     [Fact]
