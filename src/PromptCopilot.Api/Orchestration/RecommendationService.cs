@@ -10,8 +10,8 @@ namespace PromptCopilot.Api.Orchestration;
 
 public interface IRecommendationService
 {
-    /// <summary>沒有任何維度有候選（或 profile 未設）時回 null，不發事件。</summary>
-    Task<RecommendationsEvent?> BuildAsync(Session s, TurnOutcome outcome, int turnIndex, CancellationToken ct);
+    /// <summary>定稿卡的推薦（先確認再動手設計 §8：2026-10-05 起只有定稿卡推薦）。沒有任何維度有候選（或 profile 未設）時回 null，不發事件。</summary>
+    Task<RecommendationsEvent?> BuildAsync(Session s, FinalizedOutcome outcome, int turnIndex, CancellationToken ct);
 
     /// <summary>換一批（推薦組法設計 §4.5）：該維度的下一批。沒有候選時回 Sets 為空的一排（批次不前進、不記看過）。
     /// 呼叫端要拿著 session 鎖，並先確認 turnIndex 等於 LatestSlateTurn。</summary>
@@ -19,10 +19,8 @@ public interface IRecommendationService
 }
 
 /// <summary>整套組合推薦（設計 §5）。由伺服器產生、模型不知道：推薦系統要「每次都在、每次一樣」。
-/// 追問時只查被問的維度，定稿時查本 profile 全部維度；每個維度：錨（covered facet 的 FacetTags＋定稿 positive）
-/// 有就先過濾再向量排序，命中不到 2 筆退回純向量。
-/// 字面錨不到 2 筆先試近似錨（facet 向量離錨 ≤ RecommendationSimilarMaxDist），仍不到 2 筆才退回純向量。
-/// 定稿卡（2026-09-30 推薦組法設計）改成 2 相關＋1 探索、看過加權延後、可換一批；追問卡照舊。</summary>
+/// 只在定稿時推薦（先確認再動手設計 §8），查本 profile 全部維度：2 相關＋1 探索、看過加權延後、可換一批（2026-09-30 推薦組法設計）。
+/// 相關位的候選分三層：字面錨（covered facet 的 FacetTags＋定稿 positive）、近似錨（facet 向量離錨 ≤ RecommendationSimilarMaxDist）、純向量。</summary>
 public sealed class RecommendationService(FacetCatalog catalog, IEmbeddingClient embed, PresetRepository presets, OrchestratorOptions options) : IRecommendationService
 {
     public const int QueryChars = 500;
@@ -30,44 +28,30 @@ public sealed class RecommendationService(FacetCatalog catalog, IEmbeddingClient
     /// <summary>伺服器組的採用句開頭；直接引用 AdoptionComposer 的常數，兩處不會分岔。</summary>
     public const string AdoptionPrefix = AdoptionComposer.Prefix;
 
-    public async Task<RecommendationsEvent?> BuildAsync(Session s, TurnOutcome outcome, int turnIndex, CancellationToken ct)
+    public async Task<RecommendationsEvent?> BuildAsync(Session s, FinalizedOutcome outcome, int turnIndex, CancellationToken ct)
     {
         if (s.Profile is null) return null;
-        // 不管這輪出什麼卡，舊的定稿卡都不再是最新的：先收掉換一批，定稿卡再在下面重開（Review Focus 3）
+        // 舊的定稿卡不再是最新的：先收掉換一批，下面再重開（Review Focus 3）
         s.EndSlate();
-        var profile = s.Profile;
-        IReadOnlyList<string> dimensions = outcome switch
-        {
-            AskOutcome a => a.Asks.Select(x => x.Dimension).Distinct().Where(d => catalog.FacetsOf(profile, d).Count > 0).ToList(),
-            FinalizedOutcome => catalog.DimensionsOf(profile),
-            _ => Array.Empty<string>(),
-        };
+        var dimensions = catalog.DimensionsOf(s.Profile);
         if (dimensions.Count == 0) return null;
         var query = QueryText(s.ChatHistory);
         if (query.Length == 0) return null;
         var (vec, anchorVec) = await EmbedAsync(s, dimensions, query, ct);
         // 基礎畫質詞不當錨：每次定稿都有，只會把推薦拉向剛好也寫了 masterpiece 的片段
-        var finalTags = outcome is FinalizedOutcome f
-            ? TagAttribution.Split(f.Final.Positive).Select(TagAttribution.Normalize).Where(t => t.Length > 0 && !TagAttribution.IsBase(t)).ToList()
-            : new List<string>();
+        var finalTags = TagAttribution.Split(outcome.Final.Positive).Select(TagAttribution.Normalize).Where(t => t.Length > 0 && !TagAttribution.IsBase(t)).ToList();
 
+        s.BeginSlate(turnIndex, finalTags);
         var result = new List<RecommendedDimension>();
-        if (outcome is FinalizedOutcome)
-        {
-            s.BeginSlate(turnIndex, finalTags);
-            // 全部維度都成功才記看過：中途失敗時事件不會送出，使用者沒看到的不能被往後推（Review Focus 2）
-            var seen = new List<(string dim, IReadOnlyList<string> keys)>();
-            foreach (var dim in dimensions)
-                if (await SlateAsync(s, dim, 1, vec, anchorVec, finalTags, ct) is { } built)
-                {
-                    result.Add(built.row);
-                    seen.Add((dim, built.keys));
-                }
-            foreach (var (dim, keys) in seen) s.RecordSlate(dim, 1, keys);
-        }
-        else
-            foreach (var dim in dimensions)
-                if (await AskRowAsync(s, dim, vec, anchorVec, finalTags, ct) is { } row) result.Add(row);
+        // 全部維度都成功才記看過：中途失敗時事件不會送出，使用者沒看到的不能被往後推（Review Focus 2）
+        var seen = new List<(string dim, IReadOnlyList<string> keys)>();
+        foreach (var dim in dimensions)
+            if (await SlateAsync(s, dim, 1, vec, anchorVec, finalTags, ct) is { } built)
+            {
+                result.Add(built.row);
+                seen.Add((dim, built.keys));
+            }
+        foreach (var (dim, keys) in seen) s.RecordSlate(dim, 1, keys);
         return result.Count == 0 ? null : new RecommendationsEvent(turnIndex, result);
     }
 
@@ -129,35 +113,6 @@ public sealed class RecommendationService(FacetCatalog catalog, IEmbeddingClient
         anchors.Where(a => hits.Any(h => covered.Any(f => (h.FacetTags.GetValueOrDefault(f) ?? Array.Empty<string>())
             .Select(TagAttribution.Normalize).Any(t => t == a || TagAttribution.EndsWithWord(t, a))))).ToList();
 
-    /// <summary>追問卡的一排：原本的做法，一行不改（字面錨 → 近似錨 → 純向量，前一層不到 2 筆才退）。</summary>
-    private async Task<RecommendedDimension?> AskRowAsync(Session s, string dim, float[] vec, IReadOnlyDictionary<(string, string), float[]> anchorVec,
-        IReadOnlyList<string> finalTags, CancellationToken ct)
-    {
-        var facets = catalog.FacetsOf(s.Profile!, dim);
-        // 預設給 Missing：FacetState 的 default 是 Covered，缺鍵時不能被當成已涵蓋
-        var covered = facets.Where(x => s.FacetStates.GetValueOrDefault(x, FacetState.Missing) == FacetState.Covered).ToList();
-        var anchors = AnchorTags(s, covered, finalTags);
-        IReadOnlyList<PresetCandidate> hits = Array.Empty<PresetCandidate>();
-        var anchored = false;
-        if (anchors.Count > 0)
-        {
-            hits = await presets.RecommendAsync(vec, facets, covered, anchors, options.RecommendationTake, ct);
-            anchored = hits.Count >= MinAnchoredHits;
-        }
-        var similar = false;
-        IReadOnlyList<string> similarTags = Array.Empty<string>();
-        if (!anchored)
-        {
-            (hits, similarTags) = await SimilarAsync(s, dim, covered, facets, anchorVec, ct);
-            similar = hits.Count >= MinAnchoredHits;
-            if (!similar) hits = Array.Empty<PresetCandidate>();
-        }
-        if (!anchored && !similar) hits = await presets.RecommendAsync(vec, facets, Array.Empty<string>(), Array.Empty<string>(), options.RecommendationTake, ct);
-        if (hits.Count == 0) return null;
-        var matched = anchored ? MatchedAnchors(hits, covered, anchors) : similar ? similarTags : Array.Empty<string>();
-        return new RecommendedDimension(dim, catalog.DimensionLabel(dim, s.Profile!), anchored, matched, hits.Select(h => ToSet(s, facets, h)).ToList(), similar);
-    }
-
     /// <summary>定稿卡的一排（推薦組法設計 §3.1）：三層（字面錨、近似錨、純向量）各取 PoolSize 筆、都查，接成一條名單並依 tag 集合合併；
     /// 2 套相關位＋最多 1 套探索位。回傳這一排與要記成看過的 key；由呼叫端決定何時記（整張卡成功才記）。沒有任何候選回 null。</summary>
     private async Task<(RecommendedDimension row, IReadOnlyList<string> keys)?> SlateAsync(Session s, string dim, int batch, float[] vec,
@@ -212,20 +167,6 @@ public sealed class RecommendationService(FacetCatalog catalog, IEmbeddingClient
 
     private static IReadOnlyList<string> NormalizedFacetTags(Session s, string facetId) =>
         TagAttribution.Split(s.FacetTags.GetValueOrDefault(facetId)).Select(TagAttribution.Normalize).Where(t => t.Length > 0).Distinct().ToList();
-
-    /// <summary>近似錨（設計 §6.1）：每個 covered 且有錨向量的 facet 各查一次，同一片段取最小距離，依距離取前 take；
-    /// 回傳的 tags 是「有貢獻」的 facet 的 FacetTags（至少一筆進了前 take）。子表沒有這個 facet 的列就跳過它。</summary>
-    private async Task<(IReadOnlyList<PresetCandidate> hits, IReadOnlyList<string> tags)> SimilarAsync(Session s, string dim, IReadOnlyList<string> covered,
-        IReadOnlyList<string> facets, IReadOnlyDictionary<(string, string), float[]> anchorVec, CancellationToken ct)
-    {
-        var top = await SimilarHitsAsync(dim, covered, facets, anchorVec, options.RecommendationTake, ct);
-        var contributing = covered.Where(f => top.Any(x => x.facet == f)).ToList();
-        var tags = new List<string>();
-        foreach (var f in contributing)
-            foreach (var t in TagAttribution.Split(s.FacetTags.GetValueOrDefault(f)).Select(TagAttribution.Normalize))
-                if (t.Length > 0 && !tags.Contains(t)) tags.Add(t);
-        return (top.Select(x => x.c).ToList(), tags);
-    }
 
     /// <summary>近似錨的命中與它來自哪個 facet，依距離排好、取前 take。</summary>
     private async Task<List<(PresetCandidate c, string facet)>> SimilarHitsAsync(string dim, IReadOnlyList<string> covered, IReadOnlyList<string> facets,

@@ -4,7 +4,7 @@ import { initialState, beginTurn, applyEvent, endTurn, failHttp, hydrate, append
 import { loadPersisted, savePersisted } from '../lib/persist'
 import { loadPrefs, savePrefs, type Prefs } from '../lib/prefs'
 import { composeDraft, appendChip, chipKey, type Chip } from '../lib/composer'
-import { latestRecommendableTurn as latestRecommendableTurnOf, adoptPlaceholder } from '../lib/adopt'
+import { adoptPlaceholder } from '../lib/adopt'
 import { messageBody } from '../lib/safety'
 import { AGENT_EVENT_TYPES, type AdoptRequest, type AgentEvent, type FacetCatalog, type RecommendedSet, type RetrievalMode } from '../types/api'
 import type { TurnBody } from '../composables/useApi'
@@ -59,8 +59,6 @@ export const useSessionStore = defineStore('session', () => {
 
   /** 對照表正在看的那套；null 表示關閉。 */
   const adoptTarget = ref<{ set: RecommendedSet; dimension: string; turnIndex: number } | null>(null)
-  /** 只有最新一張追問卡／定稿卡上的推薦可以採用。 */
-  const latestRecommendableTurn = computed<number | null>(() => latestRecommendableTurnOf(state.value.transcript))
 
   /** 換一批的狀態，key 是 `${turnIndex}:${dimension}`。不存：重載後回到可以再按。
    *  stale：伺服器回 409（這張卡已經不是最新，或這段對話還有一輪在跑）——不可能靠再按解決，畫面不給重試。 */
@@ -172,7 +170,7 @@ export const useSessionStore = defineStore('session', () => {
   }
 
   function openAdopt(set: RecommendedSet, dimension: string, turnIndex: number) {
-    if (busy.value || turnIndex !== latestRecommendableTurn.value) return
+    if (busy.value || turnIndex !== latestFinalizedTurn.value) return
     adoptTarget.value = { set, dimension, turnIndex }
   }
   function closeAdopt() { adoptTarget.value = null }
@@ -181,7 +179,7 @@ export const useSessionStore = defineStore('session', () => {
   async function nextBatch(turnIndex: number, dimension: string) {
     const key = `${turnIndex}:${dimension}`
     const id = state.value.sessionId
-    if (!id || busy.value || turnIndex !== latestRecommendableTurn.value || batchState.value[key] === 'loading') return
+    if (!id || busy.value || turnIndex !== latestFinalizedTurn.value || batchState.value[key] === 'loading') return
     batchState.value = { ...batchState.value, [key]: 'loading' }
     try {
       const r = await api.nextRecommendations(id, dimension, turnIndex)
@@ -261,7 +259,7 @@ export const useSessionStore = defineStore('session', () => {
     dimensionLabels, latestFinalizedTurn,
     prefs, retrievalMismatch, setRetrievalPref, setShowTrace, safetyCanDisable, safetyOff, setSafetyOff,
     boot, newSession, send, retry, setDraft, toggleChip, isChipSelected, openDrawer, closeDrawer, expandSave, save,
-    adoptTarget, latestRecommendableTurn, openAdopt, closeAdopt, adopt,
+    adoptTarget, openAdopt, closeAdopt, adopt,
     batchState, nextBatch,
   }
 })

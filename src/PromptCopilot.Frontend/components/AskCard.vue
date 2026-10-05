@@ -10,12 +10,12 @@
       <OptionChips class="mt-2" :options="a.options" :dimension="a.dimension" />
     </section>
     <p class="mt-4 text-[11px] text-muted">選項會填進下面的輸入框，可以多選、可以再改，按送出才會送。</p>
-    <RecommendationStrip v-if="recommendations" :recs="recommendations" :turn-index="turnIndex" />
   </div>
 </template>
 
 <script setup lang="ts">
-import type { FinalData, Recommendations } from '../types/api'
-defineProps<{ data: Extract<FinalData, { kind: 'ask' }>; turnIndex: number; recommendations?: Recommendations | null }>()
+import type { FinalData } from '../types/api'
+// 2026-10-05 起追問卡不推薦（先確認再動手設計 §8）
+defineProps<{ data: Extract<FinalData, { kind: 'ask' }> }>()
 const s = useSessionStore()
 </script>

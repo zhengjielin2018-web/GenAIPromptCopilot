@@ -651,7 +651,7 @@ public class AgenticOrchestratorTests
     internal sealed class StubRecommendations(Func<TurnOutcome, Task<RecommendationsEvent?>> impl) : IRecommendationService
     {
         public int Calls { get; private set; }
-        public Task<RecommendationsEvent?> BuildAsync(Session s, TurnOutcome outcome, int turnIndex, CancellationToken ct) { Calls++; return impl(outcome); }
+        public Task<RecommendationsEvent?> BuildAsync(Session s, FinalizedOutcome outcome, int turnIndex, CancellationToken ct) { Calls++; return impl(outcome); }
         public Task<RecommendedDimension> NextAsync(Session s, string dimension, CancellationToken ct) => throw new NotSupportedException();
     }
 
@@ -663,18 +663,45 @@ public class AgenticOrchestratorTests
         }),
     });
 
-    /// <summary>設計 §5.1：推薦事件跟在 final 與 dimensions 之後；audit 記推薦了哪些 preset。</summary>
+    private static object FinalizeArgs() => new
+    {
+        positivePrompt = "masterpiece, 1girl", negativePrompt = "lowres", tips = "t", intentSummary = "一個女生", facetStates = Array.Empty<object>(),
+    };
+
+    /// <summary>已定稿的 session：定稿後 AskUser 不在清單上，FinalizePrompt 過得了定稿閘門。</summary>
+    private static void MakeFinalized(Session s)
+    {
+        s.ApplyProfile("portrait", Catalog);
+        s.RecordFinalize(new FinalPrompt("1girl", "lowres", "t", "i"));
+    }
+
+    /// <summary>先確認再動手設計 §8：未定稿前不推薦。追問卡不呼叫推薦服務，也不發事件。</summary>
     [Fact]
-    public async Task Recommendations_event_follows_final_and_is_audited()
+    public async Task Ask_turn_never_calls_recommendations()
     {
         var h = new Harness();
-        h.Recommendations = new StubRecommendations(_ => Task.FromResult<RecommendationsEvent?>(SomeRecommendations(1)));
+        var stub = new StubRecommendations(_ => Task.FromResult<RecommendationsEvent?>(SomeRecommendations(1)));
+        h.Recommendations = stub;
         h.Chat.ThenAsync(async (hist, k) =>
         {
             await Invoke(hist, k!, "Session", "SetProfile", new { profile = "portrait" });
             return new[] { await Invoke(hist, k!, "Dialog", "AskUser", AskArgs()) };
         });
         var events = await h.RunAsync("一個銀髮少女");
+        Assert.Equal("ask", Assert.Single(events.OfType<FinalEvent>()).Kind);
+        Assert.Equal(0, stub.Calls);
+        Assert.Empty(events.OfType<RecommendationsEvent>());
+    }
+
+    /// <summary>設計 §5.1：推薦事件跟在 final 與 dimensions 之後；audit 記推薦了哪些 preset。</summary>
+    [Fact]
+    public async Task Recommendations_event_follows_final_and_is_audited()
+    {
+        var h = new Harness();
+        h.Recommendations = new StubRecommendations(_ => Task.FromResult<RecommendationsEvent?>(SomeRecommendations(1)));
+        MakeFinalized(h.Session);
+        h.Chat.ThenAsync(async (hist, k) => new[] { await Invoke(hist, k!, "Dialog", "FinalizePrompt", FinalizeArgs()) });
+        var events = await h.RunAsync("背景改成黃昏");
         var kinds = events.Select(e => e.Type).ToList();
         Assert.True(kinds.IndexOf("final") < kinds.LastIndexOf("dimensions") && kinds.LastIndexOf("dimensions") < kinds.IndexOf("recommendations"));
         Assert.Equal(7, Assert.Single(events.OfType<RecommendationsEvent>()).Dimensions[0].Sets[0].PresetId);
@@ -695,12 +722,9 @@ public class AgenticOrchestratorTests
                 new RecommendedSet(8, "水彩", null, null, 0.3, Array.Empty<RecommendedFacet>(), "explore", Array.Empty<string>(), 2, 0.25),
             }, Batch: 1),
         })));
-        h.Chat.ThenAsync(async (hist, k) =>
-        {
-            await Invoke(hist, k!, "Session", "SetProfile", new { profile = "portrait" });
-            return new[] { await Invoke(hist, k!, "Dialog", "AskUser", AskArgs()) };
-        });
-        await h.RunAsync("一個銀髮少女");
+        MakeFinalized(h.Session);
+        h.Chat.ThenAsync(async (hist, k) => new[] { await Invoke(hist, k!, "Dialog", "FinalizePrompt", FinalizeArgs()) });
+        await h.RunAsync("背景改成黃昏");
         var completed = Assert.Single(h.Audit.Entries, a => a.EventType == "Turn_Completed");
         Assert.Contains("""presetIds":[7,8],"batch":1,"sets":[{"presetId":7,"reason":"anchored","rank":0,"prob":1},{"presetId":8,"reason":"explore","rank":2,"prob":0.25}]""", completed.PayloadJson!);
     }
@@ -711,16 +735,13 @@ public class AgenticOrchestratorTests
     {
         var h = new Harness();
         h.Recommendations = new StubRecommendations(_ => throw new InvalidOperationException("db down"));
-        h.Chat.ThenAsync(async (hist, k) =>
-        {
-            await Invoke(hist, k!, "Session", "SetProfile", new { profile = "portrait" });
-            return new[] { await Invoke(hist, k!, "Dialog", "AskUser", AskArgs()) };
-        });
-        var events = await h.RunAsync("一個銀髮少女");
+        MakeFinalized(h.Session);
+        h.Chat.ThenAsync(async (hist, k) => new[] { await Invoke(hist, k!, "Dialog", "FinalizePrompt", FinalizeArgs()) });
+        var events = await h.RunAsync("背景改成黃昏");
         Assert.Single(events.OfType<FinalEvent>());
         Assert.Empty(events.OfType<ErrorEvent>());
         Assert.Empty(events.OfType<RecommendationsEvent>());
-        Assert.Equal(1, h.Session.AskCount);
+        Assert.Equal("masterpiece, 1girl", h.Session.LastFinal!.Positive);   // 新的定稿已成立
         var failed = Assert.Single(h.Audit.Entries, a => a.EventType == "Recommendation_Failed");
         Assert.Contains("\"errorClass\":\"InvalidOperationException\"", failed.PayloadJson!);
         Assert.Contains("\"stage\":\"recommend\"", failed.PayloadJson!);
@@ -733,19 +754,16 @@ public class AgenticOrchestratorTests
         var h = new Harness();
         h.Options.RecommendationTimeoutSeconds = 0;        // CancellationTokenSource(0)：token 立刻取消
         h.Recommendations = new ObservingRecommendations();  // 會觀察 ct 的 stub，永遠等到被取消
-        h.Chat.ThenAsync(async (hist, k) =>
-        {
-            await Invoke(hist, k!, "Session", "SetProfile", new { profile = "portrait" });
-            return new[] { await Invoke(hist, k!, "Dialog", "AskUser", AskArgs()) };
-        });
-        var events = await h.RunAsync("一個銀髮少女");
+        MakeFinalized(h.Session);
+        h.Chat.ThenAsync(async (hist, k) => new[] { await Invoke(hist, k!, "Dialog", "FinalizePrompt", FinalizeArgs()) });
+        var events = await h.RunAsync("背景改成黃昏");
         Assert.Single(events.OfType<FinalEvent>());
         Assert.Contains("\"errorClass\":\"Timeout\"", Assert.Single(h.Audit.Entries, a => a.EventType == "Recommendation_Failed").PayloadJson!);
     }
 
     private sealed class ObservingRecommendations : IRecommendationService
     {
-        public async Task<RecommendationsEvent?> BuildAsync(Session s, TurnOutcome outcome, int turnIndex, CancellationToken ct)
+        public async Task<RecommendationsEvent?> BuildAsync(Session s, FinalizedOutcome outcome, int turnIndex, CancellationToken ct)
         {
             await Task.Delay(Timeout.Infinite, ct);
             return null;
@@ -760,14 +778,11 @@ public class AgenticOrchestratorTests
         var stub = new StubRecommendations(_ => Task.FromResult<RecommendationsEvent?>(SomeRecommendations(1)));
         h.Recommendations = stub;
         var off = new Session("off", retrievalEnabled: false);
-        h.Chat.ThenAsync(async (hist, k) =>
-        {
-            await Invoke(hist, k!, "Session", "SetProfile", new { profile = "portrait" });
-            return new[] { await Invoke(hist, k!, "Dialog", "AskUser", AskArgs()) };
-        });
+        MakeFinalized(off);
+        h.Chat.ThenAsync(async (hist, k) => new[] { await Invoke(hist, k!, "Dialog", "FinalizePrompt", FinalizeArgs()) });
         h.GuardChat.Then(FakeChatCompletion.Text(OkVerdict)); h.ClassifierChat.Then(FakeChatCompletion.Text(OkVerdict));
         var events = new List<AgentEvent>();
-        await foreach (var e in h.Build().RunTurnAsync(off, new TurnInput("一個銀髮少女"), default)) events.Add(e);
+        await foreach (var e in h.Build().RunTurnAsync(off, new TurnInput("背景改成黃昏"), default)) events.Add(e);
         Assert.Single(events.OfType<FinalEvent>());
         Assert.Equal(0, stub.Calls);
         Assert.Empty(events.OfType<RecommendationsEvent>());
@@ -826,35 +841,6 @@ public class AgenticOrchestratorTests
         await h.RunAsync(input with { Adoption = input.Adoption! with { Batch = 2 } });
         var completed = Assert.Single(h.Audit.Entries, a => a.EventType == "Turn_Completed");
         Assert.Contains("""replaced":[],"batch":2}""", completed.PayloadJson!);
-    }
-
-    /// <summary>全分支審查 #1：在追問卡上採用時 session 還在收集、AskUser 還在清單上；第 6 條要模型照第 1 條走，
-    /// 還有 missing 的維度就追問。這一輪以 ask 收尾也要照樣記採用、寫 ledger、audit 記 adoption。</summary>
-    [Fact]
-    public async Task Adoption_turn_while_collecting_can_end_in_ask()
-    {
-        var h = new Harness();
-        h.Session.ApplyProfile("portrait", Catalog);
-        h.Session.RecordAsk();                                                          // 剛出過一張追問卡；額度 2 還沒用完
-        Assert.Equal(SessionStatus.Collecting, h.Session.Status);
-        h.Chat.ThenAsync(async (hist, k) =>
-        {
-            await Invoke(hist, k!, "Session", "SetFacetStates", new
-            {
-                updates = new[] { new { facetId = "clothing.upper", state = "covered", note = "採用知識庫 #41720", tags = "purple kimono, detached sleeves" } },
-            });
-            return new[] { await Invoke(hist, k!, "Dialog", "AskUser", AskArgs()) };
-        });
-        var events = await h.RunAsync(AdoptInput());
-
-        Assert.Equal(AdoptInput().Text, Assert.Single(events.OfType<SessionEvent>()).Text);
-        Assert.Equal(1, Assert.Single(h.Session.Adoptions).TurnIndex);
-        Assert.Equal("採用", Assert.Single(h.Session.Ledger.Get(41720)!.OfferedAs).Label);
-        Assert.Equal(FacetState.Covered, h.Session.FacetStates["clothing.upper"]);
-        Assert.Equal("ask", Assert.Single(events.OfType<FinalEvent>()).Kind);
-        Assert.Equal(SessionStatus.Collecting, h.Session.Status);
-        var completed = Assert.Single(h.Audit.Entries, a => a.EventType == "Turn_Completed");
-        Assert.Contains("""adoption":{"presetId":41720,"dimension":"clothing","take":["clothing.upper"]""", completed.PayloadJson!);
     }
 
     [Fact]

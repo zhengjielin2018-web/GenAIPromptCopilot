@@ -66,7 +66,7 @@ public class EndpointTests : IClassFixture<EndpointTests.Factory>
     /// <summary>不打 DB：camera 維度模擬推薦失敗，pose 維度模擬「沒有更多了」，其他回固定的第 2 批。</summary>
     public sealed class StubRecommendations : IRecommendationService
     {
-        public Task<RecommendationsEvent?> BuildAsync(Session s, TurnOutcome outcome, int turnIndex, CancellationToken ct) => Task.FromResult<RecommendationsEvent?>(null);
+        public Task<RecommendationsEvent?> BuildAsync(Session s, FinalizedOutcome outcome, int turnIndex, CancellationToken ct) => Task.FromResult<RecommendationsEvent?>(null);
         public Task<RecommendedDimension> NextAsync(Session s, string dimension, CancellationToken ct) => dimension switch
         {
             "camera" => throw new InvalidOperationException("db down"),
@@ -261,7 +261,7 @@ public class EndpointTests : IClassFixture<EndpointTests.Factory>
     [Fact]
     public async Task Adopt_composes_the_user_sentence_and_streams_it()
     {
-        var s = PortraitSession();
+        var s = FinalizedSession();
         var r = await _client.PostAsJsonAsync($"/api/sessions/{s.Id}/messages", new { adopt = new { presetId = 1, dimension = "scene", take = new[] { "scene.location" } } });
         Assert.Equal(HttpStatusCode.OK, r.StatusCode);
         var body = await r.Content.ReadAsStringAsync();
@@ -274,7 +274,7 @@ public class EndpointTests : IClassFixture<EndpointTests.Factory>
     [Fact]
     public async Task Adopt_with_text_runs_the_adoption_and_ignores_the_text()
     {
-        var s = PortraitSession();
+        var s = FinalizedSession();
         var r = await _client.PostAsJsonAsync($"/api/sessions/{s.Id}/messages",
             new { text = "別理我這句", adopt = new { presetId = 1, dimension = "scene", take = new[] { "scene.location" } } });
         Assert.Equal(HttpStatusCode.OK, r.StatusCode);
@@ -295,14 +295,14 @@ public class EndpointTests : IClassFixture<EndpointTests.Factory>
     [InlineData("""{}""", HttpStatusCode.BadRequest, "text 不可為空")]
     public async Task Adopt_rejects_bad_requests(string json, HttpStatusCode status, string message)
     {
-        var s = PortraitSession();
+        var s = FinalizedSession();
         var r = await _client.PostAsync($"/api/sessions/{s.Id}/messages", new StringContent(json, System.Text.Encoding.UTF8, "application/json"));
         Assert.Equal(status, r.StatusCode);
         Assert.Contains(message, (await r.Content.ReadFromJsonAsync<Dictionary<string, string>>())!["error"]);
     }
 
     [Fact]
-    public async Task Adopt_is_409_when_retrieval_is_off_or_profile_is_unset()
+    public async Task Adopt_is_409_when_retrieval_is_off_or_not_finalized()
     {
         var off = PortraitSession(retrieval: false);
         var r1 = await _client.PostAsJsonAsync($"/api/sessions/{off.Id}/messages", new { adopt = new { presetId = 1, dimension = "scene", take = new[] { "scene.location" } } });
@@ -310,7 +310,17 @@ public class EndpointTests : IClassFixture<EndpointTests.Factory>
         var fresh = _factory.Services.GetRequiredService<SessionStore>().Create();
         var r2 = await _client.PostAsJsonAsync($"/api/sessions/{fresh.Id}/messages", new { adopt = new { presetId = 1, dimension = "scene", take = new[] { "scene.location" } } });
         Assert.Equal(HttpStatusCode.Conflict, r2.StatusCode);
-        Assert.Contains("題材", (await r2.Content.ReadFromJsonAsync<Dictionary<string, string>>())!["error"]);
+        Assert.Contains("定稿後才能採用組合", (await r2.Content.ReadFromJsonAsync<Dictionary<string, string>>())!["error"]);
+    }
+
+    /// <summary>先確認再動手設計 §8：只有定稿卡推薦，採用只在定稿後收。</summary>
+    [Fact]
+    public async Task Adopt_is_409_before_finalize()
+    {
+        var s = PortraitSession();
+        var r = await _client.PostAsJsonAsync($"/api/sessions/{s.Id}/messages", new { adopt = new { presetId = 1, dimension = "scene", take = new[] { "scene.location" } } });
+        Assert.Equal(HttpStatusCode.Conflict, r.StatusCode);
+        Assert.Contains("定稿後才能採用組合", (await r.Content.ReadFromJsonAsync<Dictionary<string, string>>())!["error"]);
     }
 
     [Fact]

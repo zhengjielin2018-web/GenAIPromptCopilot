@@ -41,7 +41,7 @@ public sealed class Session
     public string RetrievalMode => RetrievalEnabled ? "on" : "off";
     public SemaphoreSlim Lock { get; } = new(1, 1);
 
-    /// <summary>推薦組法（2026-09-30 設計 §4.4）：最新一張定稿卡的輪次，換一批只接受它；出了新的追問卡就清掉。
+    /// <summary>推薦組法（2026-09-30 設計 §4.4）：最新一張定稿卡的輪次，換一批只接受它；下一張定稿卡產生推薦前先清掉。
     /// 下面這幾個都不進 Snapshot／Restore：推薦在一輪成立之後才產生，被攔截的輪走不到這裡。</summary>
     public int? LatestSlateTurn { get; private set; }
     /// <summary>最近一次定稿的 positive tag（已排除基礎詞），換一批時重算錨用。</summary>

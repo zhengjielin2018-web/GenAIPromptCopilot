@@ -13,7 +13,7 @@
         <ToolCallCard v-else-if="e.kind === 'tool'" :entry="e" />
         <FailureNotice v-else-if="e.kind === 'failure'" :entry="e" />
         <template v-else-if="e.kind === 'final'">
-          <AskCard v-if="e.data.kind === 'ask'" :data="e.data" :turn-index="e.turnIndex" :recommendations="e.recommendations ?? null" />
+          <AskCard v-if="e.data.kind === 'ask'" :data="e.data" />
           <MessageBubble v-else-if="e.data.kind === 'message'" :data="e.data" />
           <FinalCard v-else-if="e.data.kind === 'finalized'" :data="e.data" :turn-index="e.turnIndex" :recommendations="e.recommendations ?? null" />
           <SaveConsentNotice v-else-if="e.data.kind === 'save_consent_requested'" />

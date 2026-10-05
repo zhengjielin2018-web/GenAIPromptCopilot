@@ -172,10 +172,8 @@ public class SystemPromptBuilderTests
     {
         var (prompt, _) = Make().Build(new Session("s"), ToolNames.Always);
         Assert.Contains("6. 使用者訊息以「採用〈」開頭時", prompt);
-        // 在追問卡上採用時 session 還在收集：照第 1 條走，定稿閘門才不會擋（全分支審查 #1）
-        Assert.Contains("然後照第 1 條判斷", prompt);
-        Assert.Contains("不要再問剛採用的那些 facet", prompt);
-        Assert.Contains("否則直接 `FinalizePrompt`", prompt);
+        // 2026-10-05 起只有定稿卡推薦：採用一定在定稿之後，直接重新定稿（先確認再動手設計 §8）
+        Assert.Contains("然後直接 `FinalizePrompt` 重新定稿", prompt);
         Assert.DoesNotContain("不要追問", prompt);
         // 「照它的」是取代：沒講明時模型把新 tag 加在舊的旁邊（2026-09-29 驗收 T5）
         Assert.Contains("「照它的」是**取代**", prompt);

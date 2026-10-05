@@ -91,7 +91,8 @@ public static class SessionEndpoints
                 {
                     // 拿著鎖再讀 session：沒鎖時讀到的可能是上一輪回滾中的半途狀態
                     if (!s.RetrievalEnabled) return Results.Conflict(new ErrorBody("這段對話沒有知識庫，沒有組合可以採用"));
-                    if (s.Profile is null) return Results.Conflict(new ErrorBody("尚未判定題材，還不能採用組合"));
+                    // 只有定稿卡推薦（先確認再動手設計 §8）；定稿必然已有題材
+                    if (s.Status != SessionStatus.Finalized) return Results.Conflict(new ErrorBody("定稿後才能採用組合"));
                     var preset = await presets.GetAsync(adopt.PresetId, http.RequestAborted);
                     if (preset is null) return Results.BadRequest(new ErrorBody($"找不到 preset #{adopt.PresetId}"));
                     try
@@ -130,7 +131,7 @@ public static class SessionEndpoints
             | `session` | 一定是第一筆：第幾輪（`turnIndex`）、這輪開始時的狀態（`Collecting` 還在收集／`Finalized` 已定稿）；`text?` 採用輪才有，是伺服器組的採用句（2026-09-25），用它換掉使用者泡泡 |
             | `tool_call`／`tool_result` | 模型呼叫的工具與結果，一輪可能好幾次。`tool_result.presets` 是檢索到的 preset（`{id, title, imageUrl, sourceRef}`；`sourceRef` 是資料來源識別，如 `civitai:12345:0`，圖片屬於原作者，顯示時要標出處），可拿 id 去 `GET /api/presets/{id}` |
             | `dimensions` | `{ profile, facetStates: {facetId: state}, facetTags?: {facetId: "sandals"} }`：題材與每個 facet 的狀態，`covered`／`missing`／`waived`（使用者說不指定）／`notApplicable`；`facetTags`（2026-09-25）是模型給已涵蓋 facet 的英文 tag（只有 covered 的有）。輪中有變動就送，成功的一輪最後會再送一次完整的 |
-            | `recommendations` | `{ turnIndex, dimensions: [{ dimension, label, anchored, anchorTags, similar, batch?, sets: [{ presetId, title, imageUrl?, sourceRef?, dist, facets: [{ facetId, label, state, tags }], reason?, anchorTags?, rank?, prob? }] }] }`：整套組合推薦（2026-09-25）：追問時只有被問的維度、定稿時全部維度，跟在 `final`＋`dimensions` 之後；掛在該輪的追問卡／定稿卡下方。`retrieval: off` 的對話沒有。`similar`（2026-09-29）：字面錨不到、改用 facet 向量近似錨。`batch`、每套的 `reason`／`anchorTags`／`rank`／`prob`（2026-09-30，換一批）只有定稿卡有，追問卡是 `null` 而省略。見 `2026-09-25-set-recommendations-design.md` §5、`2026-09-30-recommendation-slate-design.md` §5.1 |
+            | `recommendations` | `{ turnIndex, dimensions: [{ dimension, label, anchored, anchorTags, similar, batch?, sets: [{ presetId, title, imageUrl?, sourceRef?, dist, facets: [{ facetId, label, state, tags }], reason?, anchorTags?, rank?, prob? }] }] }`：整套組合推薦（2026-09-25）：只有定稿那一輪有（2026-10-05 起追問卡不推薦），全部維度，跟在 `final`＋`dimensions` 之後；掛在定稿卡下方。`retrieval: off` 的對話沒有。`similar`（2026-09-29）：字面錨不到、改用 facet 向量近似錨。`batch`、每套的 `reason`／`anchorTags`／`rank`／`prob`：2026-09-30 換一批加的。見 `2026-09-25-set-recommendations-design.md` §5、`2026-09-30-recommendation-slate-design.md` §5.1 |
             | `final` | 這一輪的結果，看 `kind`：`ask` 追問（`preamble`、`asks`）、`message` 討論或回答問題（`message`、`options`）、`finalized` 定稿（`positive`、`negative`、`tips`、`intentSummary`：一句繁中需求描述，可拿來預填 `save-to-shared` 的 `intent`；`positiveSources`／`negativeSources`：逐 tag 的來源 `{tag, origin, presetIds, presetTitle, sourceRef}`，`origin` 是 `rag` 知識庫片段／`adopted` 採用的組合帶進來的／`llm` 模型生成／`base` 基礎詞，由伺服器比對 ledger 與採用紀錄標註）、`save_consent_requested` 使用者要求儲存（見 `save-to-shared`） |
             | `blocked` | 被攔下，`reason`：`Blocked_NSFW`、`Blocked_Celebrity`（輸入端，不會呼叫模型）、`Blocked_Output`（模型輸出被攔）、`Blocked_Upstream`（Gemini 拒絕生成）。session 狀態不變 |
             | `error` | 這一輪失敗，`code`：`timeout`、`protocol_violation`、`turn_failed`。session 已還原到送出前，可以直接重送同一句 |
@@ -145,7 +146,7 @@ public static class SessionEndpoints
             - `404`：session 不存在或已過期
             - `400`：`text` 是空白且沒有 `adopt`；`safety` 不是 `on`／`off`；`adopt` 的 preset 不存在、尚未拆分 facet、`take` 為空或含不屬於該維度／這套沒有 tag 的 facet
             - `403`：`safety: off` 但後端沒開放
-            - `409`：同一個 session 上一輪還沒跑完；`adopt` 但這段對話 `retrieval: off` 或尚未判定題材
+            - `409`：同一個 session 上一輪還沒跑完；`adopt` 但這段對話 `retrieval: off` 或還沒定稿
             """)
         .Produces(StatusCodes.Status200OK, contentType: "text/event-stream")
         .Produces<ErrorBody>(StatusCodes.Status400BadRequest)

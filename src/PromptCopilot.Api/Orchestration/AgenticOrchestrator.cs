@@ -285,12 +285,12 @@ public sealed class AgenticOrchestrator(
     };
 
     /// <summary>推薦是附加的（設計 §5.1、§9）：final 已宣告出去，推薦失敗或逾時只記 audit，不回滾、不發 error。
-    /// 用自己的逾時，不掛在整輪的 token 上——整輪的 token 取消會走回滾路徑。</summary>
+    /// 用自己的逾時，不掛在整輪的 token 上——整輪的 token 取消會走回滾路徑。只有定稿卡推薦（先確認再動手設計 §8）。</summary>
     private async Task<RecommendationsEvent?> TryRecommendAsync(Session session, TurnOutcome outcome, int turnIndex, string version, string text)
     {
-        if (!session.RetrievalEnabled || outcome is not (AskOutcome or FinalizedOutcome)) return null;
+        if (!session.RetrievalEnabled || outcome is not FinalizedOutcome finalized) return null;
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(options.RecommendationTimeoutSeconds));
-        try { return await recommendations.BuildAsync(session, outcome, turnIndex, cts.Token); }
+        try { return await recommendations.BuildAsync(session, finalized, turnIndex, cts.Token); }
         catch (Exception e)
         {
             logger.LogWarning(e, "recommendations failed for session {SessionId} turn {TurnIndex}", session.Id, turnIndex);
