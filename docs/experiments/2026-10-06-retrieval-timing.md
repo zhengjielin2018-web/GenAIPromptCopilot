@@ -78,3 +78,87 @@ session：`ec66be508c1f40b28e0b86c2c6eb5377`、`b7f8d6197a5d4af4b83f9bfe7c98cf21
 - **「借來」平均 1.3 是偏高的估計**：被算成借來的多是通用詞，例如 `standing`、`upper body`、`rainy night`、`neon signs`、`long black hair`、`anime`、`illustration`、`depth of field`。它們剛好出現在第一輪檢索的片段裡，模型之後才寫，照先後規則就算借來，但模型很可能本來就會這樣寫。所以先後規則量到的「借來」是上限，不是確定借用。改後的數字要用同一把尺比，不能當成絕對值讀。
 - **Q1 第 2 次的「推薦一些場景設計」**被模型當成修改：出確認卡並重新定稿，沒有用 `Discuss` 列方向。
 - **延遲**：確認輪中位數 2.9 秒；動手輪有檢索 7.4 秒、沒檢索 6.0 秒。不過有檢索的都是第一個動手輪，同一輪還有 `SetProfile`，兩者不能直接相減。
+
+## 4. 改後（分支 `feat/retrieval-timing` 的 commit `df3a7a5`，2026-10-06）
+
+流程說明加上檢索規則、擋只寫維度名稱的查詢、確認輪檢索結果多留一輪（Task 7–9）。
+
+session：`e05df4402b4e4d0e844544cac58e3c3c`、`3e5c09a82a914f20b822fcfa4caffbad`、`af13e1ff320a4bd4b7b1a9e5d9cf49f0`、`6b92af179847421caf68aee1daa7d4d4`、`12ed4d5be01e4668a38b334319849c1f`、`a86040ae305345c6b3211cf3ec209398`、`27e1096d42d34695bca81a832dda5f3e`、`1f5aab86fa5547eca52abbd4391df219`、`d3125cec7e2b4c41ba687aac71e3840c`
+
+### 4.1 報表
+
+```
+- 動手輪檢索率（不含採用）：34/39（87.2%）
+- 「隨便」確認輪檢索率：4/6（66.7%）
+- 帶參考方向的 Discuss 輪檢索率：2/2（100.0%）
+- 選項帶 presetId：28/123（22.8%）
+- 每次定稿平均（24 次）：借來 6.3、碰巧對上 9.0、llm 3.7、base 3.0、adopted 0.0
+- rag（借來＋碰巧對上）佔非基礎詞：368/457（80.5%）
+- 延遲中位數：確認輪 有檢索 5724 ms（6 輪）／沒檢索 2720 ms（35 輪）；動手輪 有檢索 7173 ms（34 輪）／沒檢索 4906 ms（5 輪）
+```
+
+兩種輪不分有無檢索的延遲中位數：確認輪 2887 → 2773 ms（42 → 41 輪），動手輪 6098 → 7111 ms（40 → 39 輪）。
+
+### 4.2 每步檢索判定（3 次合計）
+
+| 劇本步 | 預期 | OK | MISS | NO-TURN | SKIP | 備註 |
+| :--- | :--- | ---: | ---: | ---: | ---: | :--- |
+| Q1-1 第一句描述 | act | 3 | 0 | 0 | 0 | |
+| Q1-2 追問選第一個 | act | 3 | 0 | 0 | 0 | |
+| Q1-3 追問＋「衣服你幫我設計」 | both | 0 | 3 | 0 | 0 | 動手輪 3/3 有查；確認輪 0/3 |
+| Q1-4 家居感的衣褲 | act | 2 | 1 | 0 | 0 | |
+| Q1-5 推薦一些場景設計 | propose | 3 | 0 | 0 | 0 | 2 次 `Discuss` 帶參考方向；1 次被當成修改（確認卡＋重新定稿） |
+| Q1-6 深夜咖啡廳前 | act | 3 | 0 | 0 | 0 | |
+| Q1-7 改成黑長直髮的上班族女士 | act | 3 | 0 | 0 | 0 | |
+| Q1-8 家居服＋齊劉海＋年輕上班族 | act | 3 | 0 | 0 | 0 | |
+| Q2-1 森林裡的狐狸 | act | 3 | 0 | 0 | 0 | |
+| Q2-2 其他隨便，你決定 | both | 0 | 3 | 0 | 0 | 確認輪 3/3 有查；動手輪 0/3（卡上內容來自確認輪的檢索，見 §5） |
+| Q3-1 穿和服的少女在神社前 | act | 3 | 0 | 0 | 0 | |
+| Q3-2 追問選第一個 | act | 2 | 0 | 1 | 0 | 1 次確認輪失敗（§4.5），下一步重送同一張卡 |
+| Q3-3 追問選第一個 | act | 3 | 0 | 0 | 0 | |
+| Q3-4 讓她更有氣質 | both | 0 | 3 | 0 | 0 | 動手輪 3/3 有查；確認輪 0/3 |
+
+### 4.3 檢索耗時
+
+`SearchPresets` 工具呼叫 40 次，中位數 549 ms，最大 913 ms。
+
+### 4.4 Q1 最後定稿
+
+1. `masterpiece, best quality, highly detailed, photorealistic, cinematic lighting, film grain, young woman, blunt bangs, long hair, thoughtful expression, standing, looking away, loose comfortable top, pajama pants, leather boots, scarf, city street, neon lights, warm ambient lighting, warm glow from nearby cafe, reflections in puddles, rain, close-up, upper body, eye level, bokeh`
+2. `masterpiece, best quality, highly detailed, photorealistic, cinematic lighting, realistic textures, upper body, close-up, shallow depth of field, young woman, young office worker, long black hair, straight hair, blunt bangs, standing, looking at viewer, holding umbrella, cozy oversized sweater, pajama pants, scarf, cozy coffee shop storefront at night, warm lights, illuminated sign, neon lights, warm lighting, rain`
+3. `masterpiece, best quality, highly detailed, photorealistic, cinematic lighting, film grain, upper body, depth of field, young woman, office lady, long black hair, straight hair, blunt bangs, subtle smile, peaceful expression, trench coat, comfy lounge pants, slippers, cafe storefront, warm lighting, glowing signboard, rain, standing, hands in pockets`
+
+### 4.5 協定違規
+
+改後 9 個 session 有 4 次 `Protocol_Violation`、1 次 `Turn_Failed`；基準 1 次、0 次。都發生在確認輪：
+
+- 回答追問時想直接動手：叫了確認輪沒有的 `Session_SetFacetStates`、`FinalizePrompt`。Q3 第 1 次的第 2 步兩次重試都這樣，整輪失敗；同一句再送一次也先違規一次才成功。
+- 「隨便」的確認輪叫 `FinalizePrompt`。
+- 「推薦一些場景設計」被輸入分類器判成隨便（這一輪沒有 `Discuss`），模型仍叫 `Dialog_Discuss`。基準也有 1 次同樣情況。
+
+## 5. 對照與結論
+
+| 指標 | 基準 | 改後 | 目標 | 判定 |
+| :--- | :--- | :--- | :--- | :--- |
+| 動手輪檢索率（採用除外） | 9/40（22.5%） | 34/39（87.2%） | ≥ 90% | 未達（差 1 輪）；排除前一個確認輪已查的則 38/39 |
+| 交給模型決定／推薦的確認輪檢索率 | 0/12 | 6/12（50%） | ≥ 80% | 未達 |
+| 每次定稿「借來」的 tag | 1.3 | 6.3 | 平均 ≥ 2 | 達成 |
+| rag 佔非基礎詞 | 25.1% | 80.5% | ≥ 50% | 達成 |
+| 確認輪延遲中位數增加 | — | −0.1 秒 | ≤ 3 秒 | 達成 |
+| 動手輪延遲中位數增加 | — | +1.0 秒 | ≤ 3 秒 | 達成 |
+
+「交給模型決定／推薦的確認輪」取重播表裡預期 `propose`／`both` 的 12 輪（Q1-3、Q1-5、Q2-2、Q3-4 各 3 次）；報表的「隨便」與帶參考方向的 `Discuss` 輪都落在這 12 輪裡。延遲增加是改後中位數減基準中位數，兩種輪各自不分有無檢索。
+
+**人工檢查（Q1 定稿的穿著與咖啡廳寫法，逐一查知識庫片段）**：基準三次共 6 個寫法，知識庫 0 筆（`comfortable lounge pants`、`comfortable lounge shirt`、`casual lounge pants`、`loungewear pants`、`cozy cafe storefront at night`、`in front of a late-night coffee shop`）。改後三次共 9 個，4 個在知識庫裡有（`pajama pants` ×2、`cozy oversized sweater`、`warm glow from nearby cafe`），5 個沒有（`loose comfortable top`、`comfy lounge pants`、`cozy coffee shop storefront at night`、`cafe storefront`、`glowing signboard`）。第 3 次「家居感的衣褲」那一輪動手輪沒查，穿著兩個寫法都不在知識庫。
+
+**結論**：
+
+- **定稿裡的知識庫內容大幅增加**：rag 佔非基礎詞 25% → 80%，模型自己寫的（llm）每次定稿 13.9 → 3.7 個。「借來」1.3 → 6.3 用的是同一把尺；§3.5 說過這把尺偏高，但前後差距遠大於偏差。
+- **動手輪檢索率差 1 輪未達**：5 個沒查的動手輪裡，4 個的內容來自前一個確認輪已經查過的結果（Q2-2 三次、Q1 第 3 次的推薦），流程說明本來就允許「確認卡的內容是從上一輪檢索結果挑的，就直接用那個片段」。真正漏查的只有 Q1 第 3 次的「家居感的衣褲」。指標的定義沒有排除這種情況，所以照定義判未達。
+- **確認輪的檢索只做到一半**：「隨便」3/3、「推薦」3/3；單項委託（追問的回答裡夾「衣服你幫我設計」）0/3、模糊要求（「讓她更有氣質」）0/3。這兩種情況動手輪都有查，所以定稿仍有借用，但確認卡上的內容與解讀是模型自己寫的。
+- **協定違規變多**（§4.5）：1 → 4 次，其中 1 輪失敗，使用者會看到錯誤。樣本小，但方向一致：確認輪拿到檢索結果後，模型比較常想直接動手。
+- **退路判斷**（設計 §6.4）：
+  - 檢索率未達的部分不是「模型不照流程查」，而是指標把合理的跳過算成漏查，加上確認輪兩種情況沒觸發，所以不建議直接上程式把關。
+  - 確認輪的兩種情況，可以在流程說明的確認輪段落補寫判斷例子。
+  - 協定違規可以在同一段補一句「查完照常用 Confirm」。
+  - 這兩項都要再跑一次實驗才知道有沒有效，交給使用者決定。
