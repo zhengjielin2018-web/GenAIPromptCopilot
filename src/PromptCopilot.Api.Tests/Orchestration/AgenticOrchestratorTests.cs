@@ -1390,15 +1390,20 @@ public class AgenticOrchestratorTests
             var toolMsg = new ChatMessageContent(AuthorRole.Tool, content: null); toolMsg.Items.Add(new FunctionResultContent(call, search)); hist.Add(toolMsg);
             return new[] { await Invoke(hist, k!, "Dialog", "Confirm", new { message = "穿著我會從知識庫挑粉紅睡衣。" }) };
         });
-        await h.RunAsync("衣服你幫我設計");
+        var proposeEvents = await h.RunAsync("衣服你幫我設計");
+        Assert.Empty(proposeEvents.OfType<ErrorEvent>());
         Assert.True(HasSnippet(h.Session.ChatHistory));                               // 確認輪收尾沒壓
 
+        // 在 lambda 裡斷言會被 RunTurnAsync 的 catch-all 吞掉（回滾＋ErrorEvent），所以只記錄、跑完再斷言
+        var sawSnippetInAct = false;
         h.Chat.ThenAsync(async (hist, k) =>
         {
-            Assert.True(HasSnippet(hist));                                            // 動手輪看得到
+            sawSnippetInAct = HasSnippet(hist);                                       // 動手輪看得到
             return new[] { await Invoke(hist, k!, "Dialog", "AskUser", AskArgs()) };
         });
-        await h.RunAsync(new TurnInput(ConfirmValidator.AcceptText, Confirmed: new ConfirmedInput(h.Session.PendingConfirmation!, null)));
+        var actEvents = await h.RunAsync(new TurnInput(ConfirmValidator.AcceptText, Confirmed: new ConfirmedInput(h.Session.PendingConfirmation!, null)));
+        Assert.Empty(actEvents.OfType<ErrorEvent>());
+        Assert.True(sawSnippetInAct);
         Assert.False(HasSnippet(h.Session.ChatHistory));                              // 動手輪收尾壓掉
     }
 }
