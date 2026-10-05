@@ -9,6 +9,7 @@
 | 5 | eval #5、#18 行為不符預期；§14 端到端要在新 HEAD 重跑 | 調整 | 低 |
 | 10 | 整套組合推薦的已知限制：錨靠模型翻譯、SQL 的錨比對比 C# 粗、換了內容沒重給 `tags` 時舊錨留著；採用輪失敗後重試是純文字，HTTP 層就失敗時填回的是佔位字 | 限制 | 低 |
 | 11 | `AskUser`／`Discuss` 的 call args 壓縮對 Gemini 不生效 | 成本 | 低 |
+| 13 | 模型呼叫裸名工具（`Confirm`）：SK 的未定義路徑繞過 filter 與 tool 預算，整輪跑到 120 秒逾時 | 穩定性 | 中 |
 | 6 | 子專案 4 全分支審查留下的小項目 | 整理 | 低 |
 
 ---
@@ -43,7 +44,7 @@
 （2026-09-29：同義詞抓不到已由 facet 向量的近似錨處理，見已修正 #12。）
 
 - **錨靠模型翻譯**：追問階段的錨是模型在 `SetFacetStates` 給的英文 `tags`，翻錯或沒給就退回無錨（「最接近你描述的組合」），不報錯。定稿後多了 positive 的 tag 當錨，會好一些。
-- **採用那一輪失敗後的重試是純文字**：失敗條目的「重試」把伺服器組的採用句填回輸入框，重送時走一般訊息，模型仍會照第 6 條處理（還在收集且有 missing 的維度就追問，否則定稿），但 `Adoption` 沒記帳、tag 不會標 `adopted`。要重新採用請再按一次卡片上的「採用」。
+- **採用那一輪失敗後的重試是純文字**：失敗條目的「重試」把伺服器組的採用句填回輸入框，重送時走一般訊息（2026-10-05 起打字會先過確認輪，模型出確認卡，使用者按下後的動手輪才照 `flow-act.md` 第 5 條處理採用句並重新定稿），但 `Adoption` 沒記帳、tag 不會標 `adopted`。要重新採用請再按一次卡片上的「採用」。
 - **錨的 SQL 比對只做小寫與底線換空白**：`RecommendAsync` 對資料庫的 tag 只做 `replace(lower(tag), '_', ' ')`，沒有 `TagAttribution.Normalize` 剝 `:數字` 權重、外層括號、連續空白那幾步，比 C# 端的比對粗。`facet_tags` 保留原始 SD 語法（如 `(sandals:1.2)`）時有兩個後果：一是錨會漏配，漏到不足 2 筆就退回無錨，卡片照樣有推薦，所以不容易被發現；二是被別的錨撈進來的候選，回報的 `anchorTags` 由 C# 以完整的 `Normalize` 算，可能多列一個 SQL 沒真正比中的錨。
 - **covered facet 換了內容、模型沒重給 `tags` 時舊錨留著**：`Session.ApplyFacetStates` 只在 `tags` 非空時覆寫、狀態改成非 covered 時才移除。使用者把涼鞋改成靴子，模型維持 covered 卻沒附新的 `tags`，推薦仍以 `sandals` 當錨。
 - **採用在 HTTP 層就失敗時，重試填回的是佔位字**：上一條「重試」指的是 `session` 事件之後才失敗（泡泡已換成伺服器組的整句）。若採用在 HTTP 層就被擋（`400`／`409`，或在 `session` 事件之前斷線），失敗條目的原文還是前端的佔位字「採用〈標題〉…」，按「重試」會把這串佔位字填回輸入框；照送只是一般訊息，而且沒有任何 tag。要重新採用請再按一次卡片上的「採用」。
@@ -53,6 +54,14 @@
 - 現象（2026-09-29，修 #8 時用真的 connector 查到）：`HistoryTrimmer.CompressTurn` 第二條（call args 去掉 `tags`，主規格 §4.7）改的是 model 訊息 `Items` 裡的 `FunctionCallContent.Arguments`，但 Google connector 送出時讀的是 `GeminiChatMessageContent.ToolCalls`（`GeminiFunctionToolCall.Arguments`），兩份不是同一個物件。實測改了 `FunctionCallContent.Arguments` 後，下一次請求的 `functionCall.args` 原封不動。
 - 影響：選項的 `tags` 每輪留在 history 裡，量比 #8 的片段本文小很多。
 - 修正方向：跟 #8 一樣重建 model 訊息，但 `GeminiFunctionToolCall` 與帶 tool call 的 `GeminiChatMessageContent` 建構子都是 internal，而且要保住 `thoughtSignature`（Gemini 3 要求帶回）。可以考慮直接改請求本文（像 `GeminiRoleFixHandler` 那樣在 HTTP 層處理）。
+
+## 13. 模型呼叫裸名工具，整輪跑到逾時（穩定性，中，2026-10-05）
+
+- 現象：log 先出一次 `Protocol_Violation`（attempt 1），之後 120 秒內呼叫 Gemini 幾十次（一輪 80–100 次，`9bbb5888…` 是 47 次）、工具呼叫幾乎是 0–3 次，最後 `Turn_Failed`（`Timeout`，約 120,013 ms）。回滾是正確的，待確認還在，同一個 session 再按一次就成功。
+- 根因：kernel 宣告的工具名是 `<Plugin>_<Function>`（`Dialog_Confirm`），模型有時只寫 `Confirm`。SK 對沒宣告的函式回「Function call request for a function that wasn't defined」，這條路徑不經過任何 `IAutoFunctionInvocationFilter`，所以 `ToolBudgetFilter` 數不到、`TerminalToolFilter` 也停不下來；模型收到錯誤就重送同一個呼叫，直到逾時。
+- 證據：驗收時在 Gemini 回應 log 暫時印出 functionCall 名稱查到（4 個並行的確認輪合計 182 次裸名 `Confirm`，查完已拿掉）；經過見 `docs/eval-cases.md`「2026-10-05 先確認再動手」一節的補充觀察，以及先確認再動手設計 §5 的驗收後修正說明。發生率跟 prompt 文字有關：沒改過的 prompt 12/12 正常、只加一個空格 4/6、兩個流程段寫明完整名稱之後 12/12 與兩個 20 輪 build 都沒有逾時。
+- 目前的緩解：`flow-propose.md`／`flow-act.md` 都寫完整名稱；最後審查那一波讓純文字補救與預算用盡的強制收尾提示，也改用該輪 kernel 實際宣告的全名（`Dialog_Confirm`、`Dialog_FinalizePrompt`…）。system prompt 的 `{{TOOLS}}` 仍是裸名（它是量測過的主 prompt 的一部分，沒動）。
+- 修正方向：在 Gemini 回應的處理層（`GeminiRoleFixHandler` 那一類）把唯一對得上的裸名改寫成全名，和（或）限制一輪最多呼叫 Gemini 幾次；之後把 `{{TOOLS}}` 也換成全名並重新量測。
 
 ## 6. 子專案 4 全分支審查留下的小項目
 

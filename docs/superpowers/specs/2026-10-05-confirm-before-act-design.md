@@ -181,7 +181,7 @@ record PendingConfirmation(int TurnIndex, string Message, IReadOnlyList<string> 
   - `confirmDisplay(data, choice)`：泡泡暫代字（「對，就這樣」或選項原文）。
 - **`ConfirmCard.vue`**：正文；沒有選項時一顆「對，就這樣」，有選項時每個選項一顆；底下一行「不對的話，直接在下面打字修正。」。顏色與追問卡（黃）、失敗（洋紅）區分。按鈕只在 `turnIndex === pendingConfirmTurn` 且不在跑時可按；過期的停用，title「已經有新的進展，這張卡不能再按」。
 - **store**：`confirm(turnIndex, choice)` → `runTurn(confirmDisplay(…), { confirm: … })`。非 200 時顯示伺服器的理由（同 `adopt`）。
-- **失敗**：確認輪的失敗條目不帶原文（不出「重試：把原文放回輸入框」，放回去送出會變成新意見），訊息後補一句「確認卡還在，可以再按一次」。
+- **失敗**：按確認那一輪的失敗條目不帶原文（不出「重試：把原文放回輸入框」，放回去送出會變成新意見），訊息後補一句「確認卡還在，可以再按一次」。
 - **輸入框**：有可按的確認卡時，placeholder 改成「按上面的按鈕套用；在這裡打字會當成修正」。
 - **追問卡**：選項照舊填進輸入框，送出走確認輪。推薦條拿掉（§8）。
 
@@ -262,7 +262,7 @@ C3 若 3 次中有沒給選項的，先調 `flow-propose.md` 的衝突說明再�
 - README：第 5 行「每次追問與定稿另外推薦」改成只有定稿；第 45 行一輪對話的描述補上確認輪／動手輪。
 - [2026-09-25 整套組合推薦](2026-09-25-set-recommendations-design.md)與 [2026-09-30 推薦組法](2026-09-30-recommendation-slate-design.md)：講到追問卡推薦的地方標註「2026-10-05 起只在定稿卡」。
 - `docs/eval-cases.md`：S1、S7、G5 標註已改；新增 C1–C10 一節。
-- `docs/單輪流程說明.md` 描述的是 `scripts/demo.py`，這次不動。
+- `docs/單輪流程說明.md` 描述的是 `scripts/demo.py`，主體不動；只有 §8 的 C# 端說明（推薦與採用）在最後審查時改成現行做法。
 
 ## 12. 不做
 

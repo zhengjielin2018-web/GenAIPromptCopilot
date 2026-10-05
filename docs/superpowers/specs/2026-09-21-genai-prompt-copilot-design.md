@@ -280,9 +280,9 @@ LedgerEntry {
 - `DiscussStreak` 只由 `FinalizePrompt` 歸零，`AskUser` 不歸零。這讓 `Collecting` 期間的未定稿回合有一個好講的上限：**最多 8 次 `Discuss` + 2 次 `AskUser` = 10 輪**，之後工具清單只剩 `FinalizePrompt`，強制交出一版。跟 §4.6「tool 預算耗盡 → 強制定稿」同一個機制。
 - `Finalized` 之後 `Discuss` 不受 streak 限制。護欄擋的是「一直不交東西」，不是「一直講話」；東西交出去了就沒有要保護的對象。
 - `Finalized` 後使用者要求修改（「把背景改成黃昏」）→ 仍是 `Finalized`，LLM 直接重新 `FinalizePrompt`；`AskUser` 永久不可用。**純討論（「negative 裡的 `blurry` 是幹嘛的？」）走 `Discuss`，不出新定稿卡**；只有真的動到 prompt 才重新定稿（§4.6 會擋下「`Discuss` 卻改了 facet」）。
+- 一個 session = 一個 prompt。「再來一張」由前端開新 session。
 
 > 2026-10-05 起修改要先過確認輪：模型用 `Confirm` 講要改哪裡（有歧義時給解讀），使用者按下確認後的動手輪才 `FinalizePrompt`。
-- 一個 session = 一個 prompt。「再來一張」由前端開新 session。
 
 儲存：`IMemoryCache`，滑動過期 2 小時。不落 DB。
 
