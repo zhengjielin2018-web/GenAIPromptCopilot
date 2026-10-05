@@ -158,6 +158,11 @@ record PendingConfirmation(int TurnIndex, string Message, IReadOnlyList<string> 
 - 純文字補救提示（`CallWithReminderAsync`）改成列出這一輪實際有的終止型工具，不再寫死四個名字。
 - `intentSummary` 範例句不動。
 
+> 2026-10-05 驗收修正輪（`docs/eval-cases.md` 該節的 C2、C8 與補充觀察）：
+> - Session 事實的追問改成「追問已用：N／上限 M」；有題材時多「還有 missing facet 的維度」；確認輪在 Collecting 時多「確認之後的下一步」，由伺服器照 §5.2 的規則先算好。§5.1「回答追問」與「第一次描述題材」都照它寫下一步。「隨便」要逐維度寫出補成什麼。
+> - §5.2 的區塊在「隨便」那張卡（待確認的 `AutoComplete`）最後一句改成「使用者把沒講的交給你決定：補齊每一個 missing 的 facet 就是他確認的內容…」：原句「不要加入確認以外的改動」會讓定稿幾乎不補。
+> - 兩個流程段寫明工具的完整名稱（`Dialog_Confirm` 等）：模型只寫 `Confirm` 時，SK 回「function that wasn't defined」，模型一直重送，直到整輪逾時。
+
 ## 6. 邊界情況
 
 1. **工具預算用完**：確認輪 → 強制 `Confirm`（只掛 `Confirm`，提示「tool 呼叫預算已用盡。請立即以目前的理解呼叫 Confirm 跟使用者確認」）；動手輪 → 照舊強制 `FinalizePrompt`。`ForcedConfirmAsync` 與 `ForcedFinalizeAsync` 共用同一個骨架。

@@ -1,6 +1,12 @@
+using System.Text.RegularExpressions;
+using System.Threading.Channels;
+using Microsoft.SemanticKernel;
 using PromptCopilot.Api.Configuration;
 using PromptCopilot.Api.Orchestration;
+using PromptCopilot.Api.Plugins;
+using PromptCopilot.Api.Safety;
 using PromptCopilot.Api.Sessions;
+using PromptCopilot.Api.Streaming;
 using PromptCopilot.Api.Tests.Configuration;
 
 namespace PromptCopilot.Api.Tests.Orchestration;
@@ -199,6 +205,117 @@ public class SystemPromptBuilderTests
         Assert.Contains("他沒有按按鈕，這句不算確認", prompt);
         Assert.DoesNotContain("先 `SetFacetStates`", prompt);              // 動手輪的流程不在確認輪出現
         Assert.DoesNotContain("{{", prompt);
+    }
+
+    /// <summary>確認輪要知道追問上限，才講得對確認後是追問還是定稿（Task 10 驗收 C2：只給已用次數時模型猜成直接定稿）。</summary>
+    [Fact]
+    public void Facts_show_asks_used_against_the_limit()
+    {
+        var s = new Session("s"); s.RecordAsk();
+        var builder = new SystemPromptBuilder(Catalog, new OrchestratorOptions { MaxAskCount = 3 }, Path.Combine(AppContext.BaseDirectory, "Prompts"));
+        Assert.Contains("- 追問已用：1／上限 3", builder.Build(s, ToolNames.ProposeAlways, TurnKind.Propose).Prompt);
+        Assert.Contains("- 追問已用：0／上限 2\n", Make().Build(new Session("s"), ToolNames.Always, TurnKind.Act).Prompt);
+    }
+
+    /// <summary>確認輪的「確認之後的下一步」照動手輪的規則先算好（Task 10 驗收 C2：模型自己判斷時，回答追問常講成直接定稿、額度用完又講成接著問）。</summary>
+    [Fact]
+    public void Propose_facts_precompute_the_next_step_by_the_act_turn_rules()
+    {
+        static string Line(string prompt) => prompt.Split('\n').SingleOrDefault(l => l.StartsWith("- 確認之後的下一步：")) ?? "";
+        var fresh = new Session("s");
+        Assert.Equal("- 確認之後的下一步：接著問他沒講到的面向（追問還剩 2 次）；使用者說隨便／你決定／直接給我時一律直接定稿",
+            Line(Make().Build(fresh, ToolNames.ProposeAlways, TurnKind.Propose).Prompt));
+        Assert.Equal("", Line(Make().Build(fresh, ToolNames.Always, TurnKind.Act).Prompt));        // 動手輪不給
+
+        var s = new Session("s"); s.ApplyProfile("portrait", Catalog); s.RecordAsk();
+        var labels = string.Join("、", Catalog.DimensionsOf("portrait").Select(d => Catalog.DimensionLabel(d, "portrait")));
+        Assert.Equal($"- 確認之後的下一步：接著問 {labels} 裡這次回答沒補齊的維度（追問還剩 1 次）；這次回答把它們全補齊了才是直接定稿；使用者說隨便／你決定／直接給我時一律直接定稿",
+            Line(Make().Build(s, ToolNames.ProposeAlways, TurnKind.Propose).Prompt));
+
+        s.RecordAsk();
+        Assert.Equal("- 確認之後的下一步：直接定稿（追問已用完）", Line(Make().Build(s, ToolNames.ProposeAlways, TurnKind.Propose).Prompt));
+
+        var done = new Session("s"); done.ApplyProfile("portrait", Catalog);
+        done.ApplyFacetStates(Catalog.DimensionsOf("portrait").SelectMany(d => Catalog.FacetsOf("portrait", d)).ToDictionary(id => id, _ => FacetState.Covered), Catalog);
+        Assert.Equal("- 確認之後的下一步：直接定稿（沒有還缺的維度）", Line(Make().Build(done, ToolNames.ProposeAlways, TurnKind.Propose).Prompt));
+
+        done.RecordFinalize(new FinalPrompt("p", "n", "t", "i"));
+        Assert.Equal("", Line(Make().Build(done, ToolNames.ProposeAlways, TurnKind.Propose).Prompt));   // 定稿後的修改：動手輪一律重新定稿，不給這行
+    }
+
+    /// <summary>「還有 missing facet 的維度」跟動手輪的判斷同一套：covered、waived、有委託 note 的 facet 都不算缺。</summary>
+    [Fact]
+    public void Facts_list_dimensions_that_still_have_missing_facets()
+    {
+        var s = new Session("s"); s.ApplyProfile("portrait", Catalog);
+        Assert.Contains("- 還有 missing facet 的維度：" + string.Join("、", Catalog.Dimensions.Where(d => Catalog.FacetsOf("portrait", d).Count > 0).Select(d => Catalog.DimensionLabel(d, "portrait"))),
+            Make().Build(s, ToolNames.ProposeAlways, TurnKind.Propose).Prompt);
+
+        var style = Catalog.FacetsOf("portrait", "style");
+        var scene = Catalog.FacetsOf("portrait", "scene");
+        var states = style.ToDictionary(id => id, _ => FacetState.Covered);
+        foreach (var id in scene.Skip(1)) states[id] = FacetState.Waived;
+        s.ApplyFacetStates(states, Catalog);
+        s.FacetNotes[scene[0]] = "使用者委託此項";                                   // 唯一還 missing 的 scene facet 有委託 note
+        var line = Make().Build(s, ToolNames.ProposeAlways, TurnKind.Propose).Prompt.Split('\n').Single(l => l.StartsWith("- 還有 missing facet 的維度："));
+        Assert.DoesNotContain(Catalog.DimensionLabel("style", "portrait"), line);
+        Assert.DoesNotContain(Catalog.DimensionLabel("scene", "portrait"), line);
+        Assert.Contains(Catalog.DimensionLabel("camera", "portrait"), line);
+
+        var none = new Session("s"); none.ApplyProfile("portrait", Catalog);
+        none.ApplyFacetStates(Catalog.Dimensions.SelectMany(d => Catalog.FacetsOf("portrait", d)).ToDictionary(id => id, _ => FacetState.Covered), Catalog);
+        Assert.Contains("- 還有 missing facet 的維度：（無）", Make().Build(none, ToolNames.ProposeAlways, TurnKind.Propose).Prompt);
+        Assert.DoesNotContain("- 還有 missing facet 的維度：", Make().Build(new Session("s"), ToolNames.ProposeAlways, TurnKind.Propose).Prompt);   // 還沒判定題材：沒有這行
+    }
+
+    [Fact]
+    public void Propose_prompt_states_the_next_step_rule_and_asks_for_concrete_fill_ins()
+    {
+        var (prompt, _) = Make().Build(new Session("s"), ToolNames.ProposeAlways, TurnKind.Propose);
+        Assert.Contains("確認之後的下一步", prompt);
+        Assert.Contains("「Session 事實」的「追問已用」小於上限", prompt);
+        Assert.Contains("「確認後我會接著問 X、Y」", prompt);
+        Assert.Contains("「確認後直接定稿，沒講的留白」", prompt);
+        Assert.Contains("逐一寫出你要補的具體內容", prompt);
+        Assert.Contains("不能只寫「其他我來決定」", prompt);
+        Assert.DoesNotContain("確認之後的下一步", Make().Build(new Session("s"), ToolNames.Always, TurnKind.Act).Prompt);
+    }
+
+    /// <summary>Task 10 驗收：「其他你決定」確認後，「不要加入確認以外的改動」把 AutoFill 的補齊壓掉，定稿幾乎沒補。</summary>
+    [Fact]
+    public void Act_prompt_says_delegated_fill_ins_are_part_of_the_confirmation()
+    {
+        var pending = new PendingConfirmation(1, "風格補寫實攝影、鏡頭補半身平視，確認後直接定稿。", Array.Empty<string>(), true);
+        var (prompt, _) = Make().Build(new Session("s"), ToolNames.Always, TurnKind.Act, new ConfirmedInput(pending, null));
+        Assert.Contains("**補齊每一個 missing 的 facet**", prompt);
+        Assert.Contains("卡上沒列到的 missing facet 也依畫面補上合理的 tag", prompt);
+        Assert.Contains("不算「確認以外的改動」", prompt);
+        Assert.Contains("使用者說隨便／你決定時的補齊不算，見第 4 條", prompt);
+        // 伺服器組的確認區塊：「隨便」那張卡不再說「不要加入確認以外的改動」，改說補齊就是確認的內容
+        Assert.Contains("使用者把沒講的交給你決定：補齊每一個 missing 的 facet 就是他確認的內容", prompt);
+        Assert.DoesNotContain("這一輪照上面的內容動手，不要加入確認以外的改動。", prompt);
+        Assert.DoesNotContain("補齊每一個 missing 的 facet", Make().Build(new Session("s"), ToolNames.ProposeAlways, TurnKind.Propose).Prompt);
+        Assert.Contains("只列維度名稱（「補齊風格、鏡頭、穿著」）也不行", Make().Build(new Session("s"), ToolNames.ProposeAlways, TurnKind.Propose).Prompt);
+    }
+
+    /// <summary>Task 10 修正輪：模型偶爾只寫 `Confirm`（宣告名是 `Dialog_Confirm`），SK 回「function that wasn't defined」後它一直重叫到整輪逾時。
+    /// 流程段寫明完整名稱；這裡確認寫的每個名稱都對得到 AgentKernelFactory 註冊的函式（外掛名 Session／Dialog 跟它一致）。</summary>
+    [Fact]
+    public void Flow_sections_name_tools_by_their_declared_names()
+    {
+        var propose = Make().Build(new Session("s"), ToolNames.ProposeAlways, TurnKind.Propose).Prompt;
+        var act = Make().Build(new Session("s"), ToolNames.Always, TurnKind.Act).Prompt;
+        Assert.Contains("`Dialog_Confirm`", propose);
+        Assert.Contains("`Dialog_FinalizePrompt`", act);
+
+        var all = ToolNames.Always.Union(ToolNames.ProposeAlways).Union(new[] { ToolNames.AskUser, ToolNames.Discuss, ToolNames.RequestSaveConsent, ToolNames.Confirm }).ToHashSet();
+        var turn = new TurnContext(new Session("s"), 1, GuardResult.Ok(false), all, Channel.CreateUnbounded<AgentEvent>().Writer);
+        var kernel = Kernel.CreateBuilder().Build();
+        AgentKernelFactory.AddFiltered(kernel, "Session", new SessionPlugin(turn, Catalog), all);
+        AgentKernelFactory.AddFiltered(kernel, "Dialog", new DialogPlugin(turn, Catalog, new OrchestratorOptions()), all);
+        var named = Regex.Matches(propose + act, @"`(Session|Dialog)_(\w+)`").Select(m => (m.Groups[1].Value, m.Groups[2].Value)).Distinct().ToList();
+        Assert.True(named.Count >= 7, $"只找到 {named.Count} 個完整名稱");
+        foreach (var (plugin, fn) in named) Assert.True(kernel.Plugins.TryGetFunction(plugin, fn, out _), $"{plugin}_{fn} 沒有註冊");
     }
 
     [Fact]
