@@ -81,11 +81,13 @@ public sealed class RecommendationService(FacetCatalog catalog, IEmbeddingClient
         return (vectors[0], anchorTexts.Select((a, i) => (a, v: vectors[i + 1])).ToDictionary(x => (x.a.dim, x.a.facet), x => x.v));
     }
 
-    /// <summary>本 session 使用者講過的原話依序串接；伺服器組的採用句不算（那不是描述）。</summary>
+    /// <summary>本 session 使用者講過的原話依序串接；伺服器組的採用句與接受句「對，就這樣」不算（那不是描述）。
+    /// 選了解讀的確認句（「換掉飲料，改拿雨傘」）照算：那是使用者選定的內容（先確認再動手設計 Review Focus 1）。</summary>
     public static string JoinedUserText(ChatHistory history) =>
         string.Join("\n", history
-            .Where(m => m.Role == AuthorRole.User && !string.IsNullOrWhiteSpace(m.Content) && !m.Content!.TrimStart().StartsWith(AdoptionPrefix, StringComparison.Ordinal))
-            .Select(m => m.Content!.Trim()));
+            .Where(m => m.Role == AuthorRole.User && !string.IsNullOrWhiteSpace(m.Content))
+            .Select(m => m.Content!.Trim())
+            .Where(t => !t.StartsWith(AdoptionPrefix, StringComparison.Ordinal) && t != ConfirmValidator.AcceptText));
 
     /// <summary>查詢向量的來源：最後 500 字。定稿前後同一個查法，跟片段的中文 embedding 同語言。</summary>
     public static string QueryText(ChatHistory history)

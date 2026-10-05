@@ -390,4 +390,16 @@ public class RecommendationServiceTests
         Assert.Equal(0, s.SlateBatch("style"));
         Assert.Empty(s.SeenFor("style"));
     }
+
+    /// <summary>Review Focus 1：「對，就這樣」不是畫面描述，不能進查詢向量；選了解讀的句子是使用者選定的內容，照算。</summary>
+    [Fact]
+    public void Query_text_skips_the_plain_accept_sentence_but_keeps_a_chosen_interpretation()
+    {
+        var h = new ChatHistory();
+        h.AddUserMessage("一位女士拿著相機和飲料");
+        h.AddUserMessage("對，就這樣");
+        h.AddUserMessage("讓她拿雨傘");
+        h.AddUserMessage("換掉飲料，改拿雨傘");
+        Assert.Equal("一位女士拿著相機和飲料\n讓她拿雨傘\n換掉飲料，改拿雨傘", RecommendationService.JoinedUserText(h));
+    }
 }

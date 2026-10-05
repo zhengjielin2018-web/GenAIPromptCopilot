@@ -81,7 +81,10 @@ public sealed class AgenticOrchestrator(
     {
         var text = input.Text;
         var turnIndex = session.TurnIndex + 1;
-        writer.TryWrite(new SessionEvent(session.Id, turnIndex, session.Status.ToString(), input.Adoption is null ? null : text));
+        // 先確認再動手（設計 §3.1）：使用者打字是確認輪；按確認卡或採用是動手輪
+        var kind = input.Confirmed is null && input.Adoption is null ? TurnKind.Propose : TurnKind.Act;
+        // 動手輪的使用者句是伺服器組的（採用句、確認句）：session 事件帶回去，前端拿它換掉泡泡的暫代字
+        writer.TryWrite(new SessionEvent(session.Id, turnIndex, session.Status.ToString(), kind == TurnKind.Act ? text : null));
 
         // 一輪是一個交易（多輪 §5.6）。快照要在 guard 之前取：guard 自己也會丟例外
         // （上游攔截、分類器壞掉），那些一樣要走下面的攔截／失敗路徑，不能整包飛出去。
@@ -94,8 +97,11 @@ public sealed class AgenticOrchestrator(
         string version = "";
         try
         {
-            // ① 輸入側：不進 kernel、不計任何東西
-            var g = await guard.CheckAsync(text, input.SafetyOn, ct);
+            // ① 輸入側：不進 kernel、不計任何東西。按確認那一輪不再檢查（設計 §3.5）：內容是上一輪模型的確認文字，
+            //    已過輸出審查；原話在確認輪已過輸入審查。「隨便」沿用確認輪當時的判斷。
+            var g = input.Confirmed is { } confirmed
+                ? GuardResult.Ok(confirmed.Pending.AutoComplete)
+                : await guard.CheckAsync(text, input.SafetyOn, ct);
             if (g.Blocked)
             {
                 trace.Result = g.BlockCode!;
@@ -110,8 +116,11 @@ public sealed class AgenticOrchestrator(
             session.TurnIndex = turnIndex;
             // 採用：快照已取，這裡記的帳失敗時會一起回滾（設計 §9）。TurnIndex 由這裡補，端點不知道輪次。
             if (input.Adoption is { } adoption) session.RecordAdoption(adoption with { TurnIndex = turnIndex }, input.AdoptedPreset!);
-            var tools = ToolSetBuilder.Build(session, g.WantsAutoComplete, options);
-            if (g.WantsAutoComplete) session.AutoFill = true;
+            // 動手輪消耗待確認；快照已取，這一輪失敗時會跟著回來，卡片可以再按（設計 §3.4）
+            if (kind == TurnKind.Act) session.ClearPendingConfirmation();
+            var tools = ToolSetBuilder.Build(session, kind, g.WantsAutoComplete, options);
+            // 「隨便」在確認輪只記進待確認，按下確認的動手輪才打開（設計 §3.4）
+            if (kind == TurnKind.Act && g.WantsAutoComplete) session.AutoFill = true;
             var turn = new TurnContext(session, turnIndex, g, tools, writer, snapshot.FacetStates) { SafetyOn = input.SafetyOn };
             trace.Turn = turn;
             (var systemPrompt, version) = prompts.Build(session, tools);
@@ -133,7 +142,7 @@ public sealed class AgenticOrchestrator(
                 var firstAt = firstText is null ? -1 : session.ChatHistory.IndexOf(firstText);
                 if (firstAt >= 0) session.ChatHistory.RemoveAt(firstAt);
                 var retryText = await CallWithReminderAsync(turn, kernel,
-                    "你必須呼叫 AskUser、Discuss、FinalizePrompt 或 RequestSaveConsent 之一來結束這一輪，不要只回純文字。", tct);
+                    $"你必須呼叫 {string.Join("、", ToolNames.Terminal.Where(tools.Contains).Order())} 之一來結束這一輪，不要只回純文字。", tct);
                 if (firstAt >= 0 && turn.Outcome is null && retryText is null) session.ChatHistory.Insert(firstAt, firstText!);
             }
             if (turn.Outcome is null)
@@ -159,12 +168,14 @@ public sealed class AgenticOrchestrator(
             if (turn.Outcome is BudgetExhaustedOutcome)
             {
                 await TryAuditAsync(new AuditEntry(session.Id, turnIndex, "Tool_Budget_Exhausted", version, text, JsonSerializer.Serialize(new { turn.ToolCalls }, Json)));
-                await ForcedFinalizeAsync(turn, tct);
+                // 確認輪強制收尾也只能確認：強制定稿等於跳過確認（設計 §6.1）
+                if (kind == TurnKind.Act) await ForcedFinishAsync(turn, ToolNames.FinalizePrompt, ForcedFinalizeReminder, tct);
+                else await ForcedFinishAsync(turn, ToolNames.Confirm, ForcedConfirmReminder, tct);
             }
 
             stage = "apply";
             if (turn.Outcome is BlockedOutcome blocked) throw new OutputBlockedException(blocked.Reason);
-            if (turn.Outcome is null or BudgetExhaustedOutcome) throw new ProtocolViolationException("強制定稿後仍無定稿");
+            if (turn.Outcome is null or BudgetExhaustedOutcome) throw new ProtocolViolationException("強制收尾後仍沒有結果");
             // 事件先算好再修剪：宣告出去的那一刻起，這一輪不能再被任何失敗回滾
             var final = ToFinal(turn.Outcome);
             var dimensions = turn.DimensionsSnapshot();
@@ -180,7 +191,8 @@ public sealed class AgenticOrchestrator(
             // 主規格 §5.1：LLM 挑了哪些 facet 追問、哪些被使用者放掉，要在紀錄裡看得見。
             // 不另開事件（沒有行為掛在上面），寫進這一筆的 payload。
             await TryAuditAsync(new AuditEntry(session.Id, turnIndex, "Turn_Completed", version, text,
-                Payload(("retrieval", session.RetrievalMode), ("safety", input.SafetyOn ? "on" : "off"), ("outcome", turn.Outcome.GetType().Name), ("toolCalls", turn.ToolCalls), ("rejections", turn.Rejections),
+                Payload(("retrieval", session.RetrievalMode), ("safety", input.SafetyOn ? "on" : "off"), ("outcome", turn.Outcome.GetType().Name),
+                    ("confirmChoices", turn.Outcome is ConfirmOutcome co ? (object)co.Choices.Count : null), ("toolCalls", turn.ToolCalls), ("rejections", turn.Rejections),
                     ("askedFacetIds", turn.Outcome is AskOutcome ask ? ask.Asks.SelectMany(a => a.MissingFacetIds).Distinct().ToArray() : null),
                     ("waivedFacetIds", session.FacetStates.Where(kv => kv.Value == FacetState.Waived).Select(kv => kv.Key).ToArray()),
                     ("tagOrigins", turn.Outcome is FinalizedOutcome fin ? TagOrigins(fin.Final.PositiveSources) : null),
@@ -192,6 +204,7 @@ public sealed class AgenticOrchestrator(
                             ("batch", d.Batch),
                             ("sets", d.Batch is null ? null : d.Sets.Select(x => new { presetId = x.PresetId, reason = x.Reason, rank = x.Rank, prob = x.Prob }).ToArray()))).ToArray(),
                     }),
+                    ("confirmed", input.Confirmed is null ? null : (object)Fields(("turnIndex", input.Confirmed.Pending.TurnIndex), ("choice", input.Confirmed.Choice))),
                     ("adoption", input.Adoption is null ? null : (object)Fields(
                         ("presetId", input.Adoption.PresetId), ("dimension", input.Adoption.Dimension),
                         ("take", input.Adoption.Taken.Keys.ToArray()), ("filled", input.Adoption.Filled), ("replaced", input.Adoption.Replaced),
@@ -336,13 +349,17 @@ public sealed class AgenticOrchestrator(
         finally { history.Remove(note); }
     }
 
-    /// <summary>主規格 §4.6：預算耗盡後只掛 FinalizePrompt 再跑一次；kernel 不掛 budget filter，否則第一個 call 又被擋。</summary>
-    private async Task ForcedFinalizeAsync(TurnContext turn, CancellationToken ct)
+    private const string ForcedFinalizeReminder = "tool 呼叫預算已用盡。請立即以現有資訊呼叫 FinalizePrompt 定稿，不要再檢索。facetStates 依使用者原話標記：使用者講過的 facet 標 covered，真的沒講的才是 missing，其餘 missing 的 facet 留白。";
+    private const string ForcedConfirmReminder = "tool 呼叫預算已用盡。請立即以目前的理解呼叫 Confirm 跟使用者確認，不要再檢索。";
+
+    /// <summary>主規格 §4.6：預算耗盡後只掛一個收尾工具再跑一次；kernel 不掛 budget filter，否則第一個 call 又被擋。
+    /// 動手輪掛 FinalizePrompt，確認輪掛 Confirm（先確認再動手設計 §6.1）。</summary>
+    private async Task ForcedFinishAsync(TurnContext turn, string tool, string reminder, CancellationToken ct)
     {
         turn.Outcome = null;
-        turn.ForcedFinalize = true;          // 定稿閘門放行：只剩 FinalizePrompt，擋下去這一輪就沒有出口
-        var kernel = kernelFactory(turn, new HashSet<string> { ToolNames.FinalizePrompt }, false);
-        await CallWithReminderAsync(turn, kernel, "tool 呼叫預算已用盡。請立即以現有資訊呼叫 FinalizePrompt 定稿，不要再檢索。facetStates 依使用者原話標記：使用者講過的 facet 標 covered，真的沒講的才是 missing，其餘 missing 的 facet 留白。", ct);
+        turn.ForcedFinalize = tool == ToolNames.FinalizePrompt;   // 定稿閘門放行：只剩 FinalizePrompt，擋下去這一輪就沒有出口
+        var kernel = kernelFactory(turn, new HashSet<string> { tool }, false);
+        await CallWithReminderAsync(turn, kernel, reminder, ct);
     }
 
     private static void EnsureSystemMessage(ChatHistory h, string prompt)

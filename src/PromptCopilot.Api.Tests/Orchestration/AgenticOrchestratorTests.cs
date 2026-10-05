@@ -88,6 +88,24 @@ public class AgenticOrchestratorTests
             await foreach (var e in Build().RunTurnAsync(Session, input, ct)) events.Add(e);
             return events;
         }
+
+        /// <summary>動手輪的輸入：先在 session 放一筆待確認（確認輪會留下的樣子），再組按下按鈕的那一輪。
+        /// choices 有給時 choice 預設選第 0 個。</summary>
+        public TurnInput ConfirmInput(string message = "我理解的畫面：一個銀髮少女。", IReadOnlyList<string>? choices = null, int? choice = null,
+            bool autoComplete = false, Session? session = null)
+        {
+            var s = session ?? Session;
+            var c = choices ?? Array.Empty<string>();
+            var pending = new PendingConfirmation(s.TurnIndex, message, c, autoComplete);
+            s.SetPendingConfirmation(pending);
+            var confirmed = new ConfirmedInput(pending, c.Count == 0 ? null : choice ?? 0);
+            return new TurnInput(confirmed.Text, Confirmed: confirmed);
+        }
+
+        /// <summary>跑一輪動手輪。RunAsync 照樣排一個分類器判定：動手輪用不到，留在佇列裡無妨；要驗「沒呼叫分類器」看 GuardChat.Calls。</summary>
+        public Task<List<AgentEvent>> ActAsync(string message = "我理解的畫面：一個銀髮少女。", IReadOnlyList<string>? choices = null, int? choice = null,
+            bool autoComplete = false) =>
+            RunAsync(ConfirmInput(message, choices, choice, autoComplete));
     }
 
     /// <summary>模擬 connector 已把這個 tool 跑完：照 SK 的方式把 call 與 result 塞進 history。</summary>
@@ -149,7 +167,7 @@ public class AgenticOrchestratorTests
             await Invoke(hist, k!, "Session", "SetProfile", new { profile = "portrait" });
             return new[] { await Invoke(hist, k!, "Dialog", "AskUser", AskArgs()) };
         });
-        var events = await h.RunAsync("一個銀髮少女");
+        var events = await h.ActAsync();
 
         var final = Assert.Single(events.OfType<FinalEvent>());
         Assert.Equal("ask", final.Kind); Assert.Single(final.Asks!);
@@ -175,13 +193,14 @@ public class AgenticOrchestratorTests
     {
         var h = new Harness();
         h.Chat.ThenAsync(async (hist, k) => { await Invoke(hist, k!, "Session", "SetProfile", new { profile = "portrait" }); throw new InvalidOperationException("boom"); });
-        var events = await h.RunAsync("一個少女");
+        var events = await h.ActAsync();
 
         var err = Assert.Single(events.OfType<ErrorEvent>());
         Assert.Equal("turn_failed", err.Code);
         Assert.Null(h.Session.Profile);
         Assert.Empty(h.Session.ChatHistory);
         Assert.Equal(0, h.Session.TurnIndex);
+        Assert.NotNull(h.Session.PendingConfirmation);                    // 動手輪失敗：待確認回來，卡片可以再按
         Assert.Contains(h.Audit.Entries, a => a.EventType == "Turn_Failed" && a.PayloadJson!.Contains("InvalidOperationException"));
     }
 
@@ -249,7 +268,7 @@ public class AgenticOrchestratorTests
             throw new InvalidOperationException("boom");
         });
 
-        var e = h.Build().RunTurnAsync(h.Session, new TurnInput("一個少女"), default).GetAsyncEnumerator();
+        var e = h.Build().RunTurnAsync(h.Session, h.ConfirmInput(), default).GetAsyncEnumerator();
         Assert.True(await e.MoveNextAsync());
         Assert.IsType<SessionEvent>(e.Current);
 
@@ -300,13 +319,14 @@ public class AgenticOrchestratorTests
             await Invoke(hist, k!, "Session", "SetProfile", new { profile = "portrait" });
             return new[] { FakeChatCompletion.Text("  ") };            // 空白：包不成 Discuss
         }).Then(FakeChatCompletion.Text("  "));
-        var events = await h.RunAsync("一個少女");
+        var events = await h.ActAsync();
 
         Assert.Equal("protocol_violation", Assert.Single(events.OfType<ErrorEvent>()).Code);
         Assert.Empty(events.OfType<FinalEvent>());
         Assert.Null(h.Session.Profile);
         Assert.Empty(h.Session.ChatHistory);
         Assert.Equal(0, h.Session.TurnIndex);
+        Assert.NotNull(h.Session.PendingConfirmation);                    // Review Focus 4
         Assert.Contains(h.Audit.Entries, a => a.EventType == "Turn_Failed" && a.PayloadJson!.Contains("ProtocolViolationException"));
     }
 
@@ -339,7 +359,7 @@ public class AgenticOrchestratorTests
             await Task.Delay(Timeout.Infinite, tct);           // 這一輪永遠不回來
             return Array.Empty<ChatMessageContent>();
         });
-        var events = await h.RunAsync("一個少女");               // 沒有例外浮到這裡
+        var events = await h.ActAsync();               // 沒有例外浮到這裡
 
         Assert.Equal("timeout", Assert.Single(events.OfType<ErrorEvent>()).Code);
         Assert.Null(h.Session.Profile);
@@ -372,7 +392,7 @@ public class AgenticOrchestratorTests
             await Invoke(hist, k!, "Session", "SetProfile", new { profile = "portrait" });
             return new[] { await Invoke(hist, k!, "Dialog", "AskUser", AskArgs()) };
         });
-        await h.RunAsync("一個銀髮少女");
+        await h.ActAsync();
         h.Chat.ThenAsync(async (hist, k) => new[] { await Invoke(hist, k!, "Dialog", "Discuss", DiscussArgs("好")) });
         await h.RunAsync("寫實跟動漫差在哪");
         Assert.Single(h.Session.ChatHistory, m => m.Role == AuthorRole.System);
@@ -429,14 +449,13 @@ public class AgenticOrchestratorTests
         h.Chat.ThenAsync(async (hist, k) =>
         {
             seen = k!.Turn().SafetyOn;
-            await Invoke(hist, k!, "Session", "SetProfile", new { profile = "portrait" });
-            return new[] { await Invoke(hist, k!, "Dialog", "AskUser", AskArgs()) };
+            return new[] { await Invoke(hist, k!, "Dialog", "Confirm", new { message = "我理解的畫面：穿 bikini 的女生。" }) };
         });
 
         var events = await h.RunAsync(new TurnInput("穿著改成 bikini", SafetyOn: false));
 
         Assert.Empty(events.OfType<BlockedEvent>());
-        Assert.Equal("ask", Assert.Single(events.OfType<FinalEvent>()).Kind);
+        Assert.Equal("confirm", Assert.Single(events.OfType<FinalEvent>()).Kind);
         Assert.False(seen);
         var completed = Assert.Single(h.Audit.Entries, a => a.EventType == "Turn_Completed");
         Assert.Contains("\"safety\":\"off\"", completed.PayloadJson!);
@@ -508,7 +527,7 @@ public class AgenticOrchestratorTests
         })
         .ThenAsync(async (hist, k) => new[] { await Invoke(hist, k!, "Dialog", "AskUser", AskArgs()) });
 
-        var events = await h.RunAsync("一個少女");
+        var events = await h.ActAsync();
 
         Assert.Equal(AuthorRole.Tool, LastOnTheWire(h.Chat.Calls[1]).Role);
         Assert.Equal("ask", Assert.Single(events.OfType<FinalEvent>()).Kind);
@@ -564,7 +583,7 @@ public class AgenticOrchestratorTests
             return new[] { await Invoke(hist, k!, "Dialog", "FinalizePrompt", new { positivePrompt = "masterpiece, 1girl", negativePrompt = "lowres", tips = "t", intentSummary = "一個女生", facetStates = Array.Empty<object>() }) };
         });
 
-        var events = await h.RunAsync("一個少女");
+        var events = await h.ActAsync();
 
         Assert.Equal("finalized", Assert.Single(events.OfType<FinalEvent>()).Kind);
         Assert.Equal(new[] { 0 }, SystemIndexes(h.Session.ChatHistory));
@@ -602,7 +621,7 @@ public class AgenticOrchestratorTests
             Assert.Single(k.Plugins["Dialog"]);                        // 只剩 FinalizePrompt
             return new[] { await Invoke(hist, k, "Dialog", "FinalizePrompt", new { positivePrompt = "masterpiece, 1girl", negativePrompt = "lowres", tips = "t", intentSummary = "一個女生", facetStates = Array.Empty<object>() }) };
         });
-        var events = await h.RunAsync("一個少女");
+        var events = await h.ActAsync();
         var final = Assert.Single(events.OfType<FinalEvent>());
         Assert.Equal("finalized", final.Kind);
         Assert.NotNull(final.PositiveSources);
@@ -687,7 +706,7 @@ public class AgenticOrchestratorTests
             await Invoke(hist, k!, "Session", "SetProfile", new { profile = "portrait" });
             return new[] { await Invoke(hist, k!, "Dialog", "AskUser", AskArgs()) };
         });
-        var events = await h.RunAsync("一個銀髮少女");
+        var events = await h.ActAsync();
         Assert.Equal("ask", Assert.Single(events.OfType<FinalEvent>()).Kind);
         Assert.Equal(0, stub.Calls);
         Assert.Empty(events.OfType<RecommendationsEvent>());
@@ -701,7 +720,7 @@ public class AgenticOrchestratorTests
         h.Recommendations = new StubRecommendations(_ => Task.FromResult<RecommendationsEvent?>(SomeRecommendations(1)));
         MakeFinalized(h.Session);
         h.Chat.ThenAsync(async (hist, k) => new[] { await Invoke(hist, k!, "Dialog", "FinalizePrompt", FinalizeArgs()) });
-        var events = await h.RunAsync("背景改成黃昏");
+        var events = await h.ActAsync("我會把背景改成黃昏。");
         var kinds = events.Select(e => e.Type).ToList();
         Assert.True(kinds.IndexOf("final") < kinds.LastIndexOf("dimensions") && kinds.LastIndexOf("dimensions") < kinds.IndexOf("recommendations"));
         Assert.Equal(7, Assert.Single(events.OfType<RecommendationsEvent>()).Dimensions[0].Sets[0].PresetId);
@@ -724,7 +743,7 @@ public class AgenticOrchestratorTests
         })));
         MakeFinalized(h.Session);
         h.Chat.ThenAsync(async (hist, k) => new[] { await Invoke(hist, k!, "Dialog", "FinalizePrompt", FinalizeArgs()) });
-        await h.RunAsync("背景改成黃昏");
+        await h.ActAsync("我會把背景改成黃昏。");
         var completed = Assert.Single(h.Audit.Entries, a => a.EventType == "Turn_Completed");
         Assert.Contains("""presetIds":[7,8],"batch":1,"sets":[{"presetId":7,"reason":"anchored","rank":0,"prob":1},{"presetId":8,"reason":"explore","rank":2,"prob":0.25}]""", completed.PayloadJson!);
     }
@@ -737,7 +756,7 @@ public class AgenticOrchestratorTests
         h.Recommendations = new StubRecommendations(_ => throw new InvalidOperationException("db down"));
         MakeFinalized(h.Session);
         h.Chat.ThenAsync(async (hist, k) => new[] { await Invoke(hist, k!, "Dialog", "FinalizePrompt", FinalizeArgs()) });
-        var events = await h.RunAsync("背景改成黃昏");
+        var events = await h.ActAsync("我會把背景改成黃昏。");
         Assert.Single(events.OfType<FinalEvent>());
         Assert.Empty(events.OfType<ErrorEvent>());
         Assert.Empty(events.OfType<RecommendationsEvent>());
@@ -756,7 +775,7 @@ public class AgenticOrchestratorTests
         h.Recommendations = new ObservingRecommendations();  // 會觀察 ct 的 stub，永遠等到被取消
         MakeFinalized(h.Session);
         h.Chat.ThenAsync(async (hist, k) => new[] { await Invoke(hist, k!, "Dialog", "FinalizePrompt", FinalizeArgs()) });
-        var events = await h.RunAsync("背景改成黃昏");
+        var events = await h.ActAsync("我會把背景改成黃昏。");
         Assert.Single(events.OfType<FinalEvent>());
         Assert.Contains("\"errorClass\":\"Timeout\"", Assert.Single(h.Audit.Entries, a => a.EventType == "Recommendation_Failed").PayloadJson!);
     }
@@ -782,7 +801,7 @@ public class AgenticOrchestratorTests
         h.Chat.ThenAsync(async (hist, k) => new[] { await Invoke(hist, k!, "Dialog", "FinalizePrompt", FinalizeArgs()) });
         h.GuardChat.Then(FakeChatCompletion.Text(OkVerdict)); h.ClassifierChat.Then(FakeChatCompletion.Text(OkVerdict));
         var events = new List<AgentEvent>();
-        await foreach (var e in h.Build().RunTurnAsync(off, new TurnInput("背景改成黃昏"), default)) events.Add(e);
+        await foreach (var e in h.Build().RunTurnAsync(off, h.ConfirmInput("我會把背景改成黃昏。", session: off), default)) events.Add(e);
         Assert.Single(events.OfType<FinalEvent>());
         Assert.Equal(0, stub.Calls);
         Assert.Empty(events.OfType<RecommendationsEvent>());
@@ -847,11 +866,7 @@ public class AgenticOrchestratorTests
     public async Task Ordinary_turn_session_event_has_no_text_and_no_adoption_in_audit()
     {
         var h = new Harness();
-        h.Chat.ThenAsync(async (hist, k) =>
-        {
-            await Invoke(hist, k!, "Session", "SetProfile", new { profile = "portrait" });
-            return new[] { await Invoke(hist, k!, "Dialog", "AskUser", AskArgs()) };
-        });
+        h.Chat.ThenAsync(async (hist, k) => new[] { await Invoke(hist, k!, "Dialog", "Confirm", new { message = "我理解的畫面：一個銀髮少女。" }) });
         var events = await h.RunAsync("一個銀髮少女");
         Assert.Null(Assert.Single(events.OfType<SessionEvent>()).Text);
         Assert.DoesNotContain("adoption", Assert.Single(h.Audit.Entries, a => a.EventType == "Turn_Completed").PayloadJson!);
@@ -1015,7 +1030,7 @@ public class AgenticOrchestratorTests
             await Invoke(hist, k!, "Session", "SetProfile", new { profile = "portrait" });
             return new[] { await Invoke(hist, k!, "Dialog", "AskUser", AskArgs()) };
         });
-        await h.RunAsync("一個銀髮少女");
+        await h.ActAsync();
         h.Chat.Then(_ =>
         {
             UpstreamDiagnostics.Current!.CallStarted();
@@ -1047,5 +1062,173 @@ public class AgenticOrchestratorTests
         Assert.Equal(2, lines.Count);
         Assert.Matches(@"^Turn s1#1 Blocked_NSFW - tools=0 gemini=0 \d+ ms$", lines[0]);
         Assert.Matches(@"^Turn s1#1 Turn_Failed InvalidOperationException tools=0 gemini=0 \d+ ms$", lines[1]);
+    }
+
+    // ---- 先確認再動手（2026-10-05）----
+
+    /// <summary>設計 §3.1：打字的那一輪只拿得到確認、討論與檢索；想直接改畫面也沒有工具可叫。</summary>
+    [Fact]
+    public async Task Text_turn_only_offers_confirm_discuss_and_search()
+    {
+        var h = new Harness();
+        h.Chat.ThenAsync(async (hist, k) =>
+        {
+            Assert.Equal(new[] { "Confirm", "Discuss" }, k!.Plugins["Dialog"].Select(f => f.Name).Order());
+            Assert.False(k.Plugins.Contains("Session"));
+            return new[] { await Invoke(hist, k, "Dialog", "Confirm", new { message = "我理解的畫面：一位金色短髮的中年女士站在雨夜的霓虹街頭。" }) };
+        });
+        var events = await h.RunAsync("一位金色短髮的中年女士站在雨夜的霓虹街頭");
+
+        var final = Assert.Single(events.OfType<FinalEvent>());
+        Assert.Equal("confirm", final.Kind);
+        Assert.Empty(final.Choices!);
+        Assert.Null(Assert.Single(events.OfType<SessionEvent>()).Text);
+        Assert.Null(h.Session.Profile);                                                // 確認前什麼都沒動
+        Assert.Equal(1, h.Session.PendingConfirmation!.TurnIndex);
+        var completed = Assert.Single(h.Audit.Entries, a => a.EventType == "Turn_Completed");
+        Assert.Contains("\"outcome\":\"ConfirmOutcome\"", completed.PayloadJson!);
+        Assert.Contains("\"confirmChoices\":0", completed.PayloadJson!);
+        Assert.DoesNotContain("\"confirmed\"", completed.PayloadJson!);
+    }
+
+    /// <summary>設計 §3.5：按下確認的那一輪不跑輸入分類器、session 事件帶「對，就這樣」，只拿得到動手的工具，待確認被消耗掉。</summary>
+    [Fact]
+    public async Task Confirmed_turn_skips_the_guard_and_gets_the_tools_that_change_the_picture()
+    {
+        var h = new Harness();
+        h.Chat.ThenAsync(async (hist, k) =>
+        {
+            Assert.Equal("對，就這樣", hist.Last(m => m.Role == AuthorRole.User).Content);
+            Assert.Contains("SetProfile", k!.Plugins["Session"].Select(f => f.Name));
+            Assert.DoesNotContain("Confirm", k.Plugins["Dialog"].Select(f => f.Name));
+            Assert.DoesNotContain("Discuss", k.Plugins["Dialog"].Select(f => f.Name));
+            await Invoke(hist, k, "Session", "SetProfile", new { profile = "portrait" });
+            return new[] { await Invoke(hist, k, "Dialog", "AskUser", AskArgs()) };
+        });
+        var events = await h.ActAsync();
+
+        Assert.Empty(h.GuardChat.Calls);
+        Assert.Equal("對，就這樣", Assert.Single(events.OfType<SessionEvent>()).Text);
+        Assert.Equal("ask", Assert.Single(events.OfType<FinalEvent>()).Kind);
+        Assert.Null(h.Session.PendingConfirmation);
+        var completed = Assert.Single(h.Audit.Entries, a => a.EventType == "Turn_Completed");
+        Assert.Contains("\"confirmed\":{\"turnIndex\":0}", completed.PayloadJson!);      // 沒有選項：choice 省略
+        Assert.Equal("對，就這樣", completed.RawInput);
+    }
+
+    [Fact]
+    public async Task Choosing_an_interpretation_sends_that_sentence_and_audits_the_choice()
+    {
+        var h = new Harness();
+        MakeFinalized(h.Session);
+        h.Chat.ThenAsync(async (hist, k) =>
+        {
+            Assert.Equal("換掉飲料，改拿雨傘", hist.Last(m => m.Role == AuthorRole.User).Content);
+            return new[] { await Invoke(hist, k!, "Dialog", "FinalizePrompt", FinalizeArgs()) };
+        });
+        var events = await h.ActAsync("她兩手已經拿著相機和飲料，你想要哪一種？", new[] { "換掉相機，改拿雨傘", "換掉飲料，改拿雨傘" }, choice: 1);
+
+        Assert.Equal("換掉飲料，改拿雨傘", Assert.Single(events.OfType<SessionEvent>()).Text);
+        Assert.Equal("finalized", Assert.Single(events.OfType<FinalEvent>()).Kind);
+        Assert.Contains("\"confirmed\":{\"turnIndex\":0,\"choice\":1}", Assert.Single(h.Audit.Entries, a => a.EventType == "Turn_Completed").PayloadJson!);
+    }
+
+    /// <summary>設計 §3.4：「隨便」在確認輪只記在待確認裡；按下確認才打開 AutoFill，動手輪也不給 AskUser。</summary>
+    [Fact]
+    public async Task Auto_complete_is_switched_on_only_by_the_confirmed_turn()
+    {
+        var h = new Harness();
+        h.GuardChat.Then(FakeChatCompletion.Text("""{"nsfw":false,"realPerson":false,"personName":null,"wantsAutoComplete":true,"reason":"ok"}"""));
+        h.Chat.ThenAsync(async (hist, k) =>
+        {
+            Assert.Equal(new[] { "Confirm" }, k!.Plugins["Dialog"].Select(f => f.Name));
+            return new[] { await Invoke(hist, k, "Dialog", "Confirm", new { message = "我會直接定稿，風格補成寫實攝影。" }) };
+        });
+        await h.RunAsync("隨便，直接給我");
+        Assert.False(h.Session.AutoFill);
+        Assert.True(h.Session.PendingConfirmation!.AutoComplete);
+
+        h.Chat.ThenAsync(async (hist, k) =>
+        {
+            Assert.DoesNotContain("AskUser", k!.Plugins["Dialog"].Select(f => f.Name));
+            await Invoke(hist, k, "Session", "SetProfile", new { profile = "portrait" });
+            return new[] { await Invoke(hist, k, "Dialog", "FinalizePrompt", FinalizeArgs()) };
+        });
+        var events = await h.RunAsync(new TurnInput(ConfirmValidator.AcceptText, Confirmed: new ConfirmedInput(h.Session.PendingConfirmation!, null)));
+        Assert.Equal("finalized", Assert.Single(events.OfType<FinalEvent>()).Kind);
+        Assert.True(h.Session.AutoFill);
+    }
+
+    /// <summary>設計 §6.1：確認輪預算用完只能強制確認，不能強制定稿（那等於跳過確認）。</summary>
+    [Fact]
+    public async Task Budget_exhausted_in_a_text_turn_forces_confirm_with_only_that_tool()
+    {
+        var h = new Harness();
+        h.Chat.ThenAsync((hist, k) =>
+        {
+            k!.Turn().Outcome = new BudgetExhaustedOutcome();
+            return Task.FromResult<IReadOnlyList<ChatMessageContent>>(new[] { FakeChatCompletion.Text("") });
+        })
+        .ThenAsync(async (hist, k) =>
+        {
+            Assert.Equal(AuthorRole.System, hist.Last().Role);
+            Assert.Contains("Confirm", hist.Last().Content!);
+            Assert.Single(k!.Plugins);
+            Assert.Equal("Confirm", Assert.Single(k.Plugins["Dialog"]).Name);
+            return new[] { await Invoke(hist, k, "Dialog", "Confirm", new { message = "我理解的畫面：一個女生。" }) };
+        });
+        var events = await h.RunAsync("一個女生");
+        Assert.Equal("confirm", Assert.Single(events.OfType<FinalEvent>()).Kind);
+        Assert.Null(h.Session.Profile);
+        Assert.Equal(SessionStatus.Collecting, h.Session.Status);
+        Assert.Contains(h.Audit.Entries, a => a.EventType == "Tool_Budget_Exhausted");
+    }
+
+    /// <summary>Review Focus 5：確認卡出現後打「好」是新的一輪確認，不是動手；討論不清掉待確認，新的確認卡取代舊的。</summary>
+    [Fact]
+    public async Task Typed_ok_after_a_confirm_card_is_another_text_turn()
+    {
+        var h = new Harness();
+        h.Session.SetPendingConfirmation(new PendingConfirmation(0, "我理解的畫面：一個女生。", Array.Empty<string>(), false));
+        h.Chat.ThenAsync(async (hist, k) =>
+        {
+            Assert.False(k!.Plugins.Contains("Session"));
+            return new[] { await Invoke(hist, k, "Dialog", "Discuss", DiscussArgs("要套用的話請按確認卡上的按鈕。")) };
+        });
+        await h.RunAsync("好");
+        Assert.Equal("我理解的畫面：一個女生。", h.Session.PendingConfirmation!.Message);
+
+        h.Chat.ThenAsync(async (hist, k) => new[] { await Invoke(hist, k!, "Dialog", "Confirm", new { message = "我理解的畫面：一個穿紅衣的女生。" }) });
+        await h.RunAsync("衣服要紅色");
+        Assert.Equal(2, h.Session.PendingConfirmation!.TurnIndex);
+        Assert.Equal("我理解的畫面：一個穿紅衣的女生。", h.Session.PendingConfirmation.Message);
+    }
+
+    /// <summary>設計 §3.4：採用輪也是動手輪，清掉待確認。</summary>
+    [Fact]
+    public async Task Adoption_clears_a_pending_confirmation()
+    {
+        var h = new Harness();
+        MakeFinalized(h.Session);
+        h.Session.SetPendingConfirmation(new PendingConfirmation(0, "m", Array.Empty<string>(), false));
+        h.Chat.ThenAsync(async (hist, k) => new[] { await Invoke(hist, k!, "Dialog", "FinalizePrompt", FinalizeArgs()) });
+        await h.RunAsync(AdoptInput());
+        Assert.Null(h.Session.PendingConfirmation);
+    }
+
+    /// <summary>補救提示只列這一輪實際有的收尾工具（設計 §5.3）。</summary>
+    [Fact]
+    public async Task Retry_reminder_names_only_this_turns_terminal_tools()
+    {
+        var h = new Harness();
+        h.Chat.Then(FakeChatCompletion.Text("好的。"))
+              .ThenAsync(async (hist, k) =>
+              {
+                  Assert.Contains("你必須呼叫 Confirm、Discuss 之一", hist.Last().Content!);
+                  Assert.DoesNotContain("FinalizePrompt", hist.Last().Content!);
+                  return new[] { await Invoke(hist, k!, "Dialog", "Discuss", DiscussArgs("好")) };
+              });
+        await h.RunAsync("寫實跟動漫差在哪");
+        Assert.Equal(2, h.Chat.Calls.Count);
     }
 }

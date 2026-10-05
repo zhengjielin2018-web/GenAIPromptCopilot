@@ -15,30 +15,53 @@ public class ToolSetBuilderTests
         if (finalized) s.RecordFinalize(new FinalPrompt("p", "n", "t", "i"));
         return s;
     }
+    private static IReadOnlySet<string> Propose(Session s, bool auto = false) => ToolSetBuilder.Build(s, TurnKind.Propose, auto, O);
+    private static IReadOnlySet<string> Act(Session s, bool auto = false) => ToolSetBuilder.Build(s, TurnKind.Act, auto, O);
+    private static readonly string[] PictureTools = { ToolNames.SetProfile, ToolNames.SetFacetStates, ToolNames.AskUser, ToolNames.FinalizePrompt };
 
+    /// <summary>先確認再動手設計 §3.1：打字的那一輪只能確認、討論、檢索。</summary>
     [Fact]
-    public void Fresh_session_has_ask_and_discuss_but_no_save_consent()
+    public void Propose_turn_has_confirm_discuss_and_search_but_nothing_that_changes_the_picture()
     {
-        var t = ToolSetBuilder.Build(S(), false, O);
-        Assert.Contains(ToolNames.AskUser, t); Assert.Contains(ToolNames.Discuss, t);
-        Assert.DoesNotContain(ToolNames.RequestSaveConsent, t);
-        Assert.True(ToolNames.Always.IsSubsetOf(t));
+        var t = Propose(S());
+        Assert.Equal(new HashSet<string> { ToolNames.Confirm, ToolNames.Discuss, ToolNames.SearchPresets, ToolNames.SearchSimilarPrompts }, t);
+        Assert.Empty(t.Intersect(PictureTools));
     }
 
     [Fact]
-    public void Ask_disappears_at_max_ask_count() => Assert.DoesNotContain(ToolNames.AskUser, ToolSetBuilder.Build(S(asks: 2), false, O));
+    public void Act_turn_has_the_picture_tools_and_no_confirm_or_discuss()
+    {
+        var t = Act(S());
+        Assert.True(ToolNames.Always.IsSubsetOf(t));
+        Assert.Contains(ToolNames.AskUser, t);
+        Assert.DoesNotContain(ToolNames.Confirm, t);
+        Assert.DoesNotContain(ToolNames.Discuss, t);
+        Assert.DoesNotContain(ToolNames.RequestSaveConsent, t);
+    }
 
     [Fact]
-    public void Discuss_disappears_at_max_streak_while_collecting() => Assert.DoesNotContain(ToolNames.Discuss, ToolSetBuilder.Build(S(streak: 8), false, O));
+    public void Ask_disappears_at_max_ask_count() => Assert.DoesNotContain(ToolNames.AskUser, Act(S(asks: 2)));
 
     [Fact]
-    public void Discuss_stays_when_finalized_regardless_of_streak()
+    public void Discuss_disappears_at_max_streak_while_collecting() => Assert.DoesNotContain(ToolNames.Discuss, Propose(S(streak: 8)));
+
+    [Fact]
+    public void Finalized_propose_turn_keeps_discuss_and_offers_save_consent()
     {
         var s = S(streak: 8); s.RecordFinalize(new FinalPrompt("p", "n", "t", "i"));
-        var t = ToolSetBuilder.Build(s, false, O);
+        var t = Propose(s);
         Assert.Contains(ToolNames.Discuss, t);
-        Assert.DoesNotContain(ToolNames.AskUser, t);
         Assert.Contains(ToolNames.RequestSaveConsent, t);
+        Assert.Contains(ToolNames.Confirm, t);
+    }
+
+    [Fact]
+    public void Finalized_act_turn_has_no_ask_and_no_save_consent()
+    {
+        var t = Act(S(finalized: true));
+        Assert.DoesNotContain(ToolNames.AskUser, t);
+        Assert.DoesNotContain(ToolNames.RequestSaveConsent, t);
+        Assert.Contains(ToolNames.FinalizePrompt, t);
     }
 
     /// <summary>釘住 Build 的 `Status == Finalized ||` 左分支：RecordFinalize 會把 streak 歸零，
@@ -49,42 +72,42 @@ public class ToolSetBuilderTests
         var s = new Session("s");
         s.Restore(new SessionSnapshot(SessionStatus.Finalized, null, 0, 8, false,
             new(), new(), 0, new PresetLedger(), new FinalPrompt("p", "n", "t", "i"), 0, new(), new()));
-        Assert.Contains(ToolNames.Discuss, ToolSetBuilder.Build(s, false, O));
+        Assert.Contains(ToolNames.Discuss, Propose(s));
     }
 
+    /// <summary>「隨便」的確認輪連 Discuss 都沒有：只能確認要補什麼（設計 §6.3）。</summary>
     [Fact]
-    public void WantsAutoComplete_removes_both_ask_and_discuss()
+    public void Auto_complete_propose_turn_leaves_only_confirm_and_search() =>
+        Assert.Equal(new HashSet<string> { ToolNames.Confirm, ToolNames.SearchPresets, ToolNames.SearchSimilarPrompts }, Propose(S(), auto: true));
+
+    [Fact]
+    public void Auto_complete_act_turn_drops_ask()
     {
-        var t = ToolSetBuilder.Build(S(), true, O);
-        Assert.DoesNotContain(ToolNames.AskUser, t); Assert.DoesNotContain(ToolNames.Discuss, t);
+        var t = Act(S(), auto: true);
+        Assert.DoesNotContain(ToolNames.AskUser, t);
         Assert.Contains(ToolNames.FinalizePrompt, t);
     }
 
     [Fact]
-    public void Exhausted_collecting_session_has_only_always_tools()
-    {
-        var t = ToolSetBuilder.Build(S(asks: 2, streak: 8), false, O);
-        Assert.Equal(ToolNames.Always, t);
-    }
+    public void Exhausted_collecting_act_turn_has_only_always_tools() => Assert.Equal(ToolNames.Always, Act(S(asks: 2, streak: 8)));
 
-    /// <summary>計畫 §4.1：off 的 session 是量測用的對照組。拿掉的只有兩個檢索工具，其餘規則照舊。</summary>
+    /// <summary>計畫 §4.1：off 的 session 是量測用的對照組。兩種輪都只拿掉兩個檢索工具，其餘規則照舊。</summary>
     [Fact]
-    public void Retrieval_off_removes_both_search_tools_and_nothing_else()
+    public void Retrieval_off_removes_both_search_tools_in_both_kinds_and_nothing_else()
     {
-        var on = ToolSetBuilder.Build(S(), false, O);
-        var off = ToolSetBuilder.Build(new Session("s", retrievalEnabled: false), false, O);
-        Assert.DoesNotContain(ToolNames.SearchPresets, off);
-        Assert.DoesNotContain(ToolNames.SearchSimilarPrompts, off);
-        Assert.Equal(on.Except(new[] { ToolNames.SearchPresets, ToolNames.SearchSimilarPrompts }).ToHashSet(), off);
-        Assert.True(ToolNames.Always.IsSubsetOf(on));   // Always 本身不動
+        foreach (var kind in new[] { TurnKind.Propose, TurnKind.Act })
+        {
+            var on = ToolSetBuilder.Build(S(), kind, false, O);
+            var off = ToolSetBuilder.Build(new Session("s", retrievalEnabled: false), kind, false, O);
+            Assert.Equal(on.Except(new[] { ToolNames.SearchPresets, ToolNames.SearchSimilarPrompts }).ToHashSet(), off);
+        }
+        Assert.True(ToolNames.Always.IsSubsetOf(Act(S())));   // Always 本身不動
     }
 
     [Fact]
-    public void Retrieval_off_with_auto_complete_leaves_only_state_tools_and_finalize()
-    {
-        var off = ToolSetBuilder.Build(new Session("s", retrievalEnabled: false), true, O);
-        Assert.Equal(new HashSet<string> { ToolNames.SetProfile, ToolNames.SetFacetStates, ToolNames.FinalizePrompt }, off);
-    }
+    public void Retrieval_off_with_auto_complete_act_turn_leaves_only_state_tools_and_finalize() =>
+        Assert.Equal(new HashSet<string> { ToolNames.SetProfile, ToolNames.SetFacetStates, ToolNames.FinalizePrompt },
+            Act(new Session("s", retrievalEnabled: false), auto: true));
 
     [Fact]
     public void Retrieval_mode_defaults_on_and_survives_restore()
