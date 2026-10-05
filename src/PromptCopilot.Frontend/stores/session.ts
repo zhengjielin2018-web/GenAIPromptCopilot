@@ -1,10 +1,11 @@
 import { defineStore } from 'pinia'
 import { readSse } from '../lib/sse'
-import { initialState, beginTurn, applyEvent, endTurn, failHttp, hydrate, appendBatch, latestFinalizedTurn as latestFinalizedTurnOf, type ChatState } from '../lib/reducer'
+import { initialState, beginTurn, applyEvent, endTurn, failHttp, hydrate, appendBatch, latestFinalizedTurn as latestFinalizedTurnOf, type ChatState, type FinalEntry } from '../lib/reducer'
 import { loadPersisted, savePersisted } from '../lib/persist'
 import { loadPrefs, savePrefs, type Prefs } from '../lib/prefs'
 import { composeDraft, appendChip, chipKey, type Chip } from '../lib/composer'
 import { adoptPlaceholder } from '../lib/adopt'
+import { pendingConfirmTurn, confirmDisplay } from '../lib/confirm'
 import { messageBody } from '../lib/safety'
 import { AGENT_EVENT_TYPES, type AdoptRequest, type AgentEvent, type FacetCatalog, type RecommendedSet, type RetrievalMode } from '../types/api'
 import type { TurnBody } from '../composables/useApi'
@@ -56,6 +57,9 @@ export const useSessionStore = defineStore('session', () => {
 
   /** 最新一張定稿卡：save_consent_requested 要展開它，也只有它可以存（後端永遠存 LastFinal）。 */
   const latestFinalizedTurn = computed<number | null>(() => latestFinalizedTurnOf(state.value.transcript))
+
+  /** 可以按的確認卡（先確認再動手設計 §7）；null 表示沒有。輸入框的提示與確認卡的按鈕看它。 */
+  const pendingConfirm = computed<number | null>(() => pendingConfirmTurn(state.value.transcript))
 
   /** 對照表正在看的那套；null 表示關閉。 */
   const adoptTarget = ref<{ set: RecommendedSet; dimension: string; turnIndex: number } | null>(null)
@@ -134,7 +138,7 @@ export const useSessionStore = defineStore('session', () => {
     closeAdopt()
     busy.value = true
     notice.value = null
-    state.value = beginTurn(state.value, display)
+    state.value = beginTurn(state.value, display, { confirm: 'confirm' in body })
     // 送出當下先存一次：輪次中重載時，原文經 draft 回到輸入框（hydrate 會拿掉沒有下文的 user 條目；採用沒有原文可回，存空字串）
     persist({ draft: 'text' in body ? body.text : '' })
     const ctl = new AbortController()
@@ -149,8 +153,8 @@ export const useSessionStore = defineStore('session', () => {
       }
       if (!r.ok || !r.body) {
         let msg = r.status === 409 ? '這個對話還有一輪在跑，等它結束再送。' : `送出失敗（HTTP ${r.status}）。`
-        // 採用被拒（400／409）與審查開關被拒（403：後端中途關掉了開放）帶有理由：直接顯示
-        if ('adopt' in body || r.status === 403) { try { msg = (await r.json()).error ?? msg } catch { /* 沒 body 就用預設字 */ } }
+        // 採用、按確認被拒（400／409）與審查開關被拒（403：後端中途關掉了開放）帶有理由：直接顯示
+        if ('adopt' in body || 'confirm' in body || r.status === 403) { try { msg = (await r.json()).error ?? msg } catch { /* 沒 body 就用預設字 */ } }
         state.value = failHttp(state.value, `http_${r.status}`, msg)
         return
       }
@@ -167,6 +171,14 @@ export const useSessionStore = defineStore('session', () => {
       persist()
       busy.value = false
     }
+  }
+
+  /** 按確認卡（先確認再動手設計 §3.5）：泡泡先顯示「對，就這樣」或選的那句，session 事件帶回同一句。只有可按的那張、沒在跑時能按（伺服器也會擋）。 */
+  async function confirm(turnIndex: number, choice: number | null) {
+    if (busy.value || turnIndex !== pendingConfirm.value) return
+    const entry = state.value.transcript.findLast((e): e is FinalEntry => e.kind === 'final' && e.turnIndex === turnIndex)
+    if (!entry || entry.data.kind !== 'confirm') return
+    await runTurn(confirmDisplay(entry.data, choice), { confirm: { turnIndex, choice } })
   }
 
   function openAdopt(set: RecommendedSet, dimension: string, turnIndex: number) {
@@ -256,7 +268,7 @@ export const useSessionStore = defineStore('session', () => {
 
   return {
     state, catalog, bootError, notice, busy, draft, chips, draftDirty, drawerPresetId, expandedSaveTurn, saveState,
-    dimensionLabels, latestFinalizedTurn,
+    dimensionLabels, latestFinalizedTurn, pendingConfirm, confirm,
     prefs, retrievalMismatch, setRetrievalPref, setShowTrace, safetyCanDisable, safetyOff, setSafetyOff,
     boot, newSession, send, retry, setDraft, toggleChip, isChipSelected, openDrawer, closeDrawer, expandSave, save,
     adoptTarget, openAdopt, closeAdopt, adopt,

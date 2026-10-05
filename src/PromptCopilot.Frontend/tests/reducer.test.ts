@@ -355,3 +355,34 @@ describe('retrieval and detail (2026-09-25)', () => {
     expect(hydrate(initialState(), older as SessionSnapshotDto, []).retrieval).toBe('on')
   })
 })
+
+describe('confirm turns (2026-10-05)', () => {
+  const confirmFinal: AgentEvent = { type: 'final', kind: 'confirm', message: '她兩手已經拿著相機和飲料，你想要哪一種？', choices: ['換掉飲料，改拿雨傘', '換掉相機，改拿雨傘'] }
+
+  it('final confirm pushes a confirm entry and settles without touching askCount', () => {
+    const s = applyEvent(started(), confirmFinal)
+    expect(s.transcript.at(-1)).toEqual({ kind: 'final', turnIndex: 1, data: { kind: 'confirm', message: '她兩手已經拿著相機和飲料，你想要哪一種？', choices: ['換掉飲料，改拿雨傘', '換掉相機，改拿雨傘'] } })
+    expect(s.pending?.settled).toBe(true)
+    expect(s.askCount).toBe(0)
+  })
+
+  // 放回輸入框送出會變成新的意見；卡片還在，再按一次就好
+  it('a failed confirm turn keeps no original text and says the card is still there', () => {
+    let s = beginTurn({ ...initialState(), sessionId: 's1' }, '對，就這樣', { confirm: true })
+    s = applyEvent(s, session(2))
+    s = applyEvent(s, { type: 'error', code: 'turn_failed', message: '這一輪失敗' })
+    expect(s.transcript.at(-1)).toEqual({ kind: 'failure', source: 'error', code: 'turn_failed', message: '這一輪失敗', originalText: '', confirm: true })
+  })
+
+  // Review Focus 3：被 409 擋下的多半是過期的卡，不能說「卡片還在」
+  it('an http rejection of a confirm turn does not claim the card is still there', () => {
+    const s = failHttp(beginTurn({ ...initialState(), sessionId: 's1' }, '對，就這樣', { confirm: true }), 'http_409', '只有最新一張確認卡可以按')
+    expect(s.transcript.at(-1)).toEqual({ kind: 'failure', source: 'http', code: 'http_409', message: '只有最新一張確認卡可以按', originalText: '' })
+  })
+
+  it('an ordinary failed turn still keeps the original text', () => {
+    let s = beginTurn({ ...initialState(), sessionId: 's1' }, '一個女生')
+    s = applyEvent(s, { type: 'error', code: 'turn_failed', message: 'x' })
+    expect(s.transcript.at(-1)).toEqual({ kind: 'failure', source: 'error', code: 'turn_failed', message: 'x', originalText: '一個女生' })
+  })
+})

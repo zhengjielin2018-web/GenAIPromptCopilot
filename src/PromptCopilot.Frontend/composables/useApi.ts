@@ -1,6 +1,6 @@
-import type { AdoptRequest, FacetCatalog, PresetDetail, RecommendedDimension, RetrievalMode, SessionCreated, SessionSnapshotDto } from '../types/api'
+import type { AdoptRequest, ConfirmRequest, FacetCatalog, PresetDetail, RecommendedDimension, RetrievalMode, SessionCreated, SessionSnapshotDto } from '../types/api'
 
-export type TurnBody = { text: string } | { adopt: AdoptRequest }
+export type TurnBody = { text: string } | { adopt: AdoptRequest } | { confirm: ConfirmRequest }
 
 export type SaveResult = { ok: true; id: string } | { ok: false; status: number; error: string }
 export type NextResult = { ok: true; row: RecommendedDimension } | { ok: false; status: number; error: string }
@@ -68,7 +68,7 @@ export function useApi() {
     return { ok: false, status: r.status, error }
   }
 
-  /** 不檢查 status：404／409／400／403 的處理在 store。body 是一般訊息或採用（設計 §6.1），可能帶 safety: off（lib/safety）。 */
+  /** 不檢查 status：404／409／400／403 的處理在 store。body 是一般訊息、採用或按確認（設計 §6.1），可能帶 safety: off（lib/safety）。 */
   function openStream(id: string, body: TurnBody, signal: AbortSignal): Promise<Response> {
     return fetch(`${base}/api/sessions/${encodeURIComponent(id)}/messages`, {
       method: 'POST', headers: { 'content-type': 'application/json', accept: 'text/event-stream' },

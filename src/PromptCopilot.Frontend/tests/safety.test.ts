@@ -17,4 +17,10 @@ describe('messageBody', () => {
   it('never sends safety off when the backend does not allow it', () => {
     expect(messageBody({ text: 'hi' }, { canDisable: false, off: true })).toEqual({ text: 'hi' })
   })
+
+  it('passes a confirm body through and adds safety off the same way', () => {
+    const confirm = { turnIndex: 3, choice: null }
+    expect(messageBody({ confirm }, { canDisable: true, off: false })).toEqual({ confirm })
+    expect(messageBody({ confirm }, { canDisable: true, off: true })).toEqual({ confirm, safety: 'off' })
+  })
 })

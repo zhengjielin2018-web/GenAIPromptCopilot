@@ -36,11 +36,13 @@ export interface FinalizedData {
   kind: 'finalized'; positive: string; negative: string; tips: string; intentSummary: string
   positiveSources?: TagSource[]; negativeSources?: TagSource[]
 }
+/** confirm（2026-10-05，先確認再動手設計 §4）：確認卡；choices 沒有歧義時是空陣列。 */
 export type FinalData =
   | { kind: 'ask'; preamble: string; asks: AskItem[] }
   | { kind: 'message'; message: string; options?: OptionItem[] }
   | FinalizedData
   | { kind: 'save_consent_requested' }
+  | { kind: 'confirm'; message: string; choices: string[] }
 
 /** 推薦組法（2026-09-30）：定稿卡每套的理由；追問卡沒有 */
 export type SetReason = 'anchored' | 'similar' | 'query' | 'explore'
@@ -58,6 +60,9 @@ export interface Recommendations { turnIndex: number; dimensions: RecommendedDim
 /** POST /api/sessions/{id}/messages 的 adopt：照它的 facet 清單，其餘該維度 facet 保留使用者原本的。
  *  batch（2026-09-30）：這套來自定稿卡第幾批，只給量測用 */
 export interface AdoptRequest { presetId: number; dimension: string; take: string[]; batch?: number }
+
+/** POST /api/sessions/{id}/messages 的 confirm（先確認再動手設計 §3.5）：按下確認卡。沒有選項的卡 choice 是 null。 */
+export interface ConfirmRequest { turnIndex: number; choice: number | null }
 
 export type AgentEvent =
   | { type: 'session'; sessionId: string; turnIndex: number; status: SessionStatus; text?: string | null }
@@ -116,4 +121,4 @@ export interface PresetDetail {
 }
 
 /** 終止型 tool 與純狀態 tool 不發 tool_result；卡片在輪次結束時收尾。終止型的內容由 final 條目呈現，不另畫卡片。 */
-export const TERMINAL_TOOLS: ReadonlySet<string> = new Set(['AskUser', 'Discuss', 'FinalizePrompt', 'RequestSaveConsent'])
+export const TERMINAL_TOOLS: ReadonlySet<string> = new Set(['AskUser', 'Discuss', 'FinalizePrompt', 'RequestSaveConsent', 'Confirm'])
