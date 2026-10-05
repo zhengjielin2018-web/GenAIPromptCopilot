@@ -73,8 +73,10 @@ def run_turn(base: str, sid: str, body: dict, kind: str) -> TurnResult:
                 r.positive = ev.get("positive")
             elif name in ("blocked", "error"):
                 r.outcome = name
-    except urllib.error.HTTPError as e:
+    except urllib.error.HTTPError as e:      # 要在 URLError 之前，它是 URLError 的子類
         r.outcome = f"http {e.code}"
+    except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
+        r.outcome = f"net {type(e).__name__}"   # 逾時、斷線只記在這一輪，不讓整批重播中斷
     r.ms = int((time.monotonic() - start) * 1000)
     return r
 
@@ -95,8 +97,12 @@ def run_scenario(base: str, steps: list[dict], dim_labels: dict[str, str]) -> tu
         if propose.outcome == "confirm":
             choice = 0 if propose.choices else None
             act = run_turn(base, sid, {"confirm": {"turnIndex": propose.turn_index, "choice": choice}}, "act")
-            asks = act.asks if act.outcome == "ask" else []        # 確認輪結束在 Discuss 時追問卡還在，不清
-            if act.outcome == "finalized":
+            # 追問卡只在動手輪有結果時換：ask 換成新卡、finalized 清掉；被攔／出錯／http 錯誤時伺服器已還原這一輪，
+            # 舊卡仍是有效的。確認輪結束在 Discuss 的不會進這個分支（outcome 不是 confirm），卡也原封不動。
+            if act.outcome == "ask":
+                asks = act.asks
+            elif act.outcome == "finalized":
+                asks = []
                 last_positive = act.positive
         rows.append({"step": i, "text": text.replace("\n", " / "), "propose": propose, "act": act,
                      "verdict": judge(step.get("expect", "none"), propose, act)})
@@ -121,19 +127,21 @@ def main(argv: list[str] | None = None) -> int:
     _, cfg = http_json("GET", f"{base}/api/config/facets")
     dim_labels = {d["key"]: d["label"] for d in cfg["dimensions"]}
     sessions: list[str] = []
-    for run in range(1, args.runs + 1):
-        for name in names:
-            sid, rows, positive = run_scenario(base, scenarios[name], dim_labels)
-            sessions.append(sid)
-            print(f"\n## {name} 第 {run} 次（session {sid}）\n")
-            print("| 步 | 送出 | 確認輪 | 動手輪 | 檢索判定 |")
-            print("| :--- | :--- | :--- | :--- | :--- |")
-            for row in rows:
-                print(f"| {row['step']} | {row['text'][:40]} | {fmt(row['propose'])} | {fmt(row['act'])} "
-                      f"| {row['verdict']} |")
-            print(f"\n最後定稿 positive：{positive or '（沒有定稿）'}")
-            sys.stdout.flush()
-    print("\nsessions: " + ",".join(sessions))
+    try:
+        for run in range(1, args.runs + 1):
+            for name in names:
+                sid, rows, positive = run_scenario(base, scenarios[name], dim_labels)
+                sessions.append(sid)
+                print(f"\n## {name} 第 {run} 次（session {sid}）\n")
+                print("| 步 | 送出 | 確認輪 | 動手輪 | 檢索判定 |")
+                print("| :--- | :--- | :--- | :--- | :--- |")
+                for row in rows:
+                    print(f"| {row['step']} | {row['text'][:40]} | {fmt(row['propose'])} | {fmt(row['act'])} "
+                          f"| {row['verdict']} |")
+                print(f"\n最後定稿 positive：{positive or '（沒有定稿）'}")
+                sys.stdout.flush()
+    finally:   # 中途出事也要印，報表要用已跑完的 session id
+        print("\nsessions: " + ",".join(sessions))
     return 0
 
 
