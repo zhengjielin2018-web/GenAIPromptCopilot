@@ -612,4 +612,39 @@ public class KnowledgePluginTests
         Assert.Equal(TagTimeline.Source.Model, s.Ledger.Timeline.FirstSeen("blonde hair"));
         Assert.Equal(TagTimeline.Source.Snippet, s.Ledger.Timeline.FirstSeen("short hair"));
     }
+
+    /// <summary>設計 §3.5：維度項目只寫維度名稱，撈回的是全維度最近的隨機片段；該項回錯誤，其他項照常。</summary>
+    [Theory]
+    [InlineData("style", "風格")]
+    [InlineData("style", " Style ")]
+    [InlineData("camera", "鏡頭")]
+    public async Task Dimension_item_with_only_the_dimension_name_is_an_item_error(string dimension, string query)
+    {
+        var (p, turn, _, embed, _, _) = Make();
+        var results = Results(await p.SearchPresetsAsync(Q((dimension, query), ("scene", "雨夜街頭")), default));
+        Assert.Equal($"維度 {dimension} 的 query 只寫了維度名稱，請寫具體方向（例：寫實攝影、日系動漫插畫）", results[0].GetProperty("error").GetString());
+        Assert.False(results[1].TryGetProperty("error", out _));
+        Assert.Equal(new[] { "雨夜街頭" }, Assert.Single(embed.Calls));
+        Assert.Equal(1, turn.SearchItemErrors);
+    }
+
+    /// <summary>題材專屬名稱也擋：object 的 appearance 叫「主體外觀」。</summary>
+    [Fact]
+    public async Task Profile_specific_dimension_label_is_also_rejected()
+    {
+        var (p, _, s, _, _, _) = Make(profile: false);
+        s.ApplyProfile("object", Catalog);
+        var results = Results(await p.SearchPresetsAsync(Q(("appearance", "主體外觀")), default));
+        Assert.Contains("只寫了維度名稱", results[0].GetProperty("error").GetString());
+    }
+
+    /// <summary>Review Focus 5：含維度名稱的具體查詢不能誤擋；facet 項目的 query 是使用者原話，不檢查。</summary>
+    [Fact]
+    public async Task Dimension_item_containing_the_name_in_a_concrete_query_still_runs()
+    {
+        var (p, _, _, embed, _, _) = Make();
+        var results = Results(await p.SearchPresetsAsync(new[] { new SearchQuery("style", "寫實風格"), F("style.genre", "風格") }, default));
+        Assert.All(results, r => Assert.False(r.TryGetProperty("error", out _)));
+        Assert.Equal(2, Assert.Single(embed.Calls).Count);
+    }
 }
