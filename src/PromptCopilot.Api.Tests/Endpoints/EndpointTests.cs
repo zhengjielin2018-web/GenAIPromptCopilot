@@ -25,7 +25,7 @@ public class EndpointTests : IClassFixture<EndpointTests.Factory>
 
         public async IAsyncEnumerable<AgentEvent> RunTurnAsync(Session session, TurnInput input, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
         {
-            yield return new SessionEvent(session.Id, 1, "Collecting", input.Adoption is null ? null : input.Text);
+            yield return new SessionEvent(session.Id, 1, "Collecting", input.Adoption is null && input.Confirmed is null ? null : input.Text);
             await Task.Delay(10, ct);
             if (input.Text == ThrowTrigger) throw new InvalidOperationException("boom");
             yield return new FinalEvent("message", Message: input.SafetyOn ? $"echo: {input.Text}" : $"echo(safety off): {input.Text}");
@@ -125,6 +125,64 @@ public class EndpointTests : IClassFixture<EndpointTests.Factory>
     {
         var lines = sse.Split('\n');
         return lines[Array.IndexOf(lines, "event: session") + 1];
+    }
+
+    /// <summary>直接放一筆待確認：走 HTTP 的話得先跑完一輪真的確認輪。</summary>
+    private Session PendingSession(params string[] choices)
+    {
+        var s = PortraitSession();
+        s.TurnIndex = 3;
+        s.SetPendingConfirmation(new PendingConfirmation(3, "她兩手已經拿著相機和飲料，你想要哪一種？", choices, false));
+        return s;
+    }
+
+    /// <summary>先確認再動手設計 §3.5：按下解讀，串流第一個事件與模型看到的都是那一句。</summary>
+    [Fact]
+    public async Task Confirm_runs_the_turn_with_the_chosen_sentence()
+    {
+        var s = PendingSession("換掉飲料，改拿雨傘", "換掉相機，改拿雨傘");
+        var r = await _client.PostAsJsonAsync($"/api/sessions/{s.Id}/messages", new { confirm = new { turnIndex = 3, choice = 0 } });
+        Assert.Equal(HttpStatusCode.OK, r.StatusCode);
+        var body = await r.Content.ReadAsStringAsync();
+        Assert.Contains("\"text\":\"換掉飲料，改拿雨傘\"", SessionFrameData(body));
+        Assert.Contains("echo: 換掉飲料，改拿雨傘", body);
+    }
+
+    [Fact]
+    public async Task Confirm_without_choices_says_ok_and_ignores_text()
+    {
+        var s = PendingSession();
+        var r = await _client.PostAsJsonAsync($"/api/sessions/{s.Id}/messages", new { text = "別理我這句", confirm = new { turnIndex = 3 } });
+        Assert.Equal(HttpStatusCode.OK, r.StatusCode);
+        var body = await r.Content.ReadAsStringAsync();
+        Assert.Contains("echo: 對，就這樣", body);
+        Assert.DoesNotContain("別理我這句", body);
+    }
+
+    [Fact]
+    public async Task Confirm_is_409_without_a_pending_card_or_for_an_older_one()
+    {
+        var none = PortraitSession();
+        var r1 = await _client.PostAsJsonAsync($"/api/sessions/{none.Id}/messages", new { confirm = new { turnIndex = 0 } });
+        Assert.Equal(HttpStatusCode.Conflict, r1.StatusCode);
+        Assert.Equal("沒有待確認的內容", (await r1.Content.ReadFromJsonAsync<Dictionary<string, string>>())!["error"]);
+
+        var s = PendingSession();
+        var r2 = await _client.PostAsJsonAsync($"/api/sessions/{s.Id}/messages", new { confirm = new { turnIndex = 2 } });
+        Assert.Equal(HttpStatusCode.Conflict, r2.StatusCode);
+        Assert.Equal("只有最新一張確認卡可以按", (await r2.Content.ReadFromJsonAsync<Dictionary<string, string>>())!["error"]);
+    }
+
+    [Theory]
+    [InlineData("""{"confirm":{"turnIndex":3,"choice":0}}""", false)]      // 沒有選項卻帶 choice
+    [InlineData("""{"confirm":{"turnIndex":3}}""", true)]                   // 有選項卻沒選
+    [InlineData("""{"confirm":{"turnIndex":3,"choice":2}}""", true)]
+    [InlineData("""{"confirm":{"turnIndex":3},"adopt":{"presetId":1,"dimension":"scene","take":["scene.location"]}}""", false)]
+    public async Task Confirm_is_400_when_the_choice_does_not_fit_or_comes_with_adopt(string json, bool withChoices)
+    {
+        var s = withChoices ? PendingSession("a", "b") : PendingSession();
+        var r = await _client.PostAsync($"/api/sessions/{s.Id}/messages", new StringContent(json, System.Text.Encoding.UTF8, "application/json"));
+        Assert.Equal(HttpStatusCode.BadRequest, r.StatusCode);
     }
 
     [Fact]

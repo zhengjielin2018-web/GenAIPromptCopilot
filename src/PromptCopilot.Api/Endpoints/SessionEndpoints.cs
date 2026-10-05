@@ -11,8 +11,9 @@ using PromptCopilot.Api.Streaming;
 namespace PromptCopilot.Api.Endpoints;
 
 /// <summary>Adopt（2026-09-25）：採用推薦的一套組合；有它時 Text 忽略（設計 §6.1）。
+/// Confirm（2026-10-05）：按確認卡（先確認再動手設計 §3.5）；有它時 Text 忽略，不能跟 Adopt 一起送。
 /// Safety：on（預設）／off，off 是測試用的審查開關，後端 Safety:AllowDisable 開著才收。</summary>
-public sealed record MessageRequest(string? Text, AdoptRequest? Adopt = null, string? Safety = null);
+public sealed record MessageRequest(string? Text, AdoptRequest? Adopt = null, string? Safety = null, ConfirmRequest? Confirm = null);
 public sealed record SaveRequest(string Intent);
 public sealed record CreateSessionRequest(string? Retrieval);
 public sealed record SessionCreated(string SessionId, string Retrieval);
@@ -77,7 +78,8 @@ public static class SessionEndpoints
         {
             var s = store.TryGet(id);
             if (s is null) return Results.NotFound(new ErrorBody("session 不存在或已過期"));
-            if (req.Adopt is null && string.IsNullOrWhiteSpace(req.Text)) return Results.BadRequest(new ErrorBody("text 不可為空"));
+            if (req.Adopt is null && req.Confirm is null && string.IsNullOrWhiteSpace(req.Text)) return Results.BadRequest(new ErrorBody("text 不可為空"));
+            if (req.Adopt is not null && req.Confirm is not null) return Results.BadRequest(new ErrorBody("confirm 與 adopt 不能同時送"));
             bool? safetyOn = req.Safety?.Trim().ToLowerInvariant() switch { null or "" or "on" => true, "off" => false, _ => null };
             if (safetyOn is null) return Results.BadRequest(new ErrorBody("safety 只能是 on 或 off"));
             if (safetyOn is false && !safety.Value.AllowDisable)
@@ -87,7 +89,17 @@ public static class SessionEndpoints
             try
             {
                 TurnInput input;
-                if (req.Adopt is { } adopt)
+                if (req.Confirm is { } confirm)
+                {
+                    // 拿著鎖再讀待確認：同一張卡連按兩次，第二次看到的已經是被動手輪清掉的狀態
+                    try
+                    {
+                        var c = ConfirmValidator.Validate(s, confirm);
+                        input = new TurnInput(c.Text, SafetyOn: safetyOn.Value, Confirmed: c);
+                    }
+                    catch (ConfirmValidationException e) { return Results.Json(new ErrorBody(e.Message), statusCode: e.Status); }
+                }
+                else if (req.Adopt is { } adopt)
                 {
                     // 拿著鎖再讀 session：沒鎖時讀到的可能是上一輪回滾中的半途狀態
                     if (!s.RetrievalEnabled) return Results.Conflict(new ErrorBody("這段對話沒有知識庫，沒有組合可以採用"));
@@ -124,15 +136,17 @@ public static class SessionEndpoints
         })
         .WithSummary("送一句話，跑一輪對話（SSE 串流）")
         .WithDescription("""
-            body：`{"text": "一個銀髮少女站在雨夜的霓虹街頭"}`；或採用推薦的一套組合 `{"adopt": {"presetId": 41720, "dimension": "clothing", "take": ["clothing.upper", "clothing.head"], "batch": 2}}`（`take` 是「照它的」facet，其餘該維度的 facet 保留使用者原本的；`batch` 是可省的整數，記這套來自定稿卡第幾批（2026-09-30，換一批），只寫進 audit、伺服器不驗證；有 `adopt` 時 `text` 忽略，伺服器會組一句「採用〈標題〉（知識庫 #id）：…照它的（tags）；…保留我的。」當使用者訊息，`session` 事件的 `text` 帶回這句）。回應是 `text/event-stream`，每一筆是 `event: <名稱>` 加一行 `data: <JSON>`。
+            body：`{"text": "一個銀髮少女站在雨夜的霓虹街頭"}`；或採用推薦的一套組合 `{"adopt": {"presetId": 41720, "dimension": "clothing", "take": ["clothing.upper", "clothing.head"], "batch": 2}}`（`take` 是「照它的」facet，其餘該維度的 facet 保留使用者原本的；`batch` 是可省的整數，記這套來自定稿卡第幾批（2026-09-30，換一批），只寫進 audit、伺服器不驗證；有 `adopt` 時 `text` 忽略，伺服器會組一句「採用〈標題〉（知識庫 #id）：…照它的（tags）；…保留我的。」當使用者訊息，`session` 事件的 `text` 帶回這句）；或按確認卡 `{"confirm": {"turnIndex": 5, "choice": 1}}`（2026-10-05，先確認再動手：`turnIndex` 是那張確認卡的輪次，必須是最新一筆待確認；沒有選項的卡 `choice` 給 `null` 或省略，伺服器以「對，就這樣」當使用者訊息，有選項時以那個選項的原文當使用者訊息，`session` 事件的 `text` 帶回這句；有 `confirm` 時 `text` 忽略）。回應是 `text/event-stream`，每一筆是 `event: <名稱>` 加一行 `data: <JSON>`。
+
+            使用者打字的那一輪只會以 `confirm`（確認卡）、`message`（討論）或 `save_consent_requested` 收尾，不會改任何 facet；按下確認卡或採用的那一輪才會追問或定稿。
 
             | 事件 | 內容 |
             | :--- | :--- |
-            | `session` | 一定是第一筆：第幾輪（`turnIndex`）、這輪開始時的狀態（`Collecting` 還在收集／`Finalized` 已定稿）；`text?` 採用輪才有，是伺服器組的採用句（2026-09-25），用它換掉使用者泡泡 |
+            | `session` | 一定是第一筆：第幾輪（`turnIndex`）、這輪開始時的狀態（`Collecting` 還在收集／`Finalized` 已定稿）；`text?` 採用輪與按確認的那一輪才有，是伺服器組的採用句（2026-09-25），用它換掉使用者泡泡 |
             | `tool_call`／`tool_result` | 模型呼叫的工具與結果，一輪可能好幾次。`tool_result.presets` 是檢索到的 preset（`{id, title, imageUrl, sourceRef}`；`sourceRef` 是資料來源識別，如 `civitai:12345:0`，圖片屬於原作者，顯示時要標出處），可拿 id 去 `GET /api/presets/{id}` |
             | `dimensions` | `{ profile, facetStates: {facetId: state}, facetTags?: {facetId: "sandals"} }`：題材與每個 facet 的狀態，`covered`／`missing`／`waived`（使用者說不指定）／`notApplicable`；`facetTags`（2026-09-25）是模型給已涵蓋 facet 的英文 tag（只有 covered 的有）。輪中有變動就送，成功的一輪最後會再送一次完整的 |
             | `recommendations` | `{ turnIndex, dimensions: [{ dimension, label, anchored, anchorTags, similar, batch?, sets: [{ presetId, title, imageUrl?, sourceRef?, dist, facets: [{ facetId, label, state, tags }], reason?, anchorTags?, rank?, prob? }] }] }`：整套組合推薦（2026-09-25）：只有定稿那一輪有（2026-10-05 起追問卡不推薦），全部維度，跟在 `final`＋`dimensions` 之後；掛在定稿卡下方。`retrieval: off` 的對話沒有。`similar`（2026-09-29）：字面錨不到、改用 facet 向量近似錨。`batch`、每套的 `reason`／`anchorTags`／`rank`／`prob`：2026-09-30 換一批加的。見 `2026-09-25-set-recommendations-design.md` §5、`2026-09-30-recommendation-slate-design.md` §5.1 |
-            | `final` | 這一輪的結果，看 `kind`：`ask` 追問（`preamble`、`asks`）、`message` 討論或回答問題（`message`、`options`）、`finalized` 定稿（`positive`、`negative`、`tips`、`intentSummary`：一句繁中需求描述，可拿來預填 `save-to-shared` 的 `intent`；`positiveSources`／`negativeSources`：逐 tag 的來源 `{tag, origin, presetIds, presetTitle, sourceRef}`，`origin` 是 `rag` 知識庫片段／`adopted` 採用的組合帶進來的／`llm` 模型生成／`base` 基礎詞，由伺服器比對 ledger 與採用紀錄標註）、`save_consent_requested` 使用者要求儲存（見 `save-to-shared`） |
+            | `final` | 這一輪的結果，看 `kind`：`ask` 追問（`preamble`、`asks`）、`message` 討論或回答問題（`message`、`options`）、`confirm` 確認卡（`message`、`choices`：0 或 2–4 個解讀，沒有歧義時是空陣列）、`finalized` 定稿（`positive`、`negative`、`tips`、`intentSummary`：一句繁中需求描述，可拿來預填 `save-to-shared` 的 `intent`；`positiveSources`／`negativeSources`：逐 tag 的來源 `{tag, origin, presetIds, presetTitle, sourceRef}`，`origin` 是 `rag` 知識庫片段／`adopted` 採用的組合帶進來的／`llm` 模型生成／`base` 基礎詞，由伺服器比對 ledger 與採用紀錄標註）、`save_consent_requested` 使用者要求儲存（見 `save-to-shared`） |
             | `blocked` | 被攔下，`reason`：`Blocked_NSFW`、`Blocked_Celebrity`（輸入端，不會呼叫模型）、`Blocked_Output`（模型輸出被攔）、`Blocked_Upstream`（Gemini 拒絕生成）。session 狀態不變 |
             | `error` | 這一輪失敗，`code`：`timeout`、`protocol_violation`、`turn_failed`。session 已還原到送出前，可以直接重送同一句 |
 
@@ -144,9 +158,9 @@ public static class SessionEndpoints
             測試用的審查開關：body 可加 `"safety": "off"`（預設 `on`），這一輪不做程式端審查——denylist 不比對、輸入分類器照跑但只用來判斷「你看著辦」、輸出不檢。Gemini 自己的攔截（`Blocked_Upstream`）不受影響。後端要設 `Safety:AllowDisable=true` 才收；`GET /api/config/safety` 回報目前能不能關。
 
             - `404`：session 不存在或已過期
-            - `400`：`text` 是空白且沒有 `adopt`；`safety` 不是 `on`／`off`；`adopt` 的 preset 不存在、尚未拆分 facet、`take` 為空或含不屬於該維度／這套沒有 tag 的 facet
+            - `400`：`text` 是空白且沒有 `adopt`；`safety` 不是 `on`／`off`；`adopt` 的 preset 不存在、尚未拆分 facet、`take` 為空或含不屬於該維度／這套沒有 tag 的 facet；`confirm` 的 `choice` 跟卡片對不上（有選項沒選、沒選項卻帶、超出範圍）；`confirm` 與 `adopt` 同時送
             - `403`：`safety: off` 但後端沒開放
-            - `409`：同一個 session 上一輪還沒跑完；`adopt` 但這段對話 `retrieval: off` 或還沒定稿
+            - `409`：同一個 session 上一輪還沒跑完；`adopt` 但這段對話 `retrieval: off` 或還沒定稿；`confirm` 但沒有待確認，或不是最新一張確認卡
             """)
         .Produces(StatusCodes.Status200OK, contentType: "text/event-stream")
         .Produces<ErrorBody>(StatusCodes.Status400BadRequest)
