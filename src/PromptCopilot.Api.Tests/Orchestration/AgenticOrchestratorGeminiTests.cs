@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.SemanticKernel.ChatCompletion;
 using Microsoft.SemanticKernel.Connectors.Google;
 using PromptCopilot.Api.Llm;
@@ -86,6 +87,86 @@ public class AgenticOrchestratorGeminiTests
         Assert.DoesNotContain(Texts(next), t => t.Contains("你必須呼叫"));
         Assert.Equal(new[] { "user", "model", "user" }, Roles(next));
         Assert.Contains("\"thoughtSignature\":\"SIG-3\"", http.Bodies[2]);                  // 留下來的是重試那次的回覆，簽章跟著走
+    }
+
+    /// <summary>跟 Program.cs 一樣的 handler 鏈：名稱修正在最外層，看得到請求宣告了哪些工具。</summary>
+    private static IChatCompletionService GeminiGuarded(HttpMessageHandler http) =>
+        new GoogleAIGeminiChatCompletionService("gemini-test", "test", GoogleAIVersion.V1_Beta,
+            new HttpClient(new GeminiToolNameHandler(new GeminiRoleFixHandler(http), NullLogger<GeminiToolNameHandler>.Instance)));
+
+    private static string CallReply(string name, string signature) => HistoryTrimmerGeminiTests.Reply(
+        $$$"""{"functionCall":{"name":"{{{name}}}","args":{"message":"一位金色短髮的中年女士站在雨夜的霓虹街頭。"}},"thoughtSignature":"{{{signature}}}"}""");
+
+    /// <summary>contents 裡 model 送出的 functionCall 名稱（不含 tools 的宣告）。</summary>
+    private static string[] CalledNames(JsonElement body) =>
+        body.GetProperty("contents").EnumerateArray()
+            .SelectMany(c => c.GetProperty("parts").EnumerateArray())
+            .Where(p => p.TryGetProperty("functionCall", out _)).Select(p => p.GetProperty("functionCall").GetProperty("name").GetString()!).ToArray();
+
+    /// <summary>不管問什麼都回同一則：模型卡在同一個呼叫上的樣子。</summary>
+    private sealed class Stuck(string reply) : HttpMessageHandler
+    {
+        public int Calls;
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            Interlocked.Increment(ref Calls);
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(reply, Encoding.UTF8, "application/json") });
+        }
+    }
+
+    /// <summary>known-issues #13：模型寫裸名 Confirm。修正前 SK 回「function that wasn't defined」、不經 filter，模型重送到逾時；
+    /// 現在改寫成 Dialog_Confirm，照常進 plugin，一輪就出確認卡。送回去的 call 是全名、簽章照帶。</summary>
+    [Fact]
+    public async Task Bare_tool_name_lands_on_the_declared_tool()
+    {
+        var http = new GeminiLike(CallReply("Confirm", "SIG-1"), TextReply("好", "SIG-2"));
+        var h = new AgenticOrchestratorTests.Harness { ChatOverride = GeminiGuarded(http) };
+
+        var events = await h.RunAsync("一位金色短髮的中年女士站在雨夜的霓虹街頭");
+
+        Assert.Empty(events.OfType<ErrorEvent>());
+        Assert.Equal("confirm", Assert.Single(events.OfType<FinalEvent>()).Kind);
+        Assert.DoesNotContain(h.Audit.Entries, a => a.EventType == "Protocol_Violation");
+        Assert.Equal(2, http.Bodies.Count);
+        Assert.Equal(new[] { "Dialog_Confirm" }, CalledNames(Parse(http.Bodies[1])));
+        Assert.Contains("\"thoughtSignature\":\"SIG-1\"", http.Bodies[1]);
+        var done = Assert.Single(h.Audit.Entries, a => a.EventType == "Turn_Completed");
+        Assert.Equal(1, Parse(done.PayloadJson!).GetProperty("toolNameRepairs").GetInt32());
+    }
+
+    /// <summary>確認輪叫 SetProfile（這一輪沒有）：第二次就中止，改走補提示重試，提示點名它不在清單裡；重試照清單叫就成功。</summary>
+    [Fact]
+    public async Task Repeated_undeclared_call_is_cut_short_and_retried_with_a_reminder()
+    {
+        var http = new GeminiLike(CallReply("SetProfile", "SIG-1"), CallReply("SetProfile", "SIG-2"), CallReply("Dialog_Confirm", "SIG-3"), TextReply("好", "SIG-4"));
+        var h = new AgenticOrchestratorTests.Harness { ChatOverride = GeminiGuarded(http) };
+
+        var events = await h.RunAsync("一位金色短髮的中年女士站在雨夜的霓虹街頭");
+
+        Assert.Empty(events.OfType<ErrorEvent>());
+        Assert.Equal("confirm", Assert.Single(events.OfType<FinalEvent>()).Kind);
+        Assert.Equal(4, http.Bodies.Count);
+        var violation = Assert.Single(h.Audit.Entries, a => a.EventType == "Protocol_Violation");
+        var payload = Parse(violation.PayloadJson!);
+        Assert.Equal(1, payload.GetProperty("attempt").GetInt32());
+        Assert.Equal(new[] { "SetProfile", "SetProfile" }, payload.GetProperty("undeclared").EnumerateArray().Select(n => n.GetString()).ToArray());
+        var reminder = SystemParts(Parse(http.Bodies[2]))[^1];
+        Assert.Contains("SetProfile 不在這一輪的工具清單裡", reminder);
+        Assert.Contains("Dialog_Confirm", reminder);
+    }
+
+    /// <summary>模型怎麼提醒都卡在沒宣告的呼叫上：幾次就收掉、回 protocol_violation，不再一路打到 120 秒逾時（修正前一次 SK 呼叫就跑滿 128 次）。</summary>
+    [Fact]
+    public async Task Model_stuck_on_an_undeclared_call_fails_fast_instead_of_timing_out()
+    {
+        var http = new Stuck(CallReply("SetProfile", "SIG-1"));
+        var h = new AgenticOrchestratorTests.Harness { ChatOverride = GeminiGuarded(http) };
+
+        var events = await h.RunAsync("一位金色短髮的中年女士站在雨夜的霓虹街頭");
+
+        Assert.Equal("protocol_violation", Assert.Single(events.OfType<ErrorEvent>()).Code);
+        Assert.Equal(3, http.Calls);                                 // 兩次中止第一次 SK 呼叫，重試的第一次就中止
+        Assert.Null(h.Session.PendingConfirmation);
     }
 
     /// <summary>這個修正依賴的 connector 形狀：ChatHistory 裡任何位置的 system 訊息都被搬進 systemInstruction，不留在 contents。

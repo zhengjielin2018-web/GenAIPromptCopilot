@@ -39,6 +39,8 @@ public sealed class UpstreamDiagnostics
     private long? _inFlightSince;
     private UpstreamBlock? _block;
     private UpstreamHttpError? _httpError;
+    private int _toolNameRepairs;
+    private readonly List<string> _undeclared = new();
 
     /// <summary>這一輪打出去幾次 generateContent（含重試、含分類器）。</summary>
     public int Calls { get { lock (_gate) return _calls; } }
@@ -55,6 +57,23 @@ public sealed class UpstreamDiagnostics
 
     public UpstreamBlock? Block { get { lock (_gate) return _block; } }
     public UpstreamHttpError? HttpError { get { lock (_gate) return _httpError; } }
+
+    /// <summary>這一輪模型寫成裸名、被 <see cref="GeminiToolNameHandler"/> 改回宣告全名的工具呼叫數（known-issues #13）。</summary>
+    public int ToolNameRepairs { get { lock (_gate) return _toolNameRepairs; } }
+
+    /// <summary>這一輪模型呼叫過、對不上任何宣告的工具名，依出現順序。</summary>
+    public IReadOnlyList<string> UndeclaredToolCalls { get { lock (_gate) return _undeclared.ToArray(); } }
+
+    public void ToolNameRepaired()
+    {
+        lock (_gate) _toolNameRepairs++;
+    }
+
+    /// <summary>記一次沒宣告的呼叫，回傳這一輪累計幾次。</summary>
+    public int UndeclaredToolCall(string name)
+    {
+        lock (_gate) { _undeclared.Add(name); return _undeclared.Count; }
+    }
 
     public void CallStarted()
     {
