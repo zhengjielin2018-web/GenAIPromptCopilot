@@ -2,7 +2,7 @@
 
 只用標準函式庫。API 要先在跑（python manual-tests/start_api.py，預設 http://localhost:5000）。
 用法：python manual-tests/chat.py [--base http://localhost:5000] [--raw] [--no-color]
-指令：/new 開新 session　/save <一句話描述> 存到共享庫　/raw 切換原始事件　/quit 離開
+指令：/new 開新 session　/ok 按確認卡的「對，就這樣」　/1～/4 選確認卡的第幾個解讀　/save <一句話描述> 存到共享庫　/raw 切換原始事件　/quit 離開
 """
 
 from __future__ import annotations
@@ -70,6 +70,8 @@ class Chat:
         self.last_states: dict[str, str] | None = None
         self.last_profile: str | None = None
         self.sid = ""
+        self.turn = 0
+        self.pending: tuple[int, int] | None = None  # 可以按的確認卡：(輪次, 選項數)
 
     def load_facets(self):
         _, cfg = http_json("GET", f"{self.base}/api/config/facets")
@@ -82,11 +84,29 @@ class Chat:
     def new_session(self):
         _, body = http_json("POST", f"{self.base}/api/sessions")
         self.sid, self.last_states, self.last_profile = body["sessionId"], None, None
+        self.pending = None
         print(self.ui.dim(f"── 新 session {self.sid} ──"))
 
     def send(self, text: str):
+        self.post({"text": text})
+
+    def confirm(self, choice: int | None):
+        """按確認卡（先確認再動手設計 §3.5）。choice：沒有選項的卡是 None，否則 0 起算。"""
+        if self.pending is None:
+            print(self.ui.yellow("  現在沒有可以按的確認卡。"))
+            return
+        turn, n = self.pending
+        if n == 0 and choice is not None:
+            print(self.ui.yellow("  這張確認卡沒有選項，用 /ok。"))
+            return
+        if n > 0 and (choice is None or not 0 <= choice < n):
+            print(self.ui.yellow(f"  這張確認卡有 {n} 個選項，用 /1～/{n}。"))
+            return
+        self.post({"confirm": {"turnIndex": turn, "choice": choice}})
+
+    def post(self, body: dict):
         try:
-            for name, ev in sse_events(f"{self.base}/api/sessions/{self.sid}/messages", {"text": text}):
+            for name, ev in sse_events(f"{self.base}/api/sessions/{self.sid}/messages", body):
                 if self.raw:
                     print(self.ui.dim(f"  [{name}] {json.dumps(ev, ensure_ascii=False)}"))
                 getattr(self, f"on_{name}", self.on_unknown)(ev)
@@ -109,7 +129,10 @@ class Chat:
 
     # ---- 事件 ----
     def on_session(self, ev):
+        self.turn = ev["turnIndex"]
         print(self.ui.dim(f"  第 {ev['turnIndex']} 輪（開始時狀態 {ev['status']}）"))
+        if ev.get("text"):
+            print(self.ui.dim(f"  你：{ev['text']}"))
 
     def on_tool_call(self, ev):
         summary = ev.get("argsSummary") or ""
@@ -147,7 +170,15 @@ class Chat:
 
     def on_final(self, ev):
         kind = ev["kind"]
-        if kind == "ask":
+        if kind == "confirm":
+            choices = ev.get("choices") or []
+            print(self.ui.bold(f"\n助手（確認）：{ev.get('message', '')}"))
+            for n, c in enumerate(choices, 1):
+                print(f"     /{n}) {c}")
+            print(self.ui.dim("  按 /ok 套用；打字會當成修正。" if not choices else "  選一個 /1～/%d；打字會當成修正。" % len(choices)))
+            self.pending = (self.turn, len(choices))
+        elif kind == "ask":
+            self.pending = None
             if ev.get("preamble"):
                 print(self.ui.bold(f"\n助手：{ev['preamble']}"))
             for n, a in enumerate(ev.get("asks") or [], 1):
@@ -161,6 +192,7 @@ class Chat:
             for m, o in enumerate(ev.get("options") or [], 1):
                 print(f"     {chr(96 + m)}) {o['label']}" + self.ui.dim(f"  {o.get('tags', '')}"))
         elif kind == "finalized":
+            self.pending = None
             print(self.ui.green("\n✔ 定稿"))
             print(self.ui.bold("  Positive: ") + (ev.get("positive") or ""))
             print(self.ui.bold("  Negative: ") + (ev.get("negative") or ""))
@@ -203,7 +235,7 @@ def main():
     except (urllib.error.URLError, ConnectionError) as e:
         sys.exit(f"連不到 {args.base}：{e}。API 有在跑嗎？（python manual-tests/start_api.py）")
     chat.new_session()
-    print(chat.ui.dim("指令：/new 開新 session　/save <描述> 存到共享庫　/raw 切換原始事件　/quit 離開\n"))
+    print(chat.ui.dim("指令：/new 開新 session　/ok 按確認　/1～/4 選解讀　/save <描述> 存到共享庫　/raw 切換原始事件　/quit 離開\n"))
 
     while True:
         try:
@@ -220,6 +252,10 @@ def main():
         elif text == "/raw":
             chat.raw = not chat.raw
             print(chat.ui.dim(f"  原始事件：{'開' if chat.raw else '關'}"))
+        elif text == "/ok":
+            chat.confirm(None)
+        elif len(text) == 2 and text[0] == "/" and text[1] in "1234":
+            chat.confirm(int(text[1]) - 1)
         elif text.startswith("/save"):
             chat.save(text[5:].strip())
         else:
