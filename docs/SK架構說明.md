@@ -18,7 +18,7 @@ flowchart TB
         plugins[Plugins<br/>Knowledge／Session／Dialog]
         filters[Filters<br/>Audit・ToolBudget・OutputSafety・TerminalTool]
         resilient[ResilientChatCompletion<br/>三層重試 decorator]
-        handlers[HTTP handlers<br/>GeminiDiagnosticsHandler<br/>GeminiRoleFixHandler]
+        handlers[HTTP handlers<br/>GeminiToolNameHandler<br/>GeminiDiagnosticsHandler<br/>GeminiRoleFixHandler]
     end
     subgraph sk[SK 核心 Microsoft.SemanticKernel 1.80.1]
         kernel[Kernel・ChatHistory<br/>auto-invoke 迴圈]
@@ -70,10 +70,10 @@ SK 的設計是「核心只定義通用格式，每家模型各有一個 connect
 
 **「工具清單」怎麼控制：** 模型能看到的工具由 [`ToolSetBuilder.Build`](../src/PromptCopilot.Api/Orchestration/ToolSetBuilder.cs) 依這一輪的種類與 session 狀態決定，`AgentKernelFactory.AddFiltered` 只把清單內的函式註冊進 kernel。不該用的工具根本不在模型眼前，不靠 prompt 叫它不要用。
 
-- **輪的種類（2026-10-05）：**使用者打字是確認輪，只有 `Confirm`、`Discuss`、檢索，沒有任何會改畫面的工具。按下確認卡或採用是動手輪，才有 `SetProfile`、`SetFacetStates`、`AskUser`、`FinalizePrompt`，沒有 `Confirm` 與 `Discuss`。見[先確認再動手設計](superpowers/specs/2026-10-05-confirm-before-act-design.md) §3.1。
+- **輪的種類（2026-10-05）：**使用者打字是確認輪，只有 `Confirm`、`Discuss`、檢索，沒有任何會改畫面的工具；還沒判定題材的那一輪（使用者第一句話）連檢索都沒有，兩個檢索工具沒有題材只會回「請先呼叫 SetProfile」。按下確認卡或採用是動手輪，才有 `SetProfile`、`SetFacetStates`、`AskUser`、`FinalizePrompt`，沒有 `Confirm` 與 `Discuss`。見[先確認再動手設計](superpowers/specs/2026-10-05-confirm-before-act-design.md) §3.1。
 - **session 狀態：**追問額度用完就沒有 `AskUser`、知識庫關掉就沒有檢索工具⋯⋯
 
-kernel 宣告給 Gemini 的工具名是 `<Plugin>_<Function>`（`Dialog_Confirm`、`Session_SetProfile`），不是 `[KernelFunction]` 上的短名。
+kernel 宣告給 Gemini 的工具名是 `<Plugin>_<Function>`（`Dialog_Confirm`、`Session_SetProfile`），不是 `[KernelFunction]` 上的短名。模型偶爾只寫短名，`GeminiToolNameHandler` 在回應進 connector 之前改回全名（第 5 節）。
 
 ---
 
@@ -128,13 +128,14 @@ SK 與 connector 沒有提供、但這個專案需要的東西，都用「包一
 | `IChatCompletionService` 外面（decorator） | [`ResilientChatCompletion`](../src/PromptCopilot.Api/Llm/ResilientChatCompletion.cs) | 把失敗分成四種（連線、內容攔截、回應不可用、致命）分別重試或放棄，分類在 [`LlmFailures.cs`](../src/PromptCopilot.Api/Llm/LlmFailures.cs)。connector 本身不重試 |
 | connector 用的 `HttpClient` 裡（`DelegatingHandler`） | [`GeminiRoleFixHandler`](../src/PromptCopilot.Api/Llm/GeminiRoleFixHandler.cs) | 送出前改請求：把 connector 標錯的 role 改掉（第 5 節） |
 | 同上 | [`GeminiDiagnosticsHandler`](../src/PromptCopilot.Api/Llm/GeminiDiagnosticsHandler.cs) | 讀原始回應：記攔截種類、`safetyRatings`、非 2xx 的錯誤本文，每次呼叫寫一行 log。connector 的例外把這些都丟了（known-issues #7） |
+| 同上（最外層） | [`GeminiToolNameHandler`](../src/PromptCopilot.Api/Llm/GeminiToolNameHandler.cs) | connector 解析回應之前改工具名：模型寫成短名的呼叫改回宣告的全名；改不回來的同一輪第 2 次就中止（第 5 節，known-issues #13） |
 | kernel 的 auto-invoke filter | [`Filters/`](../src/PromptCopilot.Api/Filters/) 四個 | 審計、預算、輸出審查、終止判斷 |
 
 `HttpClient` 在 [`Program.cs`](../src/PromptCopilot.Api/Program.cs) 自己建，才能插 handler：
 
 ```csharp
-var http = new HttpClient(new GeminiDiagnosticsHandler(
-    new GeminiRoleFixHandler(new HttpClientHandler()), logger));
+var http = new HttpClient(new GeminiToolNameHandler(
+    new GeminiDiagnosticsHandler(new GeminiRoleFixHandler(new HttpClientHandler()), logger), nameLogger));
 new GoogleAIGeminiChatCompletionService(model, apiKey, GoogleAIVersion.V1_Beta, http)
 ```
 
@@ -153,14 +154,15 @@ new GoogleAIGeminiChatCompletionService(model, apiKey, GoogleAIVersion.V1_Beta, 
 | 工具結果放在 `GeminiChatMessageContent.CalledToolResults`，`Items` 只有一個空的 `TextContent`；放通用的 `FunctionResultContent` 會丟 `NotSupportedException` | — | `HistoryTrimmer.CompressTurn` 對 Gemini 訊息整則重建（known-issues #8） | `HistoryTrimmerGeminiTests` 釘住這個形狀 | connector 改用通用的 `FunctionResultContent` |
 | 多個工具結果的 `GeminiChatMessageContent` 建構子是 internal | Gemini 要求一則回應裡的 `functionResponse` 數與呼叫數一致，不能拆開 | `HistoryTrimmer` 用反射呼叫；找不到就不壓縮，不會失敗 | `HistoryTrimmerGeminiTests` 的平行呼叫案例 | 建構子公開，或上一條解決 |
 | 模型發出的工具呼叫送回時讀 `ToolCalls`，改 `FunctionCallContent.Arguments` 沒有作用 | — | 尚未處理：`AskUser`／`Discuss` 選項的 tag 剝除在 Gemini 上沒生效（known-issues #11） | — | — |
+| auto-invoke 遇到沒宣告的工具名（模型寫短名 `Confirm`，宣告的是 `Dialog_Confirm`），只回模型一句「Error: Function call request for a function that wasn't defined.」就繼續迴圈；這條路徑不經過任何 filter，一次呼叫最多跑 128 趟 | — | `GeminiToolNameHandler`：唯一對得上的短名改成全名，照常進 plugin 與 filter；改不回來的記進這一輪，第 2 次丟 `UndeclaredToolCallException`，orchestrator 當成沒有結果、走補提示重試 | `GeminiToolNameHandlerTests`；`AgenticOrchestratorGeminiTests` 的短名、未宣告、卡住三個案例 | connector 讓未宣告的呼叫也經過 filter，而且模型不再寫短名 |
 | `ChatHistory` 裡**任何位置**的 system 訊息都被併進 `systemInstruction.parts`，不留在 `contents`；只要還在 history，之後每一輪都會送 | — | orchestrator 的暫時提示（純文字補救、強制收尾）由 `CallWithReminderAsync` 帶，呼叫完就從 history 拿掉同一則。不改成 user 訊息：`HistoryTrimmer.Truncate` 以 user 訊息數輪次（known-issues #3） | `AgenticOrchestratorGeminiTests` 釘住這個形狀 | 不是補丁、不用拿掉；connector 改成保留 system 的位置時，重看補救與強制收尾 |
 
-**SK 核心的一條行為（不是 connector 的怪癖，2026-10-05 驗收查到，known-issues #13）：**模型呼叫一個 kernel 沒宣告的工具名時（例如寫裸名 `Confirm`，宣告的是 `Dialog_Confirm`），SK 不會丟例外，而是回給模型一句「Function call request for a function that wasn't defined」，再繼續 auto-invoke 迴圈。這條路徑**不經過任何 `IAutoFunctionInvocationFilter`**，所以 `ToolBudgetFilter` 數不到、`TerminalToolFilter` 停不下來，模型重送同一個呼叫就會一路跑到單輪逾時。目前的緩解是讓模型看到完整名稱：`flow-propose.md`／`flow-act.md` 寫明完整名稱，純文字補救與強制收尾的提示也從該輪 kernel 組出 `<Plugin>_<Function>`。`system.md` 的 `{{TOOLS}}` 仍是短名。程式端防護（在 HTTP 層把唯一對得上的裸名改寫成全名，或限制每輪 Gemini 呼叫數）是後續待辦。
+**沒宣告的工具名（表格倒數第二列，2026-10-05，known-issues #13）：**這段在 connector 的 `GeminiChatCompletionClient`，不在 SK 核心。`FunctionChoiceBehavior.Auto()` 轉成 `EnabledFunctions(autoInvoke: true)`，名字對不上宣告（不分大小寫）就只回一句錯誤文字，`ToolBudgetFilter` 數不到、`TerminalToolFilter` 停不下來，上限是 `DefaultMaximumAutoInvokeAttempts = 128`。模型多半原封不動重送，實際上先撞到整輪 120 秒逾時。修正前離線重現：模型卡在同一個沒宣告的呼叫上，一輪打了 258 次 Gemini（兩次 SK 呼叫各 129 次）；修正後 3 次就以 `protocol_violation` 收掉。改名能成立，是因為 Gemini 3 只驗 `thoughtSignature` 有沒有帶、不綁函式名稱（下面第二點）。流程段與補救、強制收尾的提示仍寫完整名稱，`system.md` 的 `{{TOOLS}}` 仍是短名；兩種寫法現在都會落到同一個工具。
 
 另外三條屬於 Gemini 本身的行為，connector 換版也不會變：
 
 - `promptFeedback.blockReason = PROHIBITED_CONTENT` 不屬於 `safetySettings` 可調門檻的類別，調門檻擋不掉（known-issues #4 的實測）。
-- Gemini 3 系列要求工具呼叫帶回 `thoughtSignature`；handler 與 `HistoryTrimmer` 都原封不動保留它。
+- Gemini 3 系列要求工具呼叫帶回 `thoughtSignature`；handler 與 `HistoryTrimmer` 都原封不動保留它。只驗有沒有帶，不綁函式名稱：把呼叫改名後連簽章送回是 200，拿掉簽章是 400「Function call is missing a thought_signature」（2026-10-05 實打 `gemini-3.5-flash-lite`）。
 - `contents` 以 model 結尾的請求回 `400 INVALID_ARGUMENT`「Requests ending with a model turn are not supported.」，有沒有帶 tools 都一樣（2026-09-29 實打 `gemini-3.5-flash-lite`）。加上表格最後一列，history 以純文字的 model 訊息結尾時補一則 system 提示，送出去仍以 model 結尾——這就是 known-issues #3。orchestrator 補救前先把那則純文字拿出 history。
 
 ---
@@ -168,7 +170,7 @@ new GoogleAIGeminiChatCompletionService(model, apiKey, GoogleAIVersion.V1_Beta, 
 ## 6. 升級 SK 或 connector 時的檢查清單
 
 1. 看 release notes 有沒有提到 Gemini 的 role、`FunctionResultContent`、`GeminiChatMessageContent`、例外訊息格式。
-2. `dotnet test src/PromptCopilot.sln`：`GeminiRoleFixHandlerTests`、`GeminiDiagnosticsHandlerTests`、`HistoryTrimmerGeminiTests`、`AgenticOrchestratorGeminiTests` 是專門盯 connector 行為的，紅了就回第 5 節那張表逐條確認。
+2. `dotnet test src/PromptCopilot.sln`：`GeminiRoleFixHandlerTests`、`GeminiDiagnosticsHandlerTests`、`GeminiToolNameHandlerTests`、`HistoryTrimmerGeminiTests`、`AgenticOrchestratorGeminiTests` 是專門盯 connector 行為的，紅了就回第 5 節那張表逐條確認。
 3. `LlmFailureClassifier.ContentBlockMarkers` 靠 connector 的例外字樣判斷「被擋」，例外訊息改了要跟著改。
 4. 起 compose 跑一段 3 輪以上的對話（有 `SearchPresets`、有定稿），看 `docker compose logs api` 的 `Gemini 200` 與 `Turn …` 行，確認沒有 400。
 5. 某個補丁不再需要時，把它的程式、DI 註冊、測試與這份文件的那一列一起拿掉。
@@ -180,4 +182,4 @@ new GoogleAIGeminiChatCompletionService(model, apiKey, GoogleAIVersion.V1_Beta, 
 - [主規格](superpowers/specs/2026-09-21-genai-prompt-copilot-design.md)：§4.2 Plugins 與 Tools、§4.3 工具清單組裝、§4.5 Filters、§4.6 失敗模式與重試、§4.7 Chat history 修剪、§4.8 Provider 與 connector 選擇
 - [多輪對話設計](superpowers/specs/2026-09-22-multi-turn-dialogue-design.md)：一輪即交易、auto-invoke 迴圈的邊角
 - [先確認再動手設計](superpowers/specs/2026-10-05-confirm-before-act-design.md)：確認輪與動手輪、待確認進快照、動手輪不跑輸入分類器
-- [已知問題](known-issues.md)：#3、#4、#7、#8、#11 與 connector 相關；#13 是 SK 未定義函式路徑繞過 filter
+- [已知問題](known-issues.md)：#3、#4、#7、#8、#11、#13 與 connector 相關（#13 已修正：沒宣告的工具名繞過 filter）

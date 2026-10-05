@@ -232,6 +232,7 @@ Confirm(
                   且  !wantsAutoComplete
 
 兩種輪：session 的 retrieval 為 off 時不註冊 SearchSimilarPrompts、SearchPresets（2026-09-25 起）
+確認輪：Profile == null（使用者第一句話）時也不註冊這兩個（2026-10-05 起）
 ```
 
 確認輪沒有任何會改畫面的工具，模型想直接動手也沒有工具可叫；動手輪沒有 `Confirm` 與 `Discuss`，只能照確認的內容追問或定稿。
@@ -239,6 +240,8 @@ Confirm(
 兩個目標各由一個獨立機制保證，中間沒有耦合：`AskCount` 上限 2 管的是「LLM 不無限追問」，`Discuss` 管的是「使用者能繼續對話」，`Discuss` 不碰 `AskCount`。
 
 `wantsAutoComplete`（「隨便」「你決定」「直接給我」）命中的確認輪**拿掉 `Discuss`**，只剩 `Confirm`：模型逐個維度列出打算補什麼讓使用者確認，判斷結果記在待確認裡（§4.4）。確認輪不改 `AutoFill`。按下確認的動手輪沿用這個判斷，**拿掉 `AskUser`**、把 `Session.AutoFill` 設為 true，模型只能補齊後定稿。否則 LLM 會回一句「好的，我來幫你決定」就結束回合，使用者得再送一句才拿得到東西。
+
+還沒題材的確認輪不給檢索：兩個檢索工具在 `Profile == null` 時只會回「請先呼叫 SetProfile」，而 `SetProfile` 要到動手輪才有。留著的話，模型照錯誤訊息去叫這一輪沒有的工具，正好是 §4.6 最後一列的觸發條件。題材定了之後的確認輪照舊有檢索，`Discuss` 回答「寫實跟動漫差在哪」時可以附知識庫的方向。動手輪不受影響：`SetProfile` 就在同一輪。
 
 `Discuss` **不需要 `Profile`**。§4.6 對 `AskUser` / `FinalizePrompt` 在 `Profile == null` 時擋回要求先 `SetProfile`；`Discuss` 不受此限，使用者第一句就問「這個怎麼用？」時 LLM 要能直接回答。
 
@@ -334,7 +337,7 @@ LedgerEntry {
 | `FinalizePrompt` 時 `AskUser` 仍在清單上，且套用這次的 `facetStates` 後仍有 `missing`、又沒有委託 note 的 facet（定稿閘門） | 不終止、不定稿，回結構化錯誤要求先 `AskUser`（一次最多 3 個維度），列出缺的 facet id；計入 tool 預算。預算耗盡後的強制定稿（下一列）不受此限（`TurnContext.ForcedFinalize`）。動手輪的 `FinalizePrompt` 永遠在清單上，拿不掉，所以在呼叫時擋 |
 | Tool 預算耗盡 | `Terminate` 後再跑一次強制收尾：動手輪只掛 `FinalizePrompt`，附「請立即以現有資訊定稿」提示；確認輪只掛 `Confirm`，附「請立即以目前的理解確認」提示（強制定稿等於跳過確認）。提示寫該輪 kernel 宣告的完整工具名，同樣呼叫完就從 history 拿掉 |
 | 按確認卡（`confirm`）時沒有待確認、或不是最新一張 | 端點回 `409`，不進 orchestrator；`choice` 跟卡片對不上（有選項沒選、沒選項卻帶、超出範圍）回 `400`（§10.1） |
-| 模型呼叫未宣告的工具名（例如裸名 `Confirm`，kernel 宣告的是 `Dialog_Confirm`） | SK 回一句錯誤給模型，這條路徑**不經過任何 filter**，`ToolBudgetFilter` 數不到，模型可能一路重送到逾時（known-issues #13）。目前靠 prompt 與補救／強制提示寫完整名稱緩解；程式端防護是後續待辦 |
+| 模型呼叫未宣告的工具名（例如裸名 `Confirm`，kernel 宣告的是 `Dialog_Confirm`） | connector 只回模型一句錯誤，這條路徑**不經過任何 filter**，`ToolBudgetFilter` 數不到，修正前模型一路重送到逾時（known-issues #13）。`GeminiToolNameHandler` 在回應進 connector 之前處理：裸名只對上一個宣告就改成那個全名，照常進 plugin 與 filter；改不回來的（這一輪沒有的工具）記進這一輪，第 2 次就中止這次呼叫，當成沒有結果，走上面「LLM 回純文字」那一列的補提示重試，提示先點名叫錯的工具。audit 的 `Turn_Completed` 記 `toolNameRepairs`，`Protocol_Violation` 與失敗的 `Turn_Failed` 記 `undeclared` |
 | LLM 呼叫失敗（傳輸／空回應／內容攔截） | 依下方三層規則內部重試；重試耗盡才算本輪失敗 |
 | 單輪逾時（預設 120s） | `CancellationToken` 取消；退避等待吃同一個 token，不會出現「逾時了還在退避」 |
 | **任何失敗**（逾時、取消、例外、上游攔截、輸出側攔截） | **session 回滾至本輪開始前**，發 `error` 或 `blocked` 事件 |
@@ -412,7 +415,7 @@ RunTurnAsync(session, input, ct):  // input = TurnInput(text, adoption?, adopted
 - 下列行為要求只能靠 prompt 約束，程式不擋（列入 §12.3 eval 觀察）：
   - **會改畫面的話用 `Confirm`，純提問才用 `Discuss`**。用錯成 `Discuss` 而且帶了變更時由 §4.5 擋回；沒帶變更就只是多一輪對話，由 `DiscussStreak` 兜底
   - **確認卡的寫法**：用使用者的說法、不寫英文 tag；跟現有內容衝突或有多種解讀時給 `choices`；不預告確認後是追問還是定稿（確認輪無法得知使用者的自由回答補了哪些維度，2026-10-05 驗收實測一直講錯），只有「隨便」例外——那一定直接定稿，而且要逐個維度列出補什麼
-  - **工具名寫完整**：流程段寫明 `Dialog_Confirm`、`Dialog_FinalizePrompt` 這類 kernel 宣告的名稱（模型偶爾呼叫裸名，見 §4.6 最後一列）
+  - **工具名寫完整**：流程段寫明 `Dialog_Confirm`、`Dialog_FinalizePrompt` 這類 kernel 宣告的名稱。模型寫成裸名時程式會改回來（§4.6 最後一列），這條是減少發生，不是唯一防線
 
 **先前提供過的選項注入**（來源是 `Session.PresetLedger` 的 `OfferedAs`，§4.4）：
 
@@ -872,6 +875,7 @@ hover 顯示 facet 名稱與狀態。`notApplicable` 的整個維度（如風景
 `ToolSetBuilder.Build`：
 
 - 確認輪只有 `Confirm`、`Discuss`、檢索，沒有任何會改畫面的工具；動手輪有改狀態的工具，沒有 `Confirm`、`Discuss`、`RequestSaveConsent`
+- 還沒題材的確認輪沒有檢索工具；動手輪不受影響
 - 動手輪 `AskCount >= 2` 時無 `AskUser`；`Finalized` 的確認輪有 `RequestSaveConsent`、動手輪無 `AskUser`
 - 確認輪 `Collecting` 且 `DiscussStreak < 8` → 有 `Discuss`；`= 8` → 無
 - 確認輪 `Finalized` 且 `DiscussStreak = 8` → 仍有 `Discuss`
@@ -993,7 +997,8 @@ GenAIPromptCopilot/
 │  │  ├─ Filters/                        # TerminalTool, ToolBudget, OutputSafety, Audit
 │  │  ├─ Safety/                         # SafetyGuard (輸入側), SafetyClassifier, Denylist
 │  │  ├─ Llm/                            # ResilientChatCompletion, 失敗分類,
-│  │  │                                  # GeminiEmbeddingClient, GeminiRoleFixHandler
+│  │  │                                  # GeminiEmbeddingClient, GeminiRoleFixHandler,
+│  │  │                                  # GeminiDiagnosticsHandler, GeminiToolNameHandler
 │  │  ├─ Streaming/                      # AgentEvent, Channel 基礎建設, SSE writer
 │  │  ├─ Sessions/                       # Session, SessionStore, PresetLedger, Confirmation（待確認與按確認的驗證）
 │  │  ├─ Data/                           # repositories（Npgsql 原生 SQL，無 DbContext／entity）
@@ -1111,5 +1116,6 @@ Azure 部署排除。
 | 確認卡預告下一步 | 不預告（「隨便」除外，那一定直接定稿） | 確認輪無法得知自由回答補了哪些維度；驗收時連伺服器先算好的提示都講錯 |
 | 動手輪的輸入檢查 | 不跑 | 這一輪的使用者訊息是上一輪模型已過輸出審查的確認文字，原話在確認輪已過輸入審查；省一次 LLM 呼叫 |
 | 推薦範圍 | 只在定稿卡；採用只在定稿後 | 使用者 2026-10-05 決定未定稿前不推薦（推翻 2026-09-25「每次追問也推薦」） |
-| 未宣告工具名的防護 | 目前只在 prompt 與補救／強制提示寫完整名稱 | 根因在 SK 的未定義函式路徑不經 filter；程式端防護（改寫裸名或限制每輪 Gemini 呼叫數）列為後續（known-issues #13） |
+| 未宣告工具名的防護 | HTTP 層改寫唯一對得上的裸名；改不回來的同一輪第 2 次中止，走補提示重試（2026-10-05） | 根因在 connector 的未宣告路徑不經 filter（known-issues #13）。改名沒有破壞 `thoughtSignature`：Gemini 3 只驗有沒有帶（實打驗證）。不採「限制每輪 Gemini 呼叫數」：數字難定，而且只能讓失敗變快，改名能讓那一輪直接成功 |
+| 還沒題材的確認輪 | 不給檢索工具 | 沒題材時兩個檢索工具只會回「請先呼叫 SetProfile」，而這一輪沒有 `SetProfile`；不能用的工具不放進清單（§4.3） |
 | 測試用審查開關 | 逐則帶 `safety: off`，後端 `Safety:AllowDisable` 預設關、沒開回 403；輸入分類器照跑只取 `wantsAutoComplete`；Gemini 的攔截不動；未審查的定稿不能 `save-to-shared` | 要能重現「我們自己的防線誤擋」與「關掉之後上游還擋不擋」；做成逐則而不是 session 屬性，重新整理就回到開著。共享庫會被別的對話檢索到，沒檢過的內容不能從唯一的寫入路徑進去（§6.1） |

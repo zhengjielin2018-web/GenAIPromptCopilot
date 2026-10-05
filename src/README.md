@@ -66,4 +66,4 @@ GEMINI_API_KEY=<key> PC_INTEGRATION=1 dotnet test --filter GeminiContractTests  
 
 ## Eval
 
-改完 `Prompts/` 底下的樣板（`system.md`、`flow-propose.md`、`flow-act.md`）照 [`docs/eval-cases.md`](../docs/eval-cases.md) 手跑一遍，把 `prompt_version` 與結果填回去。確認輪與動手輪用的 prompt 不同，`prompt_version` 也不同。改 prompt 文字要多跑幾輪看 `Turn_Failed`：模型呼叫工具時偶爾漏掉 `Dialog_` 這類前綴，會一路重試到逾時，發生率跟 prompt 文字有關（[known-issues #13](../docs/known-issues.md)）。
+改完 `Prompts/` 底下的樣板（`system.md`、`flow-propose.md`、`flow-act.md`）照 [`docs/eval-cases.md`](../docs/eval-cases.md) 手跑一遍，把 `prompt_version` 與結果填回去。確認輪與動手輪用的 prompt 不同，`prompt_version` 也不同。模型呼叫工具時偶爾漏掉 `Dialog_` 這類前綴，發生率跟 prompt 文字有關；程式會改回全名（`GeminiToolNameHandler`），不影響那一輪，但改 prompt 後可以看 audit 的 `toolNameRepairs` 與 `undeclared`，或 log 的 `Gemini tool name repaired`，知道新文字讓它變多還是變少（[known-issues #13](../docs/known-issues.md)）。
