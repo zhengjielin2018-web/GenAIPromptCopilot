@@ -863,6 +863,8 @@ public class AgenticOrchestratorTests
         var completed = Assert.Single(h.Audit.Entries, a2 => a2.EventType == "Turn_Completed");
         Assert.Contains("""adoption":{"presetId":41720,"dimension":"clothing","take":["clothing.upper"],"filled":["clothing.upper"],"replaced":[]}""", completed.PayloadJson!);
         Assert.Contains("""tagOrigins":{"rag":1,"adopted":2,"llm":1,"base":1}""", completed.PayloadJson!);
+        Assert.Contains("\"kind\":\"adopt\"", completed.PayloadJson!);
+        Assert.Contains("\"ragSplit\":{\"borrowed\":[\"sandals\"],\"echo\":[]}", completed.PayloadJson!);
         Assert.StartsWith("採用〈", completed.RawInput!);
     }
 
@@ -1302,5 +1304,72 @@ public class AgenticOrchestratorTests
         });
         var events = await h.RunAsync("一個女生");
         Assert.Equal("confirm", Assert.Single(events.OfType<FinalEvent>()).Kind);
+    }
+
+    // ---- 檢索時機（2026-10-06）----
+
+    /// <summary>設計 §5.2：每輪記輪別與檢索計數；確認輪說隨便時記 autoComplete。</summary>
+    [Fact]
+    public async Task Turn_completed_records_kind_search_counts_and_auto_complete()
+    {
+        var h = new Harness();
+        h.GuardChat.Then(FakeChatCompletion.Text("""{"nsfw":false,"realPerson":false,"personName":null,"wantsAutoComplete":true,"reason":"ok"}"""));
+        h.Chat.ThenAsync(async (hist, k) => new[] { await Invoke(hist, k!, "Dialog", "Confirm", new { message = "我會直接定稿，風格補成寫實攝影。" }) });
+        await h.RunAsync("隨便，直接給我");
+
+        h.Chat.ThenAsync(async (hist, k) =>
+        {
+            var t = k!.Turn(); t.Searches = 1; t.SearchItems = 3; t.SearchItemErrors = 1;   // KnowledgePlugin 會累加；harness 沒掛它，直接寫
+            await Invoke(hist, k!, "Session", "SetProfile", new { profile = "portrait" });
+            return new[] { await Invoke(hist, k!, "Dialog", "FinalizePrompt", FinalizeArgs()) };
+        });
+        await h.RunAsync(new TurnInput(ConfirmValidator.AcceptText, Confirmed: new ConfirmedInput(h.Session.PendingConfirmation!, null)));
+
+        var completed = h.Audit.Entries.Where(a => a.EventType == "Turn_Completed").Select(a => a.PayloadJson!).ToList();
+        Assert.Equal(2, completed.Count);
+        Assert.Contains("\"kind\":\"propose\"", completed[0]);
+        Assert.Contains("\"searches\":0", completed[0]);
+        Assert.Contains("\"autoComplete\":true", completed[0]);
+        Assert.Contains("\"kind\":\"act\"", completed[1]);
+        Assert.Contains("\"searches\":1", completed[1]);
+        Assert.Contains("\"searchItems\":3", completed[1]);
+        Assert.Contains("\"searchItemErrors\":1", completed[1]);
+        Assert.DoesNotContain("autoComplete", completed[1]);                        // 只有確認輪記
+    }
+
+    /// <summary>設計 §5.2：追問卡記選項數與帶 presetId 的；不是定稿就沒有 ragSplit。</summary>
+    [Fact]
+    public async Task Ask_turn_records_option_counts()
+    {
+        var h = new Harness();
+        h.Chat.ThenAsync(async (hist, k) =>
+        {
+            await Invoke(hist, k!, "Session", "SetProfile", new { profile = "portrait" });
+            return new[] { await Invoke(hist, k!, "Dialog", "AskUser", AskArgs()) };
+        });
+        await h.ActAsync();
+        var completed = Assert.Single(h.Audit.Entries, a => a.EventType == "Turn_Completed");
+        Assert.Contains("\"options\":{\"total\":2,\"withPreset\":0}", completed.PayloadJson!);
+        Assert.DoesNotContain("ragSplit", completed.PayloadJson!);
+    }
+
+    /// <summary>設計 §5.1：定稿記 rag 的借來／碰巧對上（tag 原文）。</summary>
+    [Fact]
+    public async Task Finalized_turn_records_rag_split()
+    {
+        var h = new Harness();
+        MakeFinalized(h.Session);
+        h.Session.Ledger.Timeline.SeeModel("cafe");                                  // 模型先寫
+        h.Session.Ledger.Record(new LedgerEntry { Id = 4581, Title = "夜間咖啡廳", PromptSnippet = "night, cafe, neon lights, streetspace", FacetIds = new[] { "scene.location" } },
+            new LedgerHit("scene", 0.2, true));
+        h.Chat.ThenAsync(async (hist, k) => new[] { await Invoke(hist, k!, "Dialog", "FinalizePrompt", new
+        {
+            positivePrompt = "masterpiece, cafe, streetspace, long coat", negativePrompt = "lowres", tips = "t", intentSummary = "雨夜咖啡廳前的女士",
+            facetStates = Array.Empty<object>(),
+        }) });
+        await h.ActAsync("我會把背景改成深夜咖啡廳前。");
+        var completed = Assert.Single(h.Audit.Entries, a => a.EventType == "Turn_Completed");
+        Assert.Contains("\"ragSplit\":{\"borrowed\":[\"streetspace\"],\"echo\":[\"cafe\"]}", completed.PayloadJson!);
+        Assert.Contains("\"kind\":\"act\"", completed.PayloadJson!);
     }
 }
