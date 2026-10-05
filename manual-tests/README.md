@@ -9,6 +9,7 @@
 | :--- | :--- |
 | `start_api.py` | 起資料庫，再用 `.env` 的帳密把 API 跑在 `http://localhost:5000` |
 | `chat.py` | 終端機對話客戶端：把每一輪的 SSE 事件印成看得懂的樣子 |
+| `replay.py` | 檢索時機驗收的重播腳本：照 `replay_scenarios.json` 的劇本送話、自動按確認，印出每步有沒有檢索 |
 
 兩支都只用 Python 標準函式庫，不用裝套件。從專案根目錄或任何地方執行都可以。
 
@@ -65,6 +66,17 @@ python manual-tests/chat.py                  # 加 --raw 同時看原始事件 J
 **先確認再動手**：你打的任何會改畫面的話（描述、回答追問、要求修改、「隨便」），助手都先出一張確認卡，什麼都還沒改。打 `/ok` 套用；卡片列了解讀時打 `/1`～`/4` 選一個；直接打字（包括「好」）會當成修正，再出一張新的確認卡。只是問問題（「寫實跟動漫差在哪」）不會出確認卡。按下確認的那一輪，開頭會印出 `你：對，就這樣`（或你選的那句）。
 
 指令：`/new` 開新 session、`/ok` 按確認卡的「對，就這樣」、`/1`～`/4` 選確認卡的第幾個解讀、`/raw` 切換原始事件、`/save <一句話描述>` 存進共享庫、`/quit` 離開。
+
+## 2.5 重播檢索時機劇本
+
+```bash
+python manual-tests/replay.py --scenario all --runs 3     # Q1～Q3 各跑 3 次；--scenario Q1 只跑一個
+```
+
+每跑一次印一張表：每一步的確認輪、動手輪結局，有叫 `SearchPresets` 的標「（查）」，最後一欄是對照劇本預期的判定
+（`OK`／`MISS` 沒查／`NO-TURN` 預期要查的那一輪沒發生／`SKIP` 沒有追問卡可選）。最後一行是 session id，
+交給報表：`cd scripts && ./.venv/Scripts/python.exe adoption_report.py --sessions <那一行>`。
+劇本與預期見 `docs/eval-cases.md` 的「2026-10-06 檢索時機」。
 
 ## 3. 可以試的輸入
 
