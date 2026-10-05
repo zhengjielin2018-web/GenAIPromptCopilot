@@ -131,6 +131,24 @@ public class SessionTests
         Assert.Empty(s.Adoptions); Assert.False(s.Ledger.Contains(41720));
     }
 
+    /// <summary>先確認再動手設計 §3.4：待確認進快照。確認輪失敗不留半張卡；動手輪失敗時卡片回來可以再按。</summary>
+    [Fact]
+    public void Pending_confirmation_is_part_of_the_snapshot()
+    {
+        var s = New();
+        var p = new PendingConfirmation(2, "m", new[] { "a", "b" }, true);
+        s.SetPendingConfirmation(p);
+        var snap = s.Snapshot();
+        s.ClearPendingConfirmation();
+        Assert.Null(s.PendingConfirmation);
+        s.Restore(snap);
+        Assert.Same(p, s.PendingConfirmation);
+
+        var empty = New().Snapshot();
+        s.Restore(empty);
+        Assert.Null(s.PendingConfirmation);
+    }
+
     [Fact]
     public void SessionStore_creates_and_finds_by_id()
     {
