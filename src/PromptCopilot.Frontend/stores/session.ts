@@ -1,10 +1,11 @@
 import { defineStore } from 'pinia'
 import { readSse } from '../lib/sse'
-import { initialState, beginTurn, applyEvent, endTurn, failHttp, hydrate, appendBatch, latestFinalizedTurn as latestFinalizedTurnOf, type ChatState } from '../lib/reducer'
+import { initialState, beginTurn, applyEvent, endTurn, failHttp, hydrate, appendBatch, latestFinalizedTurn as latestFinalizedTurnOf, type ChatState, type FinalEntry } from '../lib/reducer'
 import { loadPersisted, savePersisted } from '../lib/persist'
 import { loadPrefs, savePrefs, type Prefs } from '../lib/prefs'
 import { composeDraft, appendChip, chipKey, type Chip } from '../lib/composer'
-import { latestRecommendableTurn as latestRecommendableTurnOf, adoptPlaceholder } from '../lib/adopt'
+import { adoptPlaceholder } from '../lib/adopt'
+import { pendingConfirmTurn, confirmDisplay } from '../lib/confirm'
 import { messageBody } from '../lib/safety'
 import { AGENT_EVENT_TYPES, type AdoptRequest, type AgentEvent, type FacetCatalog, type RecommendedSet, type RetrievalMode } from '../types/api'
 import type { TurnBody } from '../composables/useApi'
@@ -57,10 +58,14 @@ export const useSessionStore = defineStore('session', () => {
   /** 最新一張定稿卡：save_consent_requested 要展開它，也只有它可以存（後端永遠存 LastFinal）。 */
   const latestFinalizedTurn = computed<number | null>(() => latestFinalizedTurnOf(state.value.transcript))
 
+  /** 伺服器回過 409 的確認卡輪次（跟 batchState 的 stale 同一個想法）。不存：重載後由 transcript 重新推導；可 JSON 來回。 */
+  const staleConfirms = ref<number[]>([])
+
+  /** 可以按的確認卡（先確認再動手設計 §7）；null 表示沒有。輸入框的提示與確認卡的按鈕看它。 */
+  const pendingConfirm = computed<number | null>(() => pendingConfirmTurn(state.value.transcript, staleConfirms.value))
+
   /** 對照表正在看的那套；null 表示關閉。 */
   const adoptTarget = ref<{ set: RecommendedSet; dimension: string; turnIndex: number } | null>(null)
-  /** 只有最新一張追問卡／定稿卡上的推薦可以採用。 */
-  const latestRecommendableTurn = computed<number | null>(() => latestRecommendableTurnOf(state.value.transcript))
 
   /** 換一批的狀態，key 是 `${turnIndex}:${dimension}`。不存：重載後回到可以再按。
    *  stale：伺服器回 409（這張卡已經不是最新，或這段對話還有一輪在跑）——不可能靠再按解決，畫面不給重試。 */
@@ -117,6 +122,7 @@ export const useSessionStore = defineStore('session', () => {
     // 舊對話的組合不能採用到新對話
     adoptTarget.value = null
     batchState.value = {}
+    staleConfirms.value = []
     notice.value = null
     persist()
   }
@@ -136,7 +142,7 @@ export const useSessionStore = defineStore('session', () => {
     closeAdopt()
     busy.value = true
     notice.value = null
-    state.value = beginTurn(state.value, display)
+    state.value = beginTurn(state.value, display, { confirm: 'confirm' in body })
     // 送出當下先存一次：輪次中重載時，原文經 draft 回到輸入框（hydrate 會拿掉沒有下文的 user 條目；採用沒有原文可回，存空字串）
     persist({ draft: 'text' in body ? body.text : '' })
     const ctl = new AbortController()
@@ -151,8 +157,11 @@ export const useSessionStore = defineStore('session', () => {
       }
       if (!r.ok || !r.body) {
         let msg = r.status === 409 ? '這個對話還有一輪在跑，等它結束再送。' : `送出失敗（HTTP ${r.status}）。`
-        // 採用被拒（400／409）與審查開關被拒（403：後端中途關掉了開放）帶有理由：直接顯示
-        if ('adopt' in body || r.status === 403) { try { msg = (await r.json()).error ?? msg } catch { /* 沒 body 就用預設字 */ } }
+        // 採用、按確認被拒（400／409）與審查開關被拒（403：後端中途關掉了開放）帶有理由：直接顯示
+        if ('adopt' in body || 'confirm' in body || r.status === 403) { try { msg = (await r.json()).error ?? msg } catch { /* 沒 body 就用預設字 */ } }
+        // 按確認被 409 擋下：這張卡不會因為再按而成功，標成過期，按鈕與輸入框提示一起收掉
+        if ('confirm' in body && r.status === 409 && !staleConfirms.value.includes(body.confirm.turnIndex))
+          staleConfirms.value = [...staleConfirms.value, body.confirm.turnIndex]
         state.value = failHttp(state.value, `http_${r.status}`, msg)
         return
       }
@@ -171,8 +180,16 @@ export const useSessionStore = defineStore('session', () => {
     }
   }
 
+  /** 按確認卡（先確認再動手設計 §3.5）：泡泡先顯示「對，就這樣」或選的那句，session 事件帶回同一句。只有可按的那張、沒在跑時能按（伺服器也會擋）。 */
+  async function confirm(turnIndex: number, choice: number | null) {
+    if (busy.value || turnIndex !== pendingConfirm.value) return
+    const entry = state.value.transcript.findLast((e): e is FinalEntry => e.kind === 'final' && e.turnIndex === turnIndex)
+    if (!entry || entry.data.kind !== 'confirm') return
+    await runTurn(confirmDisplay(entry.data, choice), { confirm: { turnIndex, choice } })
+  }
+
   function openAdopt(set: RecommendedSet, dimension: string, turnIndex: number) {
-    if (busy.value || turnIndex !== latestRecommendableTurn.value) return
+    if (busy.value || turnIndex !== latestFinalizedTurn.value) return
     adoptTarget.value = { set, dimension, turnIndex }
   }
   function closeAdopt() { adoptTarget.value = null }
@@ -181,7 +198,7 @@ export const useSessionStore = defineStore('session', () => {
   async function nextBatch(turnIndex: number, dimension: string) {
     const key = `${turnIndex}:${dimension}`
     const id = state.value.sessionId
-    if (!id || busy.value || turnIndex !== latestRecommendableTurn.value || batchState.value[key] === 'loading') return
+    if (!id || busy.value || turnIndex !== latestFinalizedTurn.value || batchState.value[key] === 'loading') return
     batchState.value = { ...batchState.value, [key]: 'loading' }
     try {
       const r = await api.nextRecommendations(id, dimension, turnIndex)
@@ -258,10 +275,10 @@ export const useSessionStore = defineStore('session', () => {
 
   return {
     state, catalog, bootError, notice, busy, draft, chips, draftDirty, drawerPresetId, expandedSaveTurn, saveState,
-    dimensionLabels, latestFinalizedTurn,
+    dimensionLabels, latestFinalizedTurn, pendingConfirm, confirm,
     prefs, retrievalMismatch, setRetrievalPref, setShowTrace, safetyCanDisable, safetyOff, setSafetyOff,
     boot, newSession, send, retry, setDraft, toggleChip, isChipSelected, openDrawer, closeDrawer, expandSave, save,
-    adoptTarget, latestRecommendableTurn, openAdopt, closeAdopt, adopt,
+    adoptTarget, openAdopt, closeAdopt, adopt,
     batchState, nextBatch,
   }
 })

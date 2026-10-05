@@ -51,11 +51,11 @@
 import type { Recommendations } from '../types/api'
 import type { FinalEntry } from '../lib/reducer'
 import { recommendationLead, setReasonLabel, sourceName } from '../lib/copy'
-/** recs：該輪的 recommendations 事件；turnIndex：卡片的輪次。只有最新一張追問卡／定稿卡可以採用與換一批（舊卡的狀態已失效）。 */
+/** recs：該輪的 recommendations 事件；turnIndex：卡片的輪次。只有最新一張定稿卡可以採用與換一批（2026-10-05 起只有定稿卡推薦）。 */
 const props = defineProps<{ recs: Recommendations; turnIndex: number }>()
 const s = useSessionStore()
 const broken = reactive(new Set<number>())
-const adoptable = computed(() => s.latestRecommendableTurn === props.turnIndex && !s.busy)
+const adoptable = computed(() => s.latestFinalizedTurn === props.turnIndex && !s.busy)
 function batchOf(dimension: string) { return s.batchState[`${props.turnIndex}:${dimension}`] }
 
 const root = ref<HTMLElement | null>(null)

@@ -3,9 +3,10 @@ using PromptCopilot.Api.Streaming;
 
 namespace PromptCopilot.Api.Orchestration;
 
-/// <summary>一輪的輸入：使用者原文；或伺服器組好的採用句加上要記帳的採用與片段（設計 §6）。
+/// <summary>一輪的輸入：使用者原文；或伺服器組好的採用句加上要記帳的採用與片段（設計 §6）；
+/// 或按下確認卡（Confirmed，先確認再動手設計 §3.5：Text 是「對，就這樣」或選的那句）。
 /// SafetyOn=false：這一輪關掉程式端審查（測試用；端點只在 Safety:AllowDisable 開著時收）。Gemini 自己的攔截不受影響。</summary>
-public sealed record TurnInput(string Text, Adoption? Adoption = null, LedgerEntry? AdoptedPreset = null, bool SafetyOn = true);
+public sealed record TurnInput(string Text, Adoption? Adoption = null, LedgerEntry? AdoptedPreset = null, bool SafetyOn = true, ConfirmedInput? Confirmed = null);
 
 public interface IPromptOrchestrator
 {

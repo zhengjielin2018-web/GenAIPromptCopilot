@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { adoptRows, setChoice, takeAll, adoptPayload, latestRecommendableTurn, adoptPlaceholder, mineLabel } from '../lib/adopt'
-import type { Entry } from '../lib/reducer'
+import { adoptRows, setChoice, takeAll, adoptPayload, adoptPlaceholder, mineLabel } from '../lib/adopt'
 import type { RecommendedSet } from '../types/api'
 
 const SET: RecommendedSet = { presetId: 41720, title: '和風女僕', dist: 0.2, facets: [
@@ -54,18 +53,5 @@ describe('adoptPayload batch', () => {
     expect(adoptPayload(7, 'style', rows, 2)).toEqual({ presetId: 7, dimension: 'style', take: ['style.genre'], batch: 2 })
     expect(adoptPayload(7, 'style', rows)).toEqual({ presetId: 7, dimension: 'style', take: ['style.genre'] })
     expect(adoptPayload(7, 'style', rows, null)).toEqual({ presetId: 7, dimension: 'style', take: ['style.genre'] })
-  })
-})
-
-describe('latestRecommendableTurn', () => {
-  const ask = (t: number): Entry => ({ kind: 'final', turnIndex: t, data: { kind: 'ask', preamble: 'p', asks: [] } })
-  const fin = (t: number): Entry => ({ kind: 'final', turnIndex: t, data: { kind: 'finalized', positive: 'p', negative: 'n', tips: 't', intentSummary: 'i' } })
-  const msg = (t: number): Entry => ({ kind: 'final', turnIndex: t, data: { kind: 'message', message: 'm' } })
-
-  // 只有最新一張追問卡或定稿卡可以採用；中間的討論氣泡不算新結果
-  it('returns the latest ask or finalized turn, skipping message entries', () => {
-    expect(latestRecommendableTurn([ask(1), fin(2), msg(3)])).toBe(2)
-    expect(latestRecommendableTurn([fin(2), ask(3)])).toBe(3)
-    expect(latestRecommendableTurn([{ kind: 'user', text: 'x' }, msg(1)])).toBeNull()
   })
 })

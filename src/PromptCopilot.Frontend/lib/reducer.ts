@@ -5,7 +5,8 @@ export interface UserEntry { kind: 'user'; text: string }
 export interface ToolEntry { kind: 'tool'; callId: string; name: string; argsSummary: string; summary: string | null; presets: PresetRef[]; detail?: ToolDetail | null; done: boolean }
 /** recommendations 是 2026-09-25 加的：舊條目沒有這個鍵。 */
 export interface FinalEntry { kind: 'final'; turnIndex: number; data: FinalData; recommendations?: Recommendations | null }
-export interface FailureEntry { kind: 'failure'; source: 'error' | 'blocked' | 'stream_ended' | 'http'; code: string; message: string; originalText: string }
+/** confirm（2026-10-05）：按確認的那一輪連線層失敗，確認卡還在、可以再按；畫面不給「放回輸入框」。 */
+export interface FailureEntry { kind: 'failure'; source: 'error' | 'blocked' | 'stream_ended' | 'http'; code: string; message: string; originalText: string; confirm?: boolean }
 export type Entry = UserEntry | ToolEntry | FinalEntry | FailureEntry
 
 export interface ChatState {
@@ -24,7 +25,7 @@ export interface ChatState {
   lastFinal: FinalizedData | null
   /** ask 之後高亮的維度，下一個 session 事件清掉 */
   highlighted: string[]
-  pending: { text: string; settled: boolean; snapshot: ChatState } | null
+  pending: { text: string; settled: boolean; snapshot: ChatState; confirm?: boolean } | null
 }
 
 export function initialState(): ChatState {
@@ -56,10 +57,12 @@ export function hydrate(state: ChatState, dto: SessionSnapshotDto, transcript: E
 
 /** 送出當下：先快照（不含 pending），再推 user 條目。斷線可能發生在第一個事件之前，所以不能等 session 事件才快照。
  *  用 JSON 複製而不是 structuredClone：store 傳進來的是 Vue 的 reactive proxy，structuredClone 會丟 DataCloneError；
- *  狀態全是純資料（沒有 undefined／Date／函式），JSON 來回不失真。 */
-export function beginTurn(state: ChatState, text: string): ChatState {
+ *  狀態全是純資料（沒有 undefined／Date／函式），JSON 來回不失真。
+ *  opts.confirm：按確認卡的那一輪（先確認再動手設計 §7），失敗時不帶原文。 */
+export function beginTurn(state: ChatState, text: string, opts: { confirm?: boolean } = {}): ChatState {
   const snapshot: ChatState = JSON.parse(JSON.stringify({ ...state, pending: null }))
-  return { ...state, transcript: [...state.transcript, { kind: 'user', text }], pending: { text, settled: false, snapshot } }
+  const pending = opts.confirm ? { text, settled: false, snapshot, confirm: true } : { text, settled: false, snapshot }
+  return { ...state, transcript: [...state.transcript, { kind: 'user', text }], pending }
 }
 
 export function applyEvent(state: ChatState, ev: AgentEvent): ChatState {
@@ -192,7 +195,11 @@ export function failHttp(state: ChatState, code: string, message: string): ChatS
 function fail(state: ChatState, source: FailureEntry['source'], code: string, message: string): ChatState {
   const p = state.pending
   const base = p ? p.snapshot : state
-  const failure: FailureEntry = { kind: 'failure', source, code, message, originalText: p?.text ?? '' }
+  // 按確認的那一輪：原文放回輸入框送出會變成新的意見，所以不帶原文。連線層的失敗後端已回滾、待確認還在，提示再按一次；
+  // HTTP 被拒多半是過期的卡，不能這樣說（Review Focus 3）。不寫 confirm: undefined：狀態要能 JSON 來回。
+  const failure: FailureEntry = p?.confirm
+    ? { kind: 'failure', source, code, message, originalText: '', ...(source === 'http' ? {} : { confirm: true }) }
+    : { kind: 'failure', source, code, message, originalText: p?.text ?? '' }
   return { ...base, transcript: [...base.transcript, failure], pending: p ? { ...p, settled: true } : null }
 }
 

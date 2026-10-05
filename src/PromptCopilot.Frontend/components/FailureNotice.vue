@@ -3,6 +3,7 @@
     <span class="absolute inset-y-3 left-0 w-[3px] rounded-full bg-magenta" aria-hidden="true" />
     <p class="text-xs font-bold text-magenta">{{ failureTitle(entry.source, entry.code) }}</p>
     <p class="mt-1 text-sm leading-6">{{ entry.message }}</p>
+    <p v-if="entry.confirm" class="mt-1 text-xs text-muted">確認卡還在，可以再按一次。</p>
     <blockquote v-if="entry.originalText" class="mt-2 whitespace-pre-wrap text-xs text-muted">你送出的是：{{ entry.originalText }}</blockquote>
     <button v-if="entry.originalText" type="button" :disabled="s.busy"
             class="mt-2.5 rounded-md border border-magenta/60 px-3 py-1 text-xs font-medium text-magenta hover:bg-magenta hover:text-paper disabled:opacity-40"

@@ -10,6 +10,33 @@ public sealed class DialogPlugin(TurnContext turn, FacetCatalog catalog, Orchest
 {
     private Session S => turn.Session;
 
+    /// <summary>prompt 要求 20 字；伺服器放寬到 40，模型稍微超過不必白燒一次重叫（設計 §3.2）。</summary>
+    public const int MaxChoiceChars = 40;
+
+    [KernelFunction(ToolNames.Confirm)]
+    [Description("確認：使用者說了會改動畫面的話（描述題材、回答追問、要求修改、說隨便），先用這個跟他確認；他按下確認卡的按鈕後，下一輪你才能動手。message 寫你理解的畫面或打算怎麼改；要求跟現有內容衝突或有多種解讀時，choices 給 2–4 個解讀讓他選，沒有歧義就省略。")]
+    // choices 排在最後而且有預設值：SK 只看「有沒有預設值」決定必填與否（同 Discuss.options）
+    public string Confirm(
+        [Description("繁中 1–3 句：你理解的畫面，或打算怎麼改；有 choices 時寫成問題")] string message,
+        [Description("0 個或 2–4 個解讀，繁中陳述句、20 字以內、彼此互斥；沒有歧義就省略")] string[]? choices = null)
+    {
+        var text = message?.Trim() ?? "";
+        if (text.Length == 0) return Reject("message 不可為空");
+        var kept = (choices ?? Array.Empty<string>()).Select(c => c?.Trim() ?? "").Where(c => c.Length > 0).Distinct().ToList();
+        if (kept.Count == 1) return Reject("choices 只有 1 個；沒有歧義就省略 choices，有歧義就給 2–4 個");
+        if (kept.Count > AskCleaner.MaxOptions) return Reject($"choices 有 {kept.Count} 個，最多 {AskCleaner.MaxOptions} 個");
+        if (kept.FirstOrDefault(c => c.Length > MaxChoiceChars) is { } tooLong) return Reject($"choices「{tooLong}」超過 {MaxChoiceChars} 字");
+        S.SetPendingConfirmation(new PendingConfirmation(turn.TurnIndex, text, kept, turn.Guard.WantsAutoComplete));
+        turn.Outcome = new ConfirmOutcome(text, kept);
+        return "ok";
+    }
+
+    private string Reject(string reason)
+    {
+        turn.Rejections.Add($"Confirm：{reason}");
+        return $"錯誤：{reason}";
+    }
+
     [KernelFunction(ToolNames.AskUser)]
     [Description("索取：我需要使用者回答才能繼續。還有 facet 缺的維度都要問，只列缺的 facet；一次最多 3 個維度，問不完下一輪再問。每個維度 2–4 個不同方向的選項。")]
     public string AskUser(
@@ -36,7 +63,7 @@ public sealed class DialogPlugin(TurnContext turn, FacetCatalog catalog, Orchest
     }
 
     [KernelFunction(ToolNames.Discuss)]
-    [Description("回應：這是我對使用者問題的回答，使用者可以無視它繼續講別的。用於解說、比較、給參考方向。不宣告需求、不卡住流程。")]
+    [Description("回應：這是我對使用者問題的回答，使用者可以無視它繼續講別的。用於解說、比較、給參考方向。不宣告需求、不卡住流程。不能改 facet 狀態，也不會寫入任何 facet 備註或標籤。")]
     // options 排在最後而且有預設值：SK 只看「有沒有預設值」決定必填與否，可為 null 不算；
     // 沒有預設值時 Gemini 照描述省略它會丟 KernelException，白白吃掉一格 tool 預算。
     public string Discuss(
@@ -44,11 +71,13 @@ public sealed class DialogPlugin(TurnContext turn, FacetCatalog catalog, Orchest
         [Description("目前每個 facet 的狀態")] FacetStateEntry[] facetStates,
         [Description("0–4 個參考方向，可省略")] OptionItem[]? options = null)
     {
-        if (S.Profile is not null && S.Status == SessionStatus.Finalized && StatesDiffer(facetStates))
-            return "錯誤：facet 狀態有變更；定稿後任何 facet 變動都必須改用 FinalizePrompt 重新定稿";
+        // 不分狀態：確認之前不能改畫面，Discuss 帶著改過的狀態等於繞過確認（先確認再動手設計 §3.3）
+        if (S.Profile is not null && StatesDiffer(facetStates))
+            return "錯誤：Discuss 不能改 facet 狀態；使用者要改畫面時，請用 Confirm 跟他確認";
         var opts = AskCleaner.CleanOptions(options ?? Array.Empty<OptionItem>(), S.Ledger, AskCleaner.MaxOptions);
         turn.Rejections.AddRange(opts.Rejected);
-        SessionPlugin.Apply(turn, catalog, facetStates);
+        // 不呼叫 Apply：狀態已被擋成跟輪初一致，但 Apply 還會寫 FacetNotes 與覆蓋 FacetTags，
+        // 那些會動到定稿閘門、晶片標題與推薦錨點，確認之前一律不動（先確認再動手設計 §1、§3.3）
         S.RecordDiscuss();
         MarkOffered(opts.Kept.Select(o => ((string?)null, o)));
         turn.Outcome = new MessageOutcome(message, opts.Kept);

@@ -52,6 +52,10 @@ public static class TurnContextExtensions
                 parts.Add(Field(args, "message"));
                 AddOptions(parts, Node(args, "options"));
                 break;
+            case ToolNames.Confirm:
+                parts.Add(Field(args, "message"));
+                foreach (var c in Node(args, "choices") as JsonArray ?? new JsonArray()) parts.Add(Text(c));
+                break;
             case ToolNames.AskUser:
                 parts.Add(Field(args, "preamble"));
                 foreach (var ask in Node(args, "asks") as JsonArray ?? new JsonArray())

@@ -14,7 +14,7 @@ public sealed record FinalPrompt(string Positive, string Negative, string Tips, 
 public sealed record SessionSnapshot(
     SessionStatus Status, string? Profile, int AskCount, int DiscussStreak, bool AutoFill,
     Dictionary<string, FacetState> FacetStates, Dictionary<string, string> FacetNotes, int HistoryCount, PresetLedger Ledger, FinalPrompt? LastFinal, int TurnIndex,
-    Dictionary<string, string> FacetTags, List<Adoption> Adoptions);
+    Dictionary<string, string> FacetTags, List<Adoption> Adoptions, PendingConfirmation? PendingConfirmation = null);
 
 public sealed class Session
 {
@@ -35,13 +35,19 @@ public sealed class Session
     /// <summary>採用過的組合，依採用先後（設計 §6.3）。定稿時 TagAttribution 用它標 adopted。</summary>
     public List<Adoption> Adoptions { get; private set; } = new();
     public FinalPrompt? LastFinal { get; private set; }
+    /// <summary>確認輪留下的待確認（先確認再動手設計 §3.4）。進快照：確認輪失敗不留半張卡，動手輪失敗時卡片回來可以再按。</summary>
+    public PendingConfirmation? PendingConfirmation { get; private set; }
+
+    public void SetPendingConfirmation(PendingConfirmation p) => PendingConfirmation = p;
+    public void ClearPendingConfirmation() => PendingConfirmation = null;
+
     public int TurnIndex { get; set; }
     /// <summary>建立時定死：off 是量測用的對照組（計畫 §4.1）。中途不能切，所以不進 Snapshot／Restore。</summary>
     public bool RetrievalEnabled { get; }
     public string RetrievalMode => RetrievalEnabled ? "on" : "off";
     public SemaphoreSlim Lock { get; } = new(1, 1);
 
-    /// <summary>推薦組法（2026-09-30 設計 §4.4）：最新一張定稿卡的輪次，換一批只接受它；出了新的追問卡就清掉。
+    /// <summary>推薦組法（2026-09-30 設計 §4.4）：最新一張定稿卡的輪次，換一批只接受它；下一張定稿卡產生推薦前先清掉。
     /// 下面這幾個都不進 Snapshot／Restore：推薦在一輪成立之後才產生，被攔截的輪走不到這裡。</summary>
     public int? LatestSlateTurn { get; private set; }
     /// <summary>最近一次定稿的 positive tag（已排除基礎詞），換一批時重算錨用。</summary>
@@ -116,7 +122,7 @@ public sealed class Session
 
     public SessionSnapshot Snapshot() => new(Status, Profile, AskCount, DiscussStreak, AutoFill,
         new Dictionary<string, FacetState>(FacetStates), new Dictionary<string, string>(FacetNotes), ChatHistory.Count, Ledger.Clone(), LastFinal, TurnIndex,
-        new Dictionary<string, string>(FacetTags), new List<Adoption>(Adoptions));
+        new Dictionary<string, string>(FacetTags), new List<Adoption>(Adoptions), PendingConfirmation);
 
     public void Restore(SessionSnapshot s)
     {
@@ -127,5 +133,6 @@ public sealed class Session
         Adoptions = new List<Adoption>(s.Adoptions);
         while (ChatHistory.Count > s.HistoryCount) ChatHistory.RemoveAt(ChatHistory.Count - 1);
         Ledger = s.Ledger.Clone(); LastFinal = s.LastFinal; TurnIndex = s.TurnIndex;
+        PendingConfirmation = s.PendingConfirmation;
     }
 }

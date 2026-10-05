@@ -2,7 +2,7 @@
   <form class="border-t border-rule bg-surface px-5 py-3" @submit.prevent="s.send()">
     <div class="mx-auto flex w-full max-w-[46rem] items-end gap-2">
       <textarea ref="ta" :value="s.draft" rows="2" :disabled="s.busy || !!s.bootError" aria-label="描述你想要的畫面"
-                placeholder="描述你想要的畫面（Enter 送出，Shift+Enter 換行）"
+                :placeholder="s.pendingConfirm !== null ? '按上面的按鈕套用；在這裡打字會當成修正' : '描述你想要的畫面（Enter 送出，Shift+Enter 換行）'"
                 class="min-h-[2.75rem] flex-1 resize-y rounded-md border border-rule bg-paper px-3 py-2 text-sm leading-6 placeholder:text-muted/70 focus:border-cyan focus:outline-none disabled:opacity-60"
                 @input="s.setDraft(($event.target as HTMLTextAreaElement).value)"
                 @keydown.enter.exact="onEnter" />

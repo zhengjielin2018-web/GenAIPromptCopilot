@@ -30,6 +30,124 @@ public class DialogPluginTests
     private static FacetStateEntry[] States(params (string id, string st)[] xs) => xs.Select(x => new FacetStateEntry(x.id, x.st)).ToArray();
     private static AskItem Ask(string dim, string fid) => new(dim, "q?", new[] { fid }, new[] { new OptionItem("a", "t", 5), new OptionItem("b", "t", null) });
 
+    // ---- Confirm（先確認再動手設計 §3.2）----
+
+    [Fact]
+    public void Confirm_without_choices_records_the_pending_proposal_and_changes_nothing()
+    {
+        var (p, turn, s) = Make();
+        var before = new Dictionary<string, FacetState>(s.FacetStates);
+        var r = p.Confirm("  我理解的畫面：一位金色短髮的中年女士站在雨夜的霓虹街頭。  ");
+        Assert.Equal("ok", r);
+        var o = Assert.IsType<ConfirmOutcome>(turn.Outcome);
+        Assert.Equal("我理解的畫面：一位金色短髮的中年女士站在雨夜的霓虹街頭。", o.Message);
+        Assert.Empty(o.Choices);
+        var pending = s.PendingConfirmation!;
+        Assert.Equal(1, pending.TurnIndex);
+        Assert.Equal(o.Message, pending.Message);
+        Assert.Empty(pending.Choices);
+        Assert.False(pending.AutoComplete);
+        Assert.Equal(before, s.FacetStates);                                         // 確認不改任何 facet
+    }
+
+    [Fact]
+    public void Confirm_keeps_two_to_four_trimmed_distinct_choices()
+    {
+        var (p, turn, s) = Make();
+        var r = p.Confirm("她兩手已經拿著相機和飲料，再拿雨傘會拿不下。你想要哪一種？",
+            new[] { " 換掉飲料，改拿雨傘 ", "換掉相機，改拿雨傘", "", "換掉飲料，改拿雨傘", "三樣都拿（可能不自然）" });
+        Assert.Equal("ok", r);
+        Assert.Equal(new[] { "換掉飲料，改拿雨傘", "換掉相機，改拿雨傘", "三樣都拿（可能不自然）" }, Assert.IsType<ConfirmOutcome>(turn.Outcome).Choices);
+        Assert.Equal(3, s.PendingConfirmation!.Choices.Count);
+    }
+
+    [Theory]
+    [InlineData("   ", null)]                                     // 空 message
+    [InlineData("m", new[] { "只有一個" })]
+    [InlineData("m", new[] { "a", " a " })]                        // 去重後剩 1 個
+    [InlineData("m", new[] { "a", "b", "c", "d", "e" })]
+    public void Confirm_rejects_bad_arguments_without_an_outcome(string message, string[]? choices)
+    {
+        var (p, turn, s) = Make();
+        Assert.StartsWith("錯誤", p.Confirm(message, choices));
+        Assert.Null(turn.Outcome);
+        Assert.Null(s.PendingConfirmation);
+        Assert.NotEmpty(turn.Rejections);
+    }
+
+    [Fact]
+    public void Confirm_rejects_a_choice_longer_than_40_chars()
+    {
+        var (p, turn, _) = Make();
+        var r = p.Confirm("m", new[] { new string('長', 41), "短" });
+        Assert.StartsWith("錯誤", r);
+        Assert.Contains("40", r);
+        Assert.Null(turn.Outcome);
+    }
+
+    [Fact]
+    public void Confirm_remembers_that_the_user_asked_to_auto_complete()
+    {
+        var s = new Session("s");
+        var turn = new TurnContext(s, 4, GuardResult.Ok(true), ToolNames.ProposeAlways, Channel.CreateUnbounded<AgentEvent>().Writer);
+        Assert.Equal("ok", new DialogPlugin(turn, Catalog, O).Confirm("我會直接定稿，風格補成寫實攝影。"));
+        Assert.True(s.PendingConfirmation!.AutoComplete);
+        Assert.Equal(4, s.PendingConfirmation.TurnIndex);
+    }
+
+    [Fact]
+    public void Confirm_works_before_a_profile_is_set()
+    {
+        var (p, turn, _) = Make(profile: false);
+        Assert.Equal("ok", p.Confirm("我理解的畫面：一隻貓。"));
+        Assert.IsType<ConfirmOutcome>(turn.Outcome);
+    }
+
+    [Fact]
+    public void Confirm_outcome_becomes_a_confirm_final_event()
+    {
+        var ev = AgenticOrchestrator.ToFinal(new ConfirmOutcome("m", new[] { "a", "b" }));
+        Assert.Equal("confirm", ev.Kind);
+        Assert.Equal("m", ev.Message);
+        Assert.Equal(new[] { "a", "b" }, ev.Choices);
+    }
+
+    /// <summary>設計 §3.3：Discuss 不分狀態都不能改 facet，否則它是繞過確認的後門。</summary>
+    [Fact]
+    public void Discuss_while_collecting_rejects_changed_facets()
+    {
+        var (p, turn, s) = Make();
+        var r = p.Discuss("好的", States(("pose.gaze", "covered")));
+        Assert.Equal("錯誤：Discuss 不能改 facet 狀態；使用者要改畫面時，請用 Confirm 跟他確認", r);
+        Assert.Null(turn.Outcome);
+        Assert.Equal(FacetState.Missing, s.FacetStates["pose.gaze"]);
+        Assert.Equal(0, s.DiscussStreak);
+    }
+
+    /// <summary>設計 §1、§3.3：Discuss 在確認之前什麼都不改。狀態相同但夾帶新 note 與不同 tags 時，
+    /// 照舊回 ok，但 FacetNotes／FacetTags 一個字都不能動（它們會影響定稿閘門、晶片標題與推薦錨點）。</summary>
+    [Fact]
+    public void Discuss_with_unchanged_states_never_writes_notes_or_tags()
+    {
+        var (_, _, s) = Make(finalized: true);
+        s.ApplyFacetStates(new Dictionary<string, FacetState> { ["style.genre"] = FacetState.Covered }, Catalog,
+            new Dictionary<string, string> { ["style.genre"] = "anime" });
+        s.FacetNotes["pose.gaze"] = "使用者委託此項";
+        var turn = new TurnContext(s, 2, GuardResult.Ok(false), ToolNames.Always, Channel.CreateUnbounded<AgentEvent>().Writer);   // 輪初狀態含上面的改動
+        var p = new DialogPlugin(turn, Catalog, O);
+
+        var r = p.Discuss("好的", new[]
+        {
+            new FacetStateEntry("style.genre", "covered", Tags: "photo realism"),
+            new FacetStateEntry("pose.gaze", "missing", Note: "偷塞的備註"),
+        });
+
+        Assert.Equal("ok", r);
+        Assert.IsType<MessageOutcome>(turn.Outcome);
+        Assert.Equal(new Dictionary<string, string> { ["style.genre"] = "anime" }, s.FacetTags);
+        Assert.Equal(new Dictionary<string, string> { ["pose.gaze"] = "使用者委託此項" }, s.FacetNotes);
+    }
+
     [Fact]
     public void AskUser_requires_profile()
     {
@@ -76,7 +194,7 @@ public class DialogPluginTests
     {
         var (p, turn, s) = Make(finalized: true);
         var r = p.Discuss("好的", States(("pose.gaze", "covered")));
-        Assert.Contains("FinalizePrompt", r); Assert.Null(turn.Outcome);
+        Assert.Contains("Confirm", r); Assert.Null(turn.Outcome);
         Assert.Equal(FacetState.Missing, s.FacetStates["pose.gaze"]);
     }
 
@@ -91,7 +209,7 @@ public class DialogPluginTests
 
         var r = p.Discuss("好的", States(("pose.gaze", "covered")));
 
-        Assert.Contains("FinalizePrompt", r);
+        Assert.Contains("Confirm", r);
         Assert.Null(turn.Outcome);
     }
 
@@ -266,7 +384,8 @@ public class DialogPluginTests
     public void Unknown_facet_state_string_is_skipped_with_note()
     {
         var (p, turn, s) = Make();
-        p.Discuss("x", States(("pose.gaze", "bogus"), ("pose.main", "waived")));
+        // Discuss 不能改 facet（設計 §3.3），Apply 的容錯改從 SetFacetStates 走同一條路驗
+        new SessionPlugin(turn, Catalog).SetFacetStates(States(("pose.gaze", "bogus"), ("pose.main", "waived")));
         Assert.Equal(FacetState.Missing, s.FacetStates["pose.gaze"]);
         Assert.Equal(FacetState.Waived, s.FacetStates["pose.main"]);
         Assert.Contains(turn.Rejections, r => r.Contains("bogus"));

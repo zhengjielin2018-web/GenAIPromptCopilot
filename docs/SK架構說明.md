@@ -61,7 +61,7 @@ SK 的設計是「核心只定義通用格式，每家模型各有一個 connect
 | `IChatCompletionService` | 「給一段對話歷史，回模型的回應」的介面 | 註冊在 [`Program.cs`](../src/PromptCopilot.Api/Program.cs)：`ResilientChatCompletion` 包著 `GoogleAIGeminiChatCompletionService`，整個 app 共用一個單例 |
 | `ChatHistory` | 對話歷史（system／user／assistant／tool 訊息的清單） | 每個 session 一份，存在 [`Session.ChatHistory`](../src/PromptCopilot.Api/Sessions/Session.cs)；SK 跑工具時會直接往裡面追加訊息 |
 | `Kernel` | 一個容器：裝著可用的工具（plugins）、filters、服務 | [`AgentKernelFactory.Create`](../src/PromptCopilot.Api/Orchestration/AgentKernelFactory.cs) **每輪新建一個**，因為每輪可用的工具不同 |
-| Plugin／`[KernelFunction]` | 一個類別裡標了 `[KernelFunction]` 的方法 = 模型可以呼叫的工具 | [`Plugins/`](../src/PromptCopilot.Api/Plugins/)：`KnowledgePlugin`（`SearchPresets`、`SearchSimilarPrompts`）、`SessionPlugin`（`SetProfile`、`SetFacetStates`）、`DialogPlugin`（`AskUser`、`Discuss`、`FinalizePrompt`、`RequestSaveConsent`） |
+| Plugin／`[KernelFunction]` | 一個類別裡標了 `[KernelFunction]` 的方法 = 模型可以呼叫的工具 | [`Plugins/`](../src/PromptCopilot.Api/Plugins/)：`KnowledgePlugin`（`SearchPresets`、`SearchSimilarPrompts`）、`SessionPlugin`（`SetProfile`、`SetFacetStates`）、`DialogPlugin`（`Confirm`、`AskUser`、`Discuss`、`FinalizePrompt`、`RequestSaveConsent`） |
 | `FunctionChoiceBehavior.Auto()` | 把 kernel 裡的工具宣告給模型，模型要呼叫時由 SK 自動執行並回填結果 | [`AgenticOrchestrator.CallAsync`](../src/PromptCopilot.Api/Orchestration/AgenticOrchestrator.cs) 的 `GeminiPromptExecutionSettings` |
 | `IAutoFunctionInvocationFilter` | 包在每一次自動工具呼叫外面的 middleware，可以擋、改結果、叫迴圈停下 | [`Filters/`](../src/PromptCopilot.Api/Filters/) 四個，順序見第 3 節 |
 | `PromptExecutionSettings` | 單次呼叫的參數 | 主迴圈用 `GeminiPromptExecutionSettings`（Auto 工具）；[`SafetyClassifier`](../src/PromptCopilot.Api/Safety/SafetyClassifier.cs) 另外用 `ResponseMimeType = "application/json"`、不帶 kernel（不給工具） |

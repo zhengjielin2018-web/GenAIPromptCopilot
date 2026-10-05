@@ -104,6 +104,7 @@ LLM：**`gemini-3.5-flash-lite`**（子專案 1 執行時實測定案。注意�
 | `DialogPlugin.Discuss` | `message: string, facetStates: FacetStateEntry[], options: { label, tags, presetId? }[]? = null` | **終止型**；`options` 0–4 個參考方向，不帶 `missingFacetIds` |
 | `DialogPlugin.FinalizePrompt` | `positivePrompt: string, negativePrompt: string, tips: string, intentSummary: string, facetStates: FacetStateEntry[]` | **終止型**；`AskUser` 還在清單上而仍有缺時擋回（定稿閘門，§4.6） |
 | `DialogPlugin.RequestSaveConsent` | 無 | **終止型**；不碰 DB，只觸發前端確認卡片 |
+| `DialogPlugin.Confirm` | `message: string, choices: string[]? = null` | **終止型**（2026-10-05）；只在確認輪；`choices` 0 或 2–4 個；不改 facet，只在 session 記一筆待確認（[先確認再動手設計](2026-10-05-confirm-before-act-design.md) §3.2） |
 
 `FacetState = covered | missing | waived | notApplicable`。
 
@@ -216,6 +217,8 @@ Discuss：            !guardResult.wantsAutoComplete
 RequestSaveConsent： Status == Finalized
 ```
 
+> **2026-10-05 起每一輪先分種類**（[先確認再動手設計](2026-10-05-confirm-before-act-design.md) §3.1）：使用者打字是**確認輪**，只註冊 `Confirm`、`Discuss`（規則同上）與兩個檢索工具，`Finalized` 時加 `RequestSaveConsent`；按確認卡或採用是**動手輪**，註冊上面「永遠註冊」那組，加 `AskUser`（規則同上），沒有 `Confirm`、`Discuss`、`RequestSaveConsent`。`wantsAutoComplete` 在確認輪只記進待確認，按下確認後的動手輪才拿掉 `AskUser`、設 `AutoFill`。
+
 兩個目標各由一個獨立機制保證，中間沒有耦合：`AskCount` 上限 2 管的是「LLM 不無限追問」，`Discuss` 管的是「使用者能繼續對話」，`Discuss` 不碰 `AskCount`。
 
 `wantsAutoComplete` 命中的那一輪**同時移除 `AskUser` 與 `Discuss`**：「你決定」的語意就是「直接給我」，工具清單只剩 `FinalizePrompt` 與檢索／設定類，LLM 只能立即定稿。否則 LLM 會回一句「好的，我來幫你決定」就結束回合，使用者得再送一句才拿得到東西。
@@ -243,6 +246,8 @@ Session {
   Lock:          SemaphoreSlim(1)
 }
 ```
+
+> 2026-10-05 加 `PendingConfirmation: { TurnIndex, Message, Choices, AutoComplete }?`：確認輪的 `Confirm` 寫入，動手輪（含採用）開始時清掉，進快照（[先確認再動手設計](2026-10-05-confirm-before-act-design.md) §3.4）。
 
 `PresetLedger` 是 §9 跨維度去重所需的 session 帳本，同時兼作對話記憶：
 
@@ -277,6 +282,8 @@ LedgerEntry {
 - `Finalized` 後使用者要求修改（「把背景改成黃昏」）→ 仍是 `Finalized`，LLM 直接重新 `FinalizePrompt`；`AskUser` 永久不可用。**純討論（「negative 裡的 `blurry` 是幹嘛的？」）走 `Discuss`，不出新定稿卡**；只有真的動到 prompt 才重新定稿（§4.6 會擋下「`Discuss` 卻改了 facet」）。
 - 一個 session = 一個 prompt。「再來一張」由前端開新 session。
 
+> 2026-10-05 起修改要先過確認輪：模型用 `Confirm` 講要改哪裡（有歧義時給解讀），使用者按下確認後的動手輪才 `FinalizePrompt`。
+
 儲存：`IMemoryCache`，滑動過期 2 小時。不落 DB。
 
 ### 4.5 Filters
@@ -295,6 +302,8 @@ LedgerEntry {
 **擋回檢查在 plugin 裡，不在 filter 裡。** `Profile == null`、`asks` 清洗後為空、`Finalized` 下變更 facet、定稿閘門（§4.6）這四件事都是「這個 tool 的參數不合格」，plugin 直接回結構化錯誤字串、不設 outcome，迴圈自然繼續、也自然計入 tool 預算。filter 不需要知道每個 tool 的參數語意。
 
 **`Finalized` 之下 `Discuss` 不得變更 facet 狀態。** 定稿後使用者說「風格改成動漫」，LLM 可能 `Discuss` 回「好的」並帶著改過的 `facetStates`，但沒有 `FinalizePrompt`——儀表板變了、定稿卡沒變。任何 facet 變動都意味著 prompt 該重組。程式碼保證：`Status == Finalized` 且 `Discuss.facetStates` 與**本輪開始時**的狀態不同 → 回結構化錯誤「facet 狀態有變更，請改用 `FinalizePrompt`」，計入 tool 預算。比的是本輪開始時而不是現值：`SetFacetStates` 每輪都在清單裡，先用它改掉再用 `Discuss` 回報同一組值，比現值就永遠相等，這道閘門等於不存在。
+
+> 2026-10-05 起不分狀態：`Discuss` 任何時候帶著跟本輪開始時不同的 facet 狀態都擋回，錯誤字串要模型改用 `Confirm`；`OutputSafetyFilter` 也檢 `Confirm` 的 `message` 與 `choices`。
 
 輸入側安全檢查（`SafetyGuard`）在 service 層、進 kernel 之前執行，不是 SK filter——因為 agentic chat completion 路徑不會觸發 `IPromptRenderFilter`。它本身也會失敗（上游攔截、分類器回不出 JSON），所以呼叫點在 orchestrator 的交易 `try` 之內，失敗走跟其他階段一樣的 `blocked`／`error` 事件與 audit。
 
@@ -356,6 +365,8 @@ RunTurnAsync(session, input, ct):  // input = TurnInput(text, adoption?, adopted
 
 **容器 log**：handler 每次呼叫寫一行 `Gemini {status} {ms} ms finish={finishReason} block={promptFeedback.blockReason}`（沒有的寫 `-`）；`AgenticOrchestrator` 每輪結束（任何結局）寫一行 `Turn {session}#{turn} {事件} {細節} tools={工具呼叫數} gemini={Gemini 呼叫數} {ms} ms`，事件是那一輪的 audit 事件（`Turn_Completed`、`Blocked_*`、`Turn_Failed`），細節是結局型別、攔截理由或 `errorClass`。`System.Net.Http` 的 log 等級調到 Warning，embedding 請求不再每次洗一行。完整紀錄仍以 `audit_logs` 為準，log 只是在終端機上看得出發生什麼事。
 
+> 2026-10-05：確認輪的 tool 預算用盡時強制的是 `Confirm`（只掛它），不是 `FinalizePrompt`；純文字補救的提示改列本輪實際有的終止型工具。動手輪只回純文字時沒有 `Discuss` 可包，走 `protocol_violation` 回滾，待確認跟著回來。
+
 ### 4.7 Chat history 修剪與截斷
 
 `Finalized` 之後 `Discuss` 不限次，history 沒有上限；而 `options` 改成結構化之後，call args 每輪都留在 history 裡，越積越肥。三條：
@@ -365,6 +376,8 @@ RunTurnAsync(session, input, ct):  // input = TurnInput(text, adoption?, adopted
 3. **整體截斷**：保留 system message + 最近 **10 輪**（一輪 = 一則 user message 起到終止型 tool 止），更早的丟掉。`PresetLedger`、`FacetStates`、`LastFinal` 是 session 事實，不靠 history 記住，所以丟掉是安全的。
 
 **Gemini connector 的 tool 結果形狀（2026-09-29，known-issues #8）。** `Connectors.Google` 1.80.1-alpha 不把 tool 結果放成 `FunctionResultContent`：tool 訊息是 `GeminiChatMessageContent`，結果在 `CalledToolResults`（`GeminiFunctionToolResult` 包一個 `FunctionResult`），送出時從這裡序列化成 `functionResponse`；`Items` 只有一個空的 `TextContent`。模型一次發多個呼叫時，全部結果在同一則 tool 訊息裡。所以第 1 條的壓縮對這種訊息是**整則重建**：壓得動的結果換成帶壓縮字串的新 `FunctionResult`（`functionResponse` 的 `name` 取自前一則 model 訊息的 `ToolCalls`），其餘沿用原物件，在同一個位置換掉；單一結果用公開建構子，多個結果用 internal 建構子（反射），不能拆成多則，因為 Gemini 要求回覆的 part 數與 call 數相同。重建失敗就不壓這則。改放 `FunctionResultContent` 不可行，connector 序列化時會丟 `NotSupportedException`。第 2 條改的是 `Items` 裡的 `FunctionCallContent`，connector 送出時讀的是 `ToolCalls`，目前對 Gemini 不生效（known-issues #11）。
+
+> 2026-10-05：`HistoryTurns` 預設由 10 改 20：每個要求多一則「對，就這樣」使用者訊息，維持原本記得的要求數。
 
 ### 4.8 Provider 抽象
 
@@ -398,6 +411,8 @@ RunTurnAsync(session, input, ct):  // input = TurnInput(text, adoption?, adopted
 - 只帶 `OfferedAs` 非空的 preset，不帶全部檢索結果。使用者不會說「回到你第 17 個檢索結果」，只會說「回到你給我的那個厚塗油畫」。
 - 按最近 offered 的 `turnIndex` 排序，取前 **24** 個 preset（3 維度 × 4 選項 × 2 次 `AskUser` 的最壞情況）。
 - 一筆一行，token 成本可控。
+
+> 2026-10-05：`system.md` 的流程段換成 `{{FLOW}}`，依這一輪的種類換進 `Prompts/flow-propose.md` 或 `flow-act.md`；動手輪的流程開頭是伺服器組的「使用者已確認」區塊（`{{CONFIRMED}}`，最後才替換，裡面的文字不會再被展開）。
 
 ### 4.10 降級路徑
 
@@ -763,6 +778,8 @@ scripts/
 
 前端以 `fetch` + `ReadableStream` 消費 SSE（`EventSource` 不支援 POST）。
 
+> 2026-10-05：`messages` 的 body 多一種 `{"confirm": {"turnIndex": n, "choice": k | null}}`，按確認卡；沒有待確認或不是最新一張回 409，`choice` 跟卡片對不上、或與 `adopt` 同時送回 400。`adopt` 改成定稿後才收（未定稿 409）。
+
 ### 10.2 SSE 事件
 
 | `event:` | `data:` | 前端反應 |
@@ -790,6 +807,8 @@ scripts/
 
 `Discuss.message` 不會有打字機效果：它是 tool call 的參數，一次到位。這跟 `AskUser` / `FinalizePrompt` 現況一致，不是新問題；前端不要對 `message` 期待 `token` 事件。
 
+> 2026-10-05：`final.kind` 多 `confirm`（`message`、`choices`）；`session.text` 在動手輪都會帶（採用句或確認句）；`recommendations` 只跟在定稿之後。
+
 ### 10.3 串流實作
 
 `IAutoFunctionInvocationFilter` 內無法存取 HTTP response。做法：每個請求建立 scoped `Channel<AgentEvent>`，filters 與 orchestrator 往 channel 推事件，端點以 `IAsyncEnumerable<AgentEvent>` 讀出並寫 SSE。**這是前後端串接最容易卡住的點，實作計畫中列為獨立任務。**
@@ -811,6 +830,8 @@ scripts/
 - `options[].presetId` 非 null 的選項可點開 preset 抽屜。
 - 任何 `error` / `blocked`：失敗的訊息保留顯示並標記原因，附「重試」按鈕；按下把原文填回輸入框，使用者可改可直接送（§4.6）。
 - 頂部「新對話」按鈕。
+
+> 2026-10-05：對話流多一種確認卡：只有最新一張、而且之後還沒動手時按鈕可按；有可按的確認卡時，輸入框提示「在這裡打字會當成修正」。追問卡不再有推薦條。
 
 ### 11.2 儀表板
 
@@ -889,6 +910,8 @@ Chat history：
 - 前端 `applyEvent` reducer，含 `session` 事件 snapshot / `error`／`blocked` restore
 
 **不 fake 整個 auto-invoke 迴圈**——那在 connector 內部，fake 它等於重寫它。測的是清單組裝與 filter 本身。
+
+> 2026-10-05 先確認再動手的測試見[先確認再動手設計](2026-10-05-confirm-before-act-design.md) §10。
 
 ### 12.2 契約測試 — 真打 Gemini，只斷言形狀
 

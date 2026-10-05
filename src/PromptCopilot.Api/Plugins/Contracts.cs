@@ -42,6 +42,8 @@ public sealed record SearchQuery
 public abstract record TurnOutcome;
 public sealed record AskOutcome(string Preamble, IReadOnlyList<AskItem> Asks) : TurnOutcome;
 public sealed record MessageOutcome(string Message, IReadOnlyList<OptionItem> Options) : TurnOutcome;
+/// <summary>確認卡（先確認再動手設計 §3.2）：Choices 沒有歧義時是空的。</summary>
+public sealed record ConfirmOutcome(string Message, IReadOnlyList<string> Choices) : TurnOutcome;
 public sealed record FinalizedOutcome(FinalPrompt Final) : TurnOutcome;
 public sealed record SaveConsentOutcome : TurnOutcome;
 public sealed record BudgetExhaustedOutcome : TurnOutcome;

@@ -62,7 +62,7 @@ services.AddSingleton(sp => new SessionStore(
     sp.GetRequiredService<Microsoft.Extensions.Caching.Memory.IMemoryCache>(),
     TimeSpan.FromMinutes(sp.GetRequiredService<OrchestratorOptions>().SessionSlidingExpirationMinutes)));
 services.AddSingleton(sp => new SystemPromptBuilder(sp.GetRequiredService<FacetCatalog>(), sp.GetRequiredService<OrchestratorOptions>(),
-    Path.Combine(AppContext.BaseDirectory, "Prompts", "system.md")));
+    Path.Combine(AppContext.BaseDirectory, "Prompts")));
 
 // ---- LLM（真的 Gemini 包在三層重試 decorator 裡）----
 services.AddSingleton<IChatCompletionService>(sp =>

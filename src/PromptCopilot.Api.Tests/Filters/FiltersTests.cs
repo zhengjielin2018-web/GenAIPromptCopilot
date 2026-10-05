@@ -230,6 +230,33 @@ public class FiltersTests
         Assert.True(called); Assert.Null(turn.Outcome);
     }
 
+    /// <summary>先確認再動手設計 §3.2：確認卡的正文與每個選項都會送到使用者眼前。</summary>
+    [Fact]
+    public void OutputTextFor_confirm_takes_message_and_every_choice()
+    {
+        var text = TurnContextExtensions.OutputTextFor("Confirm", new KernelArguments
+        {
+            ["message"] = "她兩手已經拿著相機和飲料，你想要哪一種？",
+            ["choices"] = Escaped(new[] { "換掉飲料，改拿雨傘", "三樣都拿（可能不自然）" }),
+        });
+        Assert.Contains("相機和飲料", text);
+        Assert.Contains("換掉飲料，改拿雨傘", text);
+        Assert.Contains("三樣都拿", text);
+        Assert.DoesNotContain("\\u", text);
+    }
+
+    [Fact]
+    public async Task OutputSafety_checks_confirm()
+    {
+        var (k, turn, _) = Kernel();
+        var chat = new FakeChatCompletion().Then(FakeChatCompletion.Text("""{"nsfw":true,"realPerson":false,"personName":null,"wantsAutoComplete":false,"reason":"露骨"}"""));
+        var f = new OutputSafetyFilter(new SafetyClassifier(chat, Options.Create(new LlmOptions())));
+        var called = false;
+        await f.OnAutoFunctionInvocationAsync(Ctx(k, "Confirm", ("message", "一段露骨的確認")), Next(() => called = true));
+        Assert.False(called);
+        Assert.IsType<BlockedOutcome>(turn.Outcome);
+    }
+
     // 這兩個 fixture 必須是「原文帶 \uXXXX」的 JsonElement，否則測不到東西：
     // GetRawText() 只是把來源原文原樣吐回去，來源要是已經解碼過的中文，舊實作也會過。
     // JsonSerializer 的預設 encoder 正好會把非 ASCII escape 掉，跟 Gemini 回來的樣子一致，

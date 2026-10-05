@@ -5,7 +5,7 @@
       <div v-if="s.state.transcript.length === 0" class="mt-[18vh] max-w-md">
         <h2 class="text-2xl font-bold leading-snug">想生成什麼畫面？</h2>
         <p class="mt-3 text-sm leading-7 text-muted">
-          用中文描述就好，例如「一個銀髮少女站在雨夜的霓虹街頭」。我會從風格、場景、鏡頭、人物樣貌、動作、穿著六個面向檢查，缺的細節會問你，最後給你可以直接貼進 Stable Diffusion 的英文提示詞。
+          用中文描述就好，例如「一位金色短髮的中年女士站在雨夜的霓虹街頭」。我會從風格、場景、鏡頭、人物樣貌、動作、穿著六個面向檢查，缺的細節會問你，最後給你可以直接貼進 Stable Diffusion 的英文提示詞。
         </p>
       </div>
       <template v-for="(e, i) in s.state.transcript" :key="i">
@@ -13,7 +13,8 @@
         <ToolCallCard v-else-if="e.kind === 'tool'" :entry="e" />
         <FailureNotice v-else-if="e.kind === 'failure'" :entry="e" />
         <template v-else-if="e.kind === 'final'">
-          <AskCard v-if="e.data.kind === 'ask'" :data="e.data" :turn-index="e.turnIndex" :recommendations="e.recommendations ?? null" />
+          <AskCard v-if="e.data.kind === 'ask'" :data="e.data" />
+          <ConfirmCard v-else-if="e.data.kind === 'confirm'" :data="e.data" :turn-index="e.turnIndex" />
           <MessageBubble v-else-if="e.data.kind === 'message'" :data="e.data" />
           <FinalCard v-else-if="e.data.kind === 'finalized'" :data="e.data" :turn-index="e.turnIndex" :recommendations="e.recommendations ?? null" />
           <SaveConsentNotice v-else-if="e.data.kind === 'save_consent_requested'" />

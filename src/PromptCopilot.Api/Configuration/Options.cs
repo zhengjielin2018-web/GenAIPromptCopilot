@@ -29,7 +29,8 @@ public sealed class OrchestratorOptions
     public int MaxDiscussStreak { get; set; } = 8;
     public int MaxToolCallsPerTurn { get; set; } = 16;
     public int TurnTimeoutSeconds { get; set; } = 120;
-    public int HistoryTurns { get; set; } = 10;
+    /// <summary>保留最近幾則使用者訊息的輪次。2026-10-05 由 10 改 20：每個要求多一則「對，就這樣」，維持原本記得的要求數（先確認再動手設計 §2）。</summary>
+    public int HistoryTurns { get; set; } = 20;
     public int OfferedOptionsLimit { get; set; } = 24;
     public int MaxAsksPerCall { get; set; } = 3;
     public int SessionSlidingExpirationMinutes { get; set; } = 120;

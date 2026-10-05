@@ -85,20 +85,7 @@ public class RecommendationServiceTests
         Set(4, "D", ("clothing.footwear", "sandals"), ("clothing.lower", "shorts")),
     };
 
-    private static AskOutcome Ask(params string[] dims) =>
-        new("p", dims.Select(d => new AskItem(d, "q", new[] { Catalog.FacetsOf("portrait", d)[0] }, new[] { new OptionItem("a", "t", null), new OptionItem("b", "t", null) })).ToList());
     private static FinalizedOutcome Finalized(string positive) => new(new FinalPrompt(positive, "lowres", "t", "i"));
-
-    [Fact]
-    public async Task Ask_outcome_queries_only_the_asked_dimensions_in_ask_order()
-    {
-        var (svc, s, _, presets) = Make();
-        presets.Script[("scene.location", false)] = new[] { Set(1, "雨夜", ("scene.location", "city street"), ("scene.weather", "rain")) };
-        var e = await svc.BuildAsync(s, Ask("scene", "style"), 3, default);
-        Assert.Equal(new[] { "scene.location", "style.genre" }, presets.Calls.Select(c => c.firstFacet));
-        Assert.Equal("scene", Assert.Single(e!.Dimensions).Dimension);     // style 沒命中就不列
-        Assert.Equal(3, e.TurnIndex);
-    }
 
     [Fact]
     public async Task Finalized_outcome_queries_every_dimension_of_the_profile()
@@ -109,17 +96,114 @@ public class RecommendationServiceTests
         Assert.Equal("clothing.head", presets.Calls[5].firstFacet);
     }
 
-    /// <summary>設計 §5.3：錨＝該維度 covered facet 的 FacetTags，正規化、去重；沒 covered 的維度不帶錨。</summary>
+    /// <summary>設計 §5.3：錨＝該維度 covered facet 的 FacetTags，正規化、去重；沒 covered 的維度不帶錨。基礎畫質詞不進錨。</summary>
     [Fact]
     public async Task Anchors_come_from_facet_tags_normalized()
     {
         var (svc, s, _, presets) = Make(("clothing.footwear", "Sandals, platform_footwear"), ("clothing.upper", "(white shirt:1.2)"));
-        await svc.BuildAsync(s, Ask("clothing", "style"), 1, default);
-        var clothing = presets.Calls.First(c => c.firstFacet == "clothing.head");                   // 帶錨那次；沒命中會再退回一次純向量
+        await svc.BuildAsync(s, Finalized("masterpiece"), 1, default);
+        var clothing = presets.Calls.First(c => c.firstFacet == "clothing.head");                   // 字面錨那一層
         Assert.Equal(new[] { "clothing.upper", "clothing.footwear" }, clothing.anchorFacets);       // facets.yaml 順序
         Assert.Equal(new[] { "white shirt", "sandals", "platform footwear" }, clothing.anchorTags);
-        Assert.Equal(3, clothing.take);
-        Assert.Empty(presets.Calls.Single(c => c.firstFacet == "style.genre").anchorTags);
+        Assert.Equal(30, clothing.take);                                                            // 定稿卡每層取 PoolSize
+        Assert.All(presets.Calls.Where(c => c.firstFacet == "style.genre"), c => Assert.Empty(c.anchorTags));
+    }
+
+    [Fact]
+    public async Task Final_card_set_lists_every_dimension_facet_with_state_and_tags()
+    {
+        var (svc, s, _, presets) = MakeWith(Greedy(), ("clothing.footwear", "sandals"));
+        presets.Script[("clothing.head", true)] = new[]
+        {
+            Set(1, "夏日", ("clothing.upper", "front-tie top"), ("clothing.footwear", "platform sandals")),
+            Set(2, "海邊", ("clothing.lower", "short shorts"), ("clothing.footwear", "sandals")),
+        };
+        var d = (await svc.BuildAsync(s, Finalized("masterpiece"), 1, default))!.Dimensions.Single(x => x.Dimension == "clothing");
+        Assert.Equal("人物穿著", d.Label);
+        var set = d.Sets.Single(x => x.PresetId == 1);
+        Assert.Equal(new[] { "clothing.head", "clothing.upper", "clothing.lower", "clothing.footwear", "clothing.material", "clothing.accessories" }, set.Facets.Select(f => f.FacetId));
+        Assert.Equal("covered", set.Facets[3].State); Assert.Equal(new[] { "platform sandals" }, set.Facets[3].Tags);
+        Assert.Equal("missing", set.Facets[0].State); Assert.Empty(set.Facets[0].Tags);
+        Assert.Equal("鞋履", set.Facets[3].Label);
+        Assert.Equal(0.21, set.Dist); Assert.Equal("https://img", set.ImageUrl); Assert.Equal("civitai:1:0", set.SourceRef);
+    }
+
+    /// <summary>每套的 AnchorTags 要等於 SQL 過濾實際比中的錨：DB tag 等於錨、或以「空白＋錨」結尾。反方向（錨以 DB tag 結尾）SQL 不比，這裡也不能算。</summary>
+    [Fact]
+    public async Task Matched_anchors_mirror_the_sql_filter_and_ignore_anchors_that_only_end_with_a_db_tag()
+    {
+        var (svc, s, _, presets) = MakeWith(Greedy(), ("clothing.footwear", "sandals, white socks"));
+        presets.Script[("clothing.head", true)] = new[]
+        {
+            Set(1, "a", ("clothing.footwear", "sandals, socks"), ("clothing.upper", "x")),
+            Set(2, "b", ("clothing.footwear", "socks"), ("clothing.lower", "y")),
+        };
+        var d = (await svc.BuildAsync(s, Finalized("masterpiece"), 1, default))!.Dimensions.Single(x => x.Dimension == "clothing");
+        Assert.Equal(new[] { "sandals" }, d.Sets.Single(x => x.PresetId == 1).AnchorTags);     // white socks 不因 DB 的 socks 而算命中
+        Assert.Empty(d.Sets.Single(x => x.PresetId == 2).AnchorTags!);
+    }
+
+    [Fact]
+    public async Task Returns_null_when_no_dimension_has_candidates()
+    {
+        var (svc, s, _, _) = Make();
+        Assert.Null(await svc.BuildAsync(s, Finalized("1girl"), 1, default));
+    }
+
+    [Fact]
+    public async Task Facet_tags_for_facets_outside_the_dimension_are_ignored()
+    {
+        var (svc, s, _, presets) = MakeWith(Greedy());
+        presets.Script[("style.genre", false)] = new[] { Set(9, "x", ("style.genre", "oil painting"), ("style.palette", "muted"), ("scene.weather", "rain")) };
+        var d = (await svc.BuildAsync(s, Finalized("1girl"), 1, default))!.Dimensions.Single(x => x.Dimension == "style");
+        var set = Assert.Single(d.Sets);
+        Assert.DoesNotContain(set.Facets, f => f.FacetId == "scene.weather");
+        Assert.Equal(4, set.Facets.Count);
+    }
+
+    [Fact]
+    public async Task Without_profile_returns_null_and_touches_nothing()
+    {
+        var s = new Session("s");
+        var embed = new FakeEmbeddings(); var presets = new FakePresets();
+        Assert.Null(await new RecommendationService(Catalog, embed, presets, new OrchestratorOptions()).BuildAsync(s, Finalized("1girl"), 1, default));
+        Assert.Empty(embed.Texts); Assert.Empty(presets.Calls);
+    }
+
+    [Fact]
+    public async Task Similar_anchor_is_skipped_when_the_subtable_has_no_rows_for_the_facet()
+    {
+        var (svc, s, _, presets) = Make(("clothing.footwear", "slippers"));                     // FacetPools 沒設 → 0
+        await svc.BuildAsync(s, Finalized("masterpiece"), 1, default);
+        Assert.Empty(presets.SimilarCalls);
+    }
+
+    /// <summary>近似錨：同一片段被兩個 facet 撈到時取較小的距離，記在那個 facet 名下（設計 §6.1）。</summary>
+    [Fact]
+    public async Task Similar_results_from_several_facets_merge_by_min_distance_and_credit_the_closer_facet()
+    {
+        var (svc, s, _, presets) = MakeWith(Greedy(), ("clothing.footwear", "slippers"), ("clothing.head", "beret"));
+        presets.FacetPools["clothing.footwear"] = 338; presets.FacetPools["clothing.head"] = 662;
+        presets.SimilarScript["clothing.footwear"] = new[] { Set(2, "x", 0.20, ("clothing.footwear", "sandals"), ("clothing.upper", "a")), Set(3, "y", 0.22, ("clothing.footwear", "flip flops"), ("clothing.upper", "c")) };
+        presets.SimilarScript["clothing.head"] = new[] { Set(2, "x", 0.10, ("clothing.head", "cap"), ("clothing.upper", "a")), Set(4, "z", 0.15, ("clothing.head", "hat"), ("clothing.upper", "b")) };
+        var d = (await svc.BuildAsync(s, Finalized("masterpiece"), 1, default))!.Dimensions.Single(x => x.Dimension == "clothing");
+        Assert.Equal(new long[] { 2, 4 }, d.Sets.Select(x => x.PresetId));                      // 2 取兩邊較小的 0.10，排第一
+        Assert.Equal(0.10, d.Sets[0].Dist);
+        Assert.Equal(new[] { "beret" }, d.Sets[0].AnchorTags);                                    // 記在距離較小的 clothing.head 名下
+        Assert.All(d.Sets, x => Assert.Equal("similar", x.Reason));
+    }
+
+    [Fact]
+    public async Task Facet_whose_tags_normalize_to_nothing_is_not_embedded_as_an_anchor()
+    {
+        // Review Focus 4
+        var (svc, s, embed, presets) = Make(("clothing.footwear", "( :1.2)"));
+        presets.FacetPools["clothing.footwear"] = 338;
+        await svc.BuildAsync(s, Finalized("masterpiece"), 1, default);
+        Assert.Equal(new[] { "一個少女穿涼鞋" }, embed.Texts);
+        Assert.Empty(presets.SimilarCalls);
+        Assert.Null(RecommendationService.SimilarAnchorText(s, "clothing.footwear"));
+        Assert.Null(RecommendationService.SimilarAnchorText(s, "clothing.head"));                 // 沒有 FacetTags
     }
 
     [Fact]
@@ -130,77 +214,6 @@ public class RecommendationServiceTests
         var clothing = presets.Calls.First(c => c.firstFacet == "clothing.head");
         Assert.Equal(new[] { "sandals", "1girl", "white socks" }, clothing.anchorTags);          // 基礎畫質詞（含加權寫法）不當錨
         Assert.Empty(presets.Calls.First(c => c.firstFacet == "style.genre").anchorTags);       // style 沒有 covered
-    }
-
-    [Fact]
-    public async Task Anchored_query_with_two_hits_is_reported_anchored_with_the_matched_anchor_tags_only()
-    {
-        var (svc, s, _, presets) = Make(("clothing.footwear", "sandals, socks"));
-        presets.Script[("clothing.head", true)] = new[]
-        {
-            Set(1, "夏日", ("clothing.upper", "front-tie top"), ("clothing.footwear", "platform sandals")),
-            Set(2, "海邊", ("clothing.lower", "short shorts"), ("clothing.footwear", "sandals")),
-        };
-        var e = await svc.BuildAsync(s, Ask("clothing"), 1, default);
-        var d = Assert.Single(e!.Dimensions);
-        Assert.True(d.Anchored);
-        Assert.Equal(new[] { "sandals" }, d.AnchorTags);                                  // socks 沒有任何候選命中
-        Assert.Equal("人物穿著", d.Label);
-        Assert.Single(presets.Calls);                                                     // 沒退回第二次查詢
-        var set = d.Sets[0];
-        Assert.Equal(6, set.Facets.Count);                                                // 該維度全部 facet，順序照 yaml
-        Assert.Equal(new[] { "clothing.head", "clothing.upper", "clothing.lower", "clothing.footwear", "clothing.material", "clothing.accessories" }, set.Facets.Select(f => f.FacetId));
-        Assert.Equal("covered", set.Facets[3].State); Assert.Equal(new[] { "platform sandals" }, set.Facets[3].Tags);
-        Assert.Equal("missing", set.Facets[0].State); Assert.Empty(set.Facets[0].Tags);
-        Assert.Equal("鞋履", set.Facets[3].Label);
-        Assert.Equal(0.21, set.Dist); Assert.Equal("https://img", set.ImageUrl); Assert.Equal("civitai:1:0", set.SourceRef);
-    }
-
-    /// <summary>AnchorTags 要等於 SQL 過濾實際比中的錨：DB tag 等於錨、或以「空白＋錨」結尾。反方向（錨以 DB tag 結尾）SQL 不比，這裡也不能算。</summary>
-    [Fact]
-    public async Task Matched_anchors_mirror_the_sql_filter_and_ignore_anchors_that_only_end_with_a_db_tag()
-    {
-        var (svc, s, _, presets) = Make(("clothing.footwear", "sandals, white socks"));
-        presets.Script[("clothing.head", true)] = new[]
-        {
-            Set(1, "a", ("clothing.footwear", "sandals, socks"), ("clothing.upper", "x")),
-            Set(2, "b", ("clothing.footwear", "socks"), ("clothing.lower", "y")),
-        };
-        var e = await svc.BuildAsync(s, Ask("clothing"), 1, default);
-        var d = Assert.Single(e!.Dimensions);
-        Assert.True(d.Anchored);
-        Assert.Equal(new[] { "sandals" }, d.AnchorTags);                                  // white socks 不因 DB 的 socks 而算命中
-    }
-
-    [Fact]
-    public async Task Anchored_query_with_fewer_than_two_hits_falls_back_to_an_unanchored_query()
-    {
-        var (svc, s, _, presets) = Make(("clothing.footwear", "sandals"));
-        presets.Script[("clothing.head", true)] = new[] { Set(1, "只有一套", ("clothing.footwear", "sandals"), ("clothing.upper", "x")) };
-        presets.Script[("clothing.head", false)] = new[] { Set(2, "最接近", ("clothing.upper", "shirt"), ("clothing.lower", "jeans")), Set(3, "b", ("clothing.upper", "a"), ("clothing.lower", "b")) };
-        var e = await svc.BuildAsync(s, Ask("clothing"), 1, default);
-        var d = Assert.Single(e!.Dimensions);
-        Assert.False(d.Anchored); Assert.Empty(d.AnchorTags);
-        Assert.Equal(new long[] { 2, 3 }, d.Sets.Select(x => x.PresetId));
-        Assert.Equal(2, presets.Calls.Count);
-        Assert.Empty(presets.Calls[1].anchorFacets);
-    }
-
-    [Fact]
-    public async Task No_covered_facets_means_one_unanchored_query()
-    {
-        var (svc, s, _, presets) = Make();
-        presets.Script[("style.genre", false)] = new[] { Set(9, "油畫", ("style.genre", "oil painting"), ("style.palette", "muted")) };
-        var e = await svc.BuildAsync(s, Ask("style"), 1, default);
-        Assert.False(Assert.Single(e!.Dimensions).Anchored);
-        Assert.Single(presets.Calls);
-    }
-
-    [Fact]
-    public async Task Returns_null_when_no_dimension_has_candidates()
-    {
-        var (svc, s, _, _) = Make();
-        Assert.Null(await svc.BuildAsync(s, Ask("style"), 1, default));
     }
 
     /// <summary>設計 §5.3：查詢向量＝使用者原話串接的最後 500 字，採用句不算；一輪只嵌入一次。</summary>
@@ -218,109 +231,6 @@ public class RecommendationServiceTests
         Assert.EndsWith("昏街頭", q);
         Assert.DoesNotContain("採用〈", q);
         Assert.Equal("一個少女穿涼鞋\n" + new string('黃', 600) + "昏街頭", RecommendationService.JoinedUserText(s.ChatHistory));
-    }
-
-    [Fact]
-    public async Task Facet_tags_for_facets_outside_the_dimension_are_ignored()
-    {
-        var (svc, s, _, presets) = Make();
-        presets.Script[("style.genre", false)] = new[] { Set(9, "x", ("style.genre", "oil painting"), ("style.palette", "muted"), ("scene.weather", "rain")) };
-        var e = await svc.BuildAsync(s, Ask("style"), 1, default);
-        var set = Assert.Single(Assert.Single(e!.Dimensions).Sets);
-        Assert.DoesNotContain(set.Facets, f => f.FacetId == "scene.weather");
-        Assert.Equal(4, set.Facets.Count);
-    }
-
-    [Fact]
-    public async Task Without_profile_returns_null_and_touches_nothing()
-    {
-        var s = new Session("s");
-        var embed = new FakeEmbeddings(); var presets = new FakePresets();
-        Assert.Null(await new RecommendationService(Catalog, embed, presets, new OrchestratorOptions()).BuildAsync(s, Ask("style"), 1, default));
-        Assert.Empty(embed.Texts); Assert.Empty(presets.Calls);
-    }
-
-    [Fact]
-    public async Task Literal_anchor_short_of_two_hits_tries_the_similar_anchor_and_reports_it_as_similar()
-    {
-        var (svc, s, embed, presets) = Make(("clothing.footwear", "slippers"));
-        presets.FacetPools["clothing.footwear"] = 338;
-        presets.Script[("clothing.head", true)] = new[] { Set(1, "只有一套", ("clothing.footwear", "slippers"), ("clothing.upper", "x")) };
-        presets.SimilarScript["clothing.footwear"] = new[]
-        {
-            Set(2, "涼鞋一", 0.18, ("clothing.footwear", "sandals"), ("clothing.upper", "a")),
-            Set(3, "涼鞋二", 0.21, ("clothing.footwear", "sandals"), ("clothing.lower", "b")),
-        };
-        var e = await svc.BuildAsync(s, Ask("clothing"), 1, default);
-        var d = Assert.Single(e!.Dimensions);
-        Assert.False(d.Anchored); Assert.True(d.Similar);
-        Assert.Equal(new[] { "slippers" }, d.AnchorTags);                                        // 有貢獻的 facet 的 FacetTags
-        Assert.Equal(new long[] { 2, 3 }, d.Sets.Select(x => x.PresetId));
-        Assert.Equal(0.18, d.Sets[0].Dist);                                                      // 近似路上的 Dist 是 facet 距離
-        var call = Assert.Single(presets.SimilarCalls);
-        Assert.Equal(("clothing.footwear", 0.30, 3), call);                                   // 預設門檻（2026-09-30 驗收後由 0.23 放寬）
-        Assert.Single(presets.Calls);                                                            // 沒退到無錨
-        Assert.Equal(new[] { "一個少女穿涼鞋", "slippers" }, embed.Texts);                        // 錨向量與查詢向量同一次 embed
-    }
-
-    [Fact]
-    public async Task Similar_anchor_short_of_two_hits_falls_back_to_unanchored()
-    {
-        var (svc, s, _, presets) = Make(("clothing.footwear", "slippers"));
-        presets.FacetPools["clothing.footwear"] = 338;
-        presets.SimilarScript["clothing.footwear"] = new[] { Set(2, "只一套", 0.2, ("clothing.footwear", "sandals"), ("clothing.upper", "a")) };
-        presets.Script[("clothing.head", false)] = new[] { Set(8, "a", ("clothing.upper", "x"), ("clothing.lower", "y")), Set(9, "b", ("clothing.upper", "x"), ("clothing.lower", "y")) };
-        var d = Assert.Single((await svc.BuildAsync(s, Ask("clothing"), 1, default))!.Dimensions);
-        Assert.False(d.Anchored); Assert.False(d.Similar); Assert.Empty(d.AnchorTags);
-        Assert.Equal(new long[] { 8, 9 }, d.Sets.Select(x => x.PresetId));
-        Assert.Equal(2, presets.Calls.Count);
-    }
-
-    [Fact]
-    public async Task Similar_anchor_is_skipped_when_the_subtable_has_no_rows_for_the_facet()
-    {
-        var (svc, s, _, presets) = Make(("clothing.footwear", "slippers"));                     // FacetPools 沒設 → 0
-        presets.Script[("clothing.head", false)] = new[] { Set(8, "a", ("clothing.upper", "x"), ("clothing.lower", "y")) };
-        await svc.BuildAsync(s, Ask("clothing"), 1, default);
-        Assert.Empty(presets.SimilarCalls);
-    }
-
-    [Fact]
-    public async Task Anchored_result_never_runs_the_similar_query()
-    {
-        var (svc, s, _, presets) = Make(("clothing.footwear", "sandals"));
-        presets.FacetPools["clothing.footwear"] = 338;
-        presets.Script[("clothing.head", true)] = new[] { Set(1, "a", ("clothing.footwear", "sandals"), ("clothing.upper", "x")), Set(2, "b", ("clothing.footwear", "sandals"), ("clothing.lower", "y")) };
-        var d = Assert.Single((await svc.BuildAsync(s, Ask("clothing"), 1, default))!.Dimensions);
-        Assert.True(d.Anchored); Assert.False(d.Similar); Assert.Empty(presets.SimilarCalls);
-    }
-
-    [Fact]
-    public async Task Similar_results_from_several_facets_merge_by_min_distance_and_credit_only_contributing_facets()
-    {
-        var (svc, s, _, presets) = Make(("clothing.footwear", "slippers"), ("clothing.head", "beret"));
-        presets.FacetPools["clothing.footwear"] = 338; presets.FacetPools["clothing.head"] = 662;
-        presets.SimilarScript["clothing.footwear"] = new[] { Set(2, "x", 0.20, ("clothing.footwear", "sandals"), ("clothing.upper", "a")), Set(3, "y", 0.22, ("clothing.footwear", "sandals"), ("clothing.upper", "a")) };
-        presets.SimilarScript["clothing.head"] = new[] { Set(2, "x", 0.10, ("clothing.head", "cap"), ("clothing.upper", "a")), Set(4, "z", 0.15, ("clothing.head", "cap"), ("clothing.upper", "a")) };
-        var d = Assert.Single((await svc.BuildAsync(s, Ask("clothing"), 1, default))!.Dimensions);
-        Assert.True(d.Similar);
-        Assert.Equal(new long[] { 2, 4, 3 }, d.Sets.Select(x => x.PresetId));                    // 2 取兩邊較小的 0.10
-        Assert.Equal(0.10, d.Sets[0].Dist);
-        Assert.Equal(new[] { "beret", "slippers" }, d.AnchorTags);                               // 兩個 facet 都有進前 3；順序照 yaml（head 在 footwear 前）
-    }
-
-    [Fact]
-    public async Task Facet_whose_tags_normalize_to_nothing_is_not_embedded_as_an_anchor()
-    {
-        // Review Focus 4
-        var (svc, s, embed, presets) = Make(("clothing.footwear", "( :1.2)"));
-        presets.FacetPools["clothing.footwear"] = 338;
-        presets.Script[("clothing.head", false)] = new[] { Set(8, "a", ("clothing.upper", "x"), ("clothing.lower", "y")) };
-        await svc.BuildAsync(s, Ask("clothing"), 1, default);
-        Assert.Equal(new[] { "一個少女穿涼鞋" }, embed.Texts);
-        Assert.Empty(presets.SimilarCalls);
-        Assert.Null(RecommendationService.SimilarAnchorText(s, "clothing.footwear"));
-        Assert.Null(RecommendationService.SimilarAnchorText(s, "clothing.head"));                 // 沒有 FacetTags
     }
 
     [Fact]
@@ -363,7 +273,7 @@ public class RecommendationServiceTests
     [Fact]
     public async Task Final_card_uses_the_similar_tier_when_the_literal_anchor_has_no_hits()
     {
-        var (svc, s, _, presets) = MakeWith(Greedy(), ("clothing.footwear", "slippers"));
+        var (svc, s, embed, presets) = MakeWith(Greedy(), ("clothing.footwear", "slippers"));
         presets.FacetPools["clothing.footwear"] = 338;
         presets.SimilarScript["clothing.footwear"] = new[]
         {
@@ -373,6 +283,7 @@ public class RecommendationServiceTests
         var d = (await svc.BuildAsync(s, Finalized("1girl"), 1, default))!.Dimensions.Single(x => x.Dimension == "clothing");
         var set = d.Sets.First(x => x.Reason == "similar");    // 只有近似錨兩套候選，兩個相關位都會是 similar
         Assert.Equal(new[] { "slippers" }, set.AnchorTags);
+        Assert.Equal(new[] { "一個少女穿涼鞋", "slippers" }, embed.Texts);                        // 錨向量與查詢向量同一次 embed
     }
 
     [Fact]
@@ -422,20 +333,6 @@ public class RecommendationServiceTests
         Assert.Equal(new[] { "query", "query", "explore" }, d.Sets.Select(x => x.Reason));
         Assert.Equal(13, d.Sets[2].PresetId);
         Assert.Equal(Catalog.FacetsOf("portrait", "style"), presets.VectorCalls.First(c => c.ids.Contains(13)).facets);
-    }
-
-    [Fact]
-    public async Task Ask_outcome_ends_the_slate()
-    {
-        // Review Focus 3
-        var (svc, s, _, presets) = MakeWith(Greedy());
-        presets.Script[("style.genre", false)] = new[] { Set(11, "油畫", ("style.genre", "oil painting"), ("style.palette", "muted")) };
-        await svc.BuildAsync(s, Finalized("1girl"), 1, default);
-        Assert.Equal(1, s.LatestSlateTurn);
-        var ask = await svc.BuildAsync(s, Ask("style"), 2, default);
-        Assert.Null(s.LatestSlateTurn);
-        Assert.Null(ask!.Dimensions[0].Batch);                                                        // 追問卡不帶批次與理由
-        Assert.Null(ask.Dimensions[0].Sets[0].Reason);
     }
 
     [Fact]
@@ -492,5 +389,17 @@ public class RecommendationServiceTests
         Assert.Equal("風格", next.Label);
         Assert.Equal(0, s.SlateBatch("style"));
         Assert.Empty(s.SeenFor("style"));
+    }
+
+    /// <summary>Review Focus 1：「對，就這樣」不是畫面描述，不能進查詢向量；選了解讀的句子是使用者選定的內容，照算。</summary>
+    [Fact]
+    public void Query_text_skips_the_plain_accept_sentence_but_keeps_a_chosen_interpretation()
+    {
+        var h = new ChatHistory();
+        h.AddUserMessage("一位女士拿著相機和飲料");
+        h.AddUserMessage("對，就這樣");
+        h.AddUserMessage("讓她拿雨傘");
+        h.AddUserMessage("換掉飲料，改拿雨傘");
+        Assert.Equal("一位女士拿著相機和飲料\n讓她拿雨傘\n換掉飲料，改拿雨傘", RecommendationService.JoinedUserText(h));
     }
 }

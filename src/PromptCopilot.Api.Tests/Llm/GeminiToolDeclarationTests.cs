@@ -5,6 +5,7 @@ using System.Threading.Channels;
 using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.ChatCompletion;
 using Microsoft.SemanticKernel.Connectors.Google;
+using PromptCopilot.Api.Configuration;
 using PromptCopilot.Api.Data;
 using PromptCopilot.Api.Llm;
 using PromptCopilot.Api.Orchestration;
@@ -106,5 +107,34 @@ public class GeminiToolDeclarationTests
         // (2) connector 把 Gemini 回的兩項 functionCall（一項只帶 facetId）綁到同一次 KnowledgePlugin 呼叫，embedding 一次 batch 帶兩個 query。
         var call = Assert.Single(embed.Calls);
         Assert.Equal(new[] { "寫實攝影", "拖鞋（slippers）" }, call);
+    }
+
+    /// <summary>先確認再動手設計 §3.2：Confirm 的 choices 有預設值，不能在 required 裡（Discuss.options 踩過：沒預設值時 Gemini 照描述省略會丟 KernelException）。
+    /// Gemini 回的 functionCall 不帶 choices 也要綁得起來。</summary>
+    [Fact]
+    public async Task Confirm_declares_choices_as_optional_and_binds_without_them()
+    {
+        var catalog = FacetCatalogTests.Real();
+        var session = new Session("p");
+        var tools = ToolNames.ProposeAlways;
+        var turn = new TurnContext(session, 1, GuardResult.Ok(false), tools, Channel.CreateUnbounded<AgentEvent>().Writer);
+        var kernel = new Kernel();
+        AgentKernelFactory.AddFiltered(kernel, "Dialog", new DialogPlugin(turn, catalog, new OrchestratorOptions()), tools);
+
+        var bodies = new List<string>();
+        var reply = Call("Dialog_Confirm", """{"message":"我理解的畫面：一位女士站在雨夜街頭。"}""");
+        var chat = new GoogleAIGeminiChatCompletionService("gemini-x", "fake", GoogleAIVersion.V1_Beta,
+            new HttpClient(new GeminiRoleFixHandler(new Canned(new Queue<string>(new[] { reply, Text }), bodies))));
+        var history = new ChatHistory("sys");
+        history.AddUserMessage("u");
+        await chat.GetChatMessageContentsAsync(history, new GeminiPromptExecutionSettings { FunctionChoiceBehavior = FunctionChoiceBehavior.Auto() }, kernel);
+
+        var decl = JsonDocument.Parse(bodies[0]).RootElement
+            .GetProperty("tools")[0].GetProperty("functionDeclarations")
+            .EnumerateArray().Single(x => x.GetProperty("name").GetString() == "Dialog_Confirm");
+        var parameters = decl.GetProperty("parameters");
+        Assert.Equal(new[] { "message" }, parameters.GetProperty("required").EnumerateArray().Select(x => x.GetString()).ToArray());
+        Assert.Equal("array", parameters.GetProperty("properties").GetProperty("choices").GetProperty("type").GetString());
+        Assert.Empty(Assert.IsType<ConfirmOutcome>(turn.Outcome).Choices);
     }
 }

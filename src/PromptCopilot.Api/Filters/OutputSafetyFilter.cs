@@ -5,10 +5,10 @@ using PromptCopilot.Api.Safety;
 
 namespace PromptCopilot.Api.Filters;
 
-/// <summary>多輪 §5.2：三個會把文字送到使用者眼前的 tool 都檢。命中用 Terminate + BlockedOutcome，不丟例外。</summary>
+/// <summary>多輪 §5.2：四個會把文字送到使用者眼前的 tool 都檢（Confirm 是 2026-10-05 加的）。命中用 Terminate + BlockedOutcome，不丟例外。</summary>
 public sealed class OutputSafetyFilter(SafetyClassifier classifier) : IAutoFunctionInvocationFilter
 {
-    private static readonly HashSet<string> Guarded = new() { ToolNames.Discuss, ToolNames.AskUser, ToolNames.FinalizePrompt };
+    private static readonly HashSet<string> Guarded = new() { ToolNames.Discuss, ToolNames.AskUser, ToolNames.FinalizePrompt, ToolNames.Confirm };
 
     public async Task OnAutoFunctionInvocationAsync(AutoFunctionInvocationContext context, Func<AutoFunctionInvocationContext, Task> next)
     {

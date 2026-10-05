@@ -117,6 +117,8 @@ fresh clone 在暫存目錄進行，只放 `.env`；開發用的 stack 先 `dock
 
 設計：`docs/superpowers/specs/2026-09-25-set-recommendations-design.md`。瀏覽器驗收，需要 API、知識庫，且 `facet_tags` 已回填（`scripts/backfill_facet_tags.py` 或 seed-v2）。
 
+> 2026-10-05 起追問卡不再推薦（先確認再動手設計 §8）：S1 的「追問卡底下參考組合」與 S7 的「在追問卡採用」已不適用。
+
 | # | 操作 | 應該看到 | 結果 |
 | :--- | :--- | :--- | :--- |
 | S1 | 新對話，送「一個少女穿涼鞋」 | 儀表板鞋履 chip 的 title 含模型給的英文 tag（如 `sandals`）；追問卡底下「參考組合」只有被問的維度；人物穿著那列副標「含你講的 sandals」（`anchored=true`）、2–3 張縮圖有來源標籤；縮圖點開抽屜 | ✅ API 層：`dimensions.facetTags` 有 `clothing.footwear: "sandals"`；`final ask` 問風格／場景／鏡頭，隨後的 `recommendations` 恰好是這三維、各 3 套都有縮圖與 `sourceRef`。模型沒問穿著，這輪沒有穿著列（錨在 S2 驗）。畫面（chip title、副標、抽屜）未看 |
@@ -162,6 +164,8 @@ API 層是用 SSE 直接打分支 `feat/set-recommendations` 的 API（本機 50
 
 設計：`docs/superpowers/specs/2026-09-30-recommendation-slate-design.md`。Claude 用 Playwright（`playwright-core` 驅動系統的 Edge，headless）跑，`docker compose up -d --build api frontend` 重建後執行，實際呼叫 Gemini。腳本放 scratchpad，不進 repo。G1–G4 同一個 session（`a62c51fd8bb74a63b39dff3a7d2189bd`），G5 另開一個乾淨的 browser context（新 session `ecc143f6c0e2406db6e5750ffb9fa695`）。全程沒有 `Turn_Failed`、`Protocol_Violation`。
 
+> 2026-10-05 起追問卡不再推薦，G5 已不適用。
+
 | # | 情境 | 期望 | 結果 |
 | :--- | :--- | :--- | :--- |
 | G1 | 定稿卡 | 每排 2 相關＋1 探索、每套有理由、探索位虛線 | ✅ 輸入「一個穿涼鞋和白色洋裝的少女坐在海邊」，第 1 輪追問（風格／場景／鏡頭），回「其他都你決定，直接定稿」後第 2 輪定稿。六個人像維度（風格、場景、鏡頭、人物樣貌、人物動作、人物穿著）每排恰好 3 張、2 相關＋1 探索，本次沒有任何維度候選不足。理由文字逐項核對：有錨的維度是「含你講的 X」（如場景「含你講的 beach」、人物穿著「含你講的 white dress」、人物動作「含你講的 sitting」）；風格維度沒錨到，2 個相關位都是「最接近你描述的」（`reason:"query"`）；每排第 3 張都是「換個搭法」（`reason:"explore"`），DOM 上都帶 `outline-dashed` 樣式與 `data-reason="explore"`。排頭沒有列層級文案（`d.batch != null` 時該 `<span>` 不渲染）。截圖 `g1-final.png`、逐維度 DOM 結構存於 `g1-final.json`（scratchpad） |
@@ -175,3 +179,41 @@ API 層是用 SSE 直接打分支 `feat/set-recommendations` 的 API（本機 50
 - 這次驗收六個人像維度在 G1 都拿到滿額的 2＋1，沒有出現「候選不足只給 1～2 張」的情況；候選不足的分支這次沒有實證，之後如果要驗可以挑一個 `preset_facet_embeddings` 覆蓋率低的冷門 facet 组合。
 - headless Edge 對外部圖床（Civitai／Kisegae）的縮圖有時在截圖那一刻還沒畫出來（`g1-final.png` 少數格子空白），但 `<img>` 的 `src` 與來源標籤都在，換一批後的截圖（`g2-after-nextbatch.png`）縮圖正常顯示；判斷是這個環境對外部圖檔的載入時序問題，不是產品缺陷，DOM 斷言不受影響。
 - `Recommendations_Next` 這一輪呼叫的 `latency_ms` 中位數 538ms（n=13，其中 1 筆 2432ms 的暖機樣本），沒有拖慢互動；數字與量測方式見設計 §8。
+
+## 2026-10-05 先確認再動手（含追問卡不再推薦）
+
+設計：`docs/superpowers/specs/2026-10-05-confirm-before-act-design.md`。Claude 用 Playwright（`playwright-core` 驅動系統的 Edge，headless）跑，`docker compose up -d --build api frontend` 重建後執行，實際呼叫 Gemini。腳本放 scratchpad，不進 repo。
+
+| # | 操作 | 預期 | 結果 |
+| :--- | :--- | :--- | :--- |
+| C1 | 送「一位金色短髮的中年女士拿著相機和飲料站在雨夜的霓虹街頭」 | 確認卡複述畫面；按下前儀表板不變；按「對，就這樣」後出追問卡，沒有推薦條 | ✅ `6d704d21…` 第 1 輪確認卡「我理解的畫面是：一位金色短髮的中年女士，手裡拿著相機和飲料，站在下著雨的霓虹街頭。風格、鏡頭、穿著等其他面向還沒指定。」，`choices` 空、一顆「對，就這樣」；輸入框 placeholder 變成「按上面的按鈕套用；在這裡打字會當成修正」。送出前與確認輪後各取一次 `GET /api/sessions/{id}`：`profile` 都是 null、`Collecting`、`facetStates` 相同，儀表板 `data-state` 也相同（題材尚未判定）。按下後泡泡「對，就這樣」，第 2 輪追問卡問風格／鏡頭，`profile=portrait`、已涵蓋 5/31；`[data-card="ask"] [data-section="recommendations"]` 0 個、該輪沒有 `recommendations`；舊卡停用，title「已經有新的進展，這張卡不能再按」；audit 第 2 輪 `confirmed: {turnIndex: 1}`。修正輪 2 後重跑 `a9082735…`：卡片「我理解的畫面是：一位金色短髮的中年女士，手裡拿著相機和飲料，站在雨夜的霓虹街頭。風格、鏡頭等細節還沒指定。」，沒有預告下一步；按下前 `GET` 與儀表板不變；按下後追問風格／鏡頭，沒有推薦條 |
+| C2 | 用選項回答追問 | 先出確認卡（「我會把風格設成…」），按下後才追問或定稿 | ✅（修正輪 2 之後）確認卡只講要設什麼，不預告下一步，流程照伺服器的閘門走。`a9082735…`、`0f512059…` 兩段各三張卡：6/6 沒有預告「接著問」或「直接定稿」；每張按下前 `GET /api/sessions/{id}` 與儀表板都不變，按下後泡泡是「對，就這樣」。`a9082735…` 第 3 輪「我理解的畫面是：一位金色短髮的中年女士，手裡拿著相機和飲料，站在雨夜的霓虹街頭，採用寫實攝影風格與半身特寫鏡頭。場景、穿著、樣貌與動作的其他細節還沒指定。」→ 第 4 輪追問場景／穿著／樣貌（2/2）→ 第 5 輪確認卡 → 第 6 輪定稿。`0f512059…` 第 3 輪「…採用日系動漫風與柔和色調，搭配半身特寫與淺景深散景。…」→ 第 4 輪追問場景／樣貌／穿著 → 第 6 輪定稿。兩張追問卡都沒有推薦條。**之前**：原始驗收時卡片說「確認後我們就直接定稿，其餘未指定的面向將保持留白」（`6d704d21…` 第 3 輪、`31be94cf…` 第 4 輪），動手輪卻追問。修正輪 1 讓卡片照伺服器先算好的「確認之後的下一步」寫，回答第一次追問那張仍只有 2/6 講對，所以修正輪 2 改成不預告 |
+| C3 | 定稿後送「讓她拿雨傘」，跑 3 次 | 3 次都是有選項的確認卡；選「換掉飲料，改拿雨傘」後定稿有雨傘與相機、沒有飲料 | ✅ 3/3，`flow-propose.md` 沒調。每次開新對話，送「一位女生雙手拿著相機和飲料站在街頭，其他你決定，直接給我」，按確認後定稿（含 `holding camera` 與 `holding drink`／`holding beverage`），再送「讓她拿雨傘」。① `61d2a2e0…`「她雙手已經拿著相機和飲料，如果要拿雨傘會衝突。你希望怎麼調整？」3 顆：「換掉飲料，改拿雨傘」「換掉相機，改拿雨傘」「相機、飲料和雨傘三樣都拿（可能較擁擠）」；② `544c12f2…`「她目前雙手已經拿著相機和飲料，再拿雨傘會拿不下。你想要哪一種？」3 顆：「換掉飲料，改拿雨傘」「換掉相機，改拿雨傘」「三樣都拿（相機、飲料、雨傘）」；③ `483c04b7…`「她原本雙手已經拿著相機和飲料，再拿雨傘會衝突。你希望怎麼調整？」3 顆：「換掉飲料，改拿雨傘（相機保留）」「換掉相機，改拿雨傘（飲料保留）」「三樣都拿（相機、飲料、雨傘）」。三次確認輪後 `facetStates` 與定稿都不變；按第 1 顆後泡泡是選項原文，新定稿有 `holding umbrella`、`holding camera`，沒有 drink／cup／bottle／beverage 類 tag；跟前一張定稿比，三次都只把 `holding drink`（②是 `holding beverage`）換成 `holding umbrella`，其餘 tag 相同。② 第一次跑（`9bbb5888…`）在前置的定稿輪就 `Turn_Failed`（`Timeout`），沒走到雨傘那步，換新對話重跑。②③ 的「三樣都拿」沒註明代價。修正輪之後再跑兩次（`f54a75eb…`、`79aaa3bb…`），都給 3 顆解讀，選「換掉飲料，改拿雨傘」後只把 `holding drink` 換成 `holding umbrella`。修正輪 2 後 `829c981b…` 也過：這次第 1 顆是「換掉相機，改拿雨傘」，選第 2 顆「換掉飲料，改拿雨傘」，結果相同 |
+| C4 | 定稿後送「鞋子換成靴子」 | 單一提案卡；按下後重新定稿 | ✅ `6d704d21…` 第 7 輪「我會將鞋履從原本的留白改為靴子（combat boots），其他內容維持不變。確認後會為您重新定稿！」，一顆「對，就這樣」，`facetStates` 與定稿不變；按下後第 8 輪定稿只多 `combat boots`（`facetTags["clothing.footwear"]="combat boots"`），其餘 tag 相同。正文夾了英文 tag，prompt 要求不寫 |
+| C5 | 確認卡沒按時問「寫實跟動漫差在哪」 | `Discuss` 回答；之後舊確認卡仍可按且有效 | ✅ `31be94cf…` 第 1 輪確認卡「我理解的畫面是：一位銀髮少女坐在窗邊看書。風格、鏡頭、場景等細節還沒指定。」；第 2 輪問「寫實跟動漫差在哪」→ audit `Tool_Invoked` `Discuss`、`MessageOutcome`，回一段寫實／動漫的差別，狀態不變，第 1 輪的卡仍可按。按下後第 3 輪追問（風格／場景／鏡頭），`profile=portrait`，audit `confirmed: {turnIndex: 1}`。`Discuss` 帶了 `facetStates`，profile 還是 null，伺服器記「Profile 為 null，facetStates 忽略」後略過 |
+| C6 | 確認卡出現後在輸入框打「好」 | 出新的確認卡，不動手 | ✅ `31be94cf…` 用選項回答追問 → 第 4 輪確認卡；打「好」→ 第 5 輪 `ConfirmOutcome`「要套用的話請按下面的按鈕。我理解的畫面是：一位銀髮少女坐在溫馨室內陽光灑落的窗邊看書，採用寫實攝影風格與半身特寫（視線齊平）鏡頭。」；`facetStates` 不變、追問仍 1/2；第 4 輪的卡停用，第 5 輪的可按 |
+| C7 | 動手後看舊確認卡；curl 帶舊輪次送確認 | 舊卡停用；curl 409「只有最新一張確認卡可以按」 | ✅ `6d704d21…` 第 4 輪動手後，第 1、3 輪的卡都停用（title「已經有新的進展，這張卡不能再按」）。curl（`--data-binary @file`）：定稿後沒有待確認時送 `{"confirm":{"turnIndex":7,"choice":null}}` → 409「沒有待確認的內容」；再送一句「背景改成白天的公園」得到第 10 輪確認卡後，重送同一個 body → 409「只有最新一張確認卡可以按」。瀏覽器腳本在第 7 輪的卡待按時送 `turnIndex: 1`，同樣 409 |
+| C8 | 送「直接給我」 | 確認卡列出打算補的內容；按下後定稿 | ✅ `31be94cf…` 第 6 輪追問（表情／臉部／上半身，2/2）後送「直接給我」→ 第 7 輪「我會幫您補上溫柔微笑的表情與寬鬆針織毛衣的穿著，並直接將畫面定稿輸出提示詞。」，狀態不變；按下後第 8 輪定稿含 `gentle smile`、`oversized knit sweater`。`6d704d21…` 第 5 輪「其他你決定，直接給我」也一樣：卡片列「霓虹燈光、微笑表情與時尚風衣外套」，定稿含 `neon lights`、`smiling`、`stylish trench coat`。卡片沒列具體內容時，定稿可能沒補（見下方補充觀察）。修正輪 1：`8af7e8b5…`、`08d5420c…` 先描述「一個女生在海邊散步」，追問後送「直接給我」。兩張卡都只列維度名稱（「補齊風格、鏡頭、場景、樣貌、動作與穿著」），定稿 `tagOrigins.llm` 是 26 與 25。修正輪 2：`48070db9…` 同樣的路徑，卡片「我將為您自動補齊風格（寫實攝影風格）、鏡頭（全身平視、淺景深）、場景（夕陽海灘、晴朗天氣）、樣貌（長髮、溫柔微笑）、動作（向前看、散步）與穿著（白色洋裝、赤腳），並直接定稿。」，定稿照著補（`photorealistic, beach, sunset, clear sky, full body, eye level, bokeh, long hair, gentle smile, walking, looking forward, white sundress, barefoot`，`llm` 10、`rag` 5） |
+| C9 | 確認卡沒按時重新整理 | 卡片回來，照樣能按 | ✅ `31be94cf…` 第 5 輪的卡待按時重新整理：session id 相同，3 張確認卡都回來，只有最後一張可按（可按的按鈕 1 顆），placeholder 仍是「按上面的按鈕套用…」；按下後第 6 輪追問，audit `confirmed: {turnIndex: 5}` |
+| C10 | 從定稿卡採用一套；curl 在追問階段送採用 | 採用直接動手、不出確認卡；curl 409「定稿後才能採用組合」 | ✅ `6d704d21…` 第 8 輪定稿卡的人物穿著列採用 #41743「賽博龐克霓虹勁裝」（全部照它的）→ 第 9 輪直接 `FinalizedOutcome`，中間沒有確認卡（確認卡總數仍是 4），泡泡是伺服器整句「採用〈賽博龐克霓虹勁裝〉（知識庫 #41743）：…」，audit `adoption.filled=["clothing.head","clothing.lower"]`、`replaced=["clothing.upper","clothing.footwear"]`。追問階段送 `{"adopt":{"presetId":41593,…}}`：`6d704d21…` 第 2 輪後（`Collecting`、追問 1/2）與 curl 開的 `1635a8ef…` 第 2 輪追問後都回 409「定稿後才能採用組合」；同一個對話 `confirm`＋`adopt` 一起送 → 400「confirm 與 adopt 不能同時送」 |
+
+耗時（從 `docker compose logs api` 的 `Turn …` 摘要行算中位數；這是修正輪之前的 prompt 量到的，修正輪之後的 build 沒有重算）：確認輪 4,177 ms（`ConfirmOutcome` 17＋`MessageOutcome` 1，n=18，3,115–6,645）、動手輪 6,977 ms（`AskOutcome` 5＋`FinalizedOutcome` 11，n=16，4,164–11,594；含 1 輪採用 11,594）。不含唯一一輪 `Turn_Failed`（`Timeout`，120,013 ms）。
+
+2026-10-05 的驗收：分支 `feat/confirm-before-act` `8ce9de4`。先跑全套測試：.NET 473 過、18 略過（integration）、0 失敗；前端 Vitest 110 過、`vue-tsc --noEmit` 0 錯（本機 `npm run build` 被 Windows 應用程式控制擋下，前端實際建置用的是 Docker）；`scripts` ruff 全過、pytest 280 過。接著 `docker compose up -d --build api frontend`，兩個 image 都建成功，`/health` 200。session：C1、C2、C4、C7、C10 `6d704d21e4594d2bad168517d92a7c7d`；C5、C6、C8、C9 `31be94cf7a704ead867e64ed205bd56e`；C3 見該列；C7、C10 的 curl 另用 `1635a8ef8bbd4fbe9e904409d30a52c2`。整段只有 `9bbb5888…` 第 2 輪 `Protocol_Violation`（attempt 1）後 `Turn_Failed`，沒有被攔。
+
+修正（同日兩個 commit：`fix(api): confirm cards state the real next step and delegation fills every missing facet`、`fix(api): confirm cards stop announcing the next step; delegation still finalizes directly`），處理 C2 與「直接給我」定稿沒補齊兩件事。現行做法：
+
+1. **確認卡不預告下一步**（第一次描述、回答追問）。確認輪猜不到一段自由回答會讓哪些 facet 變 covered：修正輪 1 由伺服器先照動手輪的規則算好「確認之後的下一步」給它照寫，回答第一次追問那張仍只有 2/6 講對。所以卡片只講要設什麼，接下來是追問還是定稿，看下一張卡。`flow-propose.md` 第 2 條寫明不要預告。「隨便／你決定／直接給我」例外：動手輪一律直接定稿，卡片照舊說直接定稿。
+2. **「隨便」補齊每一個 missing facet。** 確認卡逐維度寫出補成什麼，Session 事實多一行「還有 missing facet 的維度」讓它照著列，只列維度名稱不算。動手輪的 `flow-act.md` 第 4 條，以及伺服器組的「使用者已確認」區塊（待確認是 `AutoComplete` 時），都寫明補齊就是確認的內容，不算「確認以外的改動」。
+3. Session 事實的追問改成「追問已用：N／上限 M」。
+4. **兩個流程段寫明工具的完整名稱**（`Dialog_Confirm`、`Dialog_FinalizePrompt`…）。原因見下方第 3 條：改了流程段的文字之後，模型常只寫 `Confirm`。
+
+修正輪 2 的 build 實際呼叫 Gemini 共 20 輪（確認 10、追問 5、定稿 5），沒有 `Turn_Failed`、`Protocol_Violation`，也沒有被攔；C1、C2、C3、C8 見各列。「直接給我」之後定稿的 `tagOrigins.llm`：修正前 0、1、21（C3 前置）；修正輪 1 是 3、11、26、25；修正輪 2 是 10（C8）、5（C3 前置，另有 `rag` 7）。
+
+補充觀察：
+
+- **確認卡講的下一步跟動手輪對不上**（C2，已改成不預告）。原始驗收時卡片說「直接定稿，其餘留白」，動手輪照 `flow-act.md` 第 1、2 條，還有 missing 而且有 `AskUser` 就追問，兩次都這樣。修正輪 1 讓伺服器先算好下一步，第一次描述的卡片講對了，回答第一次追問那張仍約一半講成直接定稿。動手輪的模型自己也常先想定稿，被伺服器的定稿閘門擋回去才追問：`a9661846…` 第 4 輪先呼叫 `FinalizePrompt`，回「還有 18 個 facet 缺少…請先呼叫 AskUser」。下一步其實是閘門決定的，所以修正輪 2 讓卡片不預告。
+- **「直接給我」的卡片沒列具體內容時，定稿可能幾乎沒補。** C3 的前置用「其他你決定，直接給我」，三張卡片都沒照 `flow-propose.md` 第 2 條列出具體內容（「由我幫你隨機補齊」「由我為您決定合適的風格、鏡頭…」「補齊風格、場景光源、鏡頭與穿著等細節」）。其中兩次動手輪定稿只有 `1girl, street, holding camera, holding drink` 這種程度（audit `tagOrigins.llm` 0 與 1），風格、鏡頭、穿著都沒補；另一次補了 21 個 llm tag。C8 與 `6d704d21…` 第 5 輪卡片有列具體內容，定稿就照著補。原因是動手輪的「不要加入確認以外的改動」壓過了「你決定」：照 `SafetyClassifier` 的輸入提示重跑，這三句的 `wantsAutoComplete` 都是 true，所以 AutoFill 是開的，只是模型沒補。修正之後定稿都有補（見上方「修正」段的數字）。卡片逐項列出補成什麼的比例：修正輪 1 是 1/2，修正輪 2 是 1/2：`48070db9…` 逐項列出；`829c981b…` 的第一句話本身就是「隨便」、還沒有 profile，卡片漏列了一個維度（只列「日系寫實的風格、半身平視的鏡頭、霓虹夜景的燈光以及休閒日常的穿著」）。
+- **一輪動手輪逾時。** `9bbb5888…` 第 2 輪（「其他你決定，直接給我」按下後）：`SetProfile`、`SetFacetStates`、`SearchPresets` 之後 13 秒出現 `Protocol_Violation` attempt 1，之後 120 秒內共呼叫 Gemini 47 次，工具呼叫仍只有 3 次，最後 `Turn_Failed`（`Timeout`，`upstream.calls=47`）。log 看不出這 44 次呼叫回了什麼。同一句在其他三個對話都正常。回滾正確：事後 `GET` 是第 1 輪、profile null；用 curl 對同一個 session 再送 `{"confirm":{"turnIndex":1,"choice":null}}`，待確認還在，這次定稿成功（同樣沒補：`1girl, standing, city street, holding camera, holding drink`）。
+
+  修正輪查到原因（在 Gemini 回應 log 暫時印出 functionCall 名稱，查完已拿掉）：模型呼叫工具時有時只寫 `Confirm`／`Discuss`，宣告的名稱是 `Dialog_Confirm`。SK 回「Error: Function call request for a function that wasn't defined.」，模型就重送同一個呼叫，一直到 120 秒逾時。一輪呼叫 Gemini 80–100 次，tools=0，4 個並行的確認輪合計 182 次裸名 `Confirm`。發生率跟 prompt 是否與先前逐字相同很有關：沒改過的 prompt 12/12 正常；只加一個空格是 4/6；修正輪的規則文字 3/20 到 0/12；兩個流程段寫明完整名稱之後 12/12 正常，修正輪 1 最後的 build 20 輪、修正輪 2 又改過文字的 build 20 輪，都沒有逾時。上面 `9bbb5888…` 那輪應該也是同一個原因，沒證實。程式端還沒有防護：SK 遇到沒宣告的工具會一直重試，不會提早結束這一輪。這要另外處理。

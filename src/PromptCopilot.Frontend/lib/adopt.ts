@@ -1,5 +1,4 @@
 import type { AdoptRequest, FacetState, RecommendedSet } from '../types/api'
-import type { Entry } from './reducer'
 
 export type AdoptChoice = 'mine' | 'set'
 export interface AdoptRow { facetId: string; label: string; state: FacetState; setTags: string[]; available: boolean; choice: AdoptChoice }
@@ -26,16 +25,6 @@ export function adoptPayload(presetId: number, dimension: string, rows: AdoptRow
   const take = rows.filter(r => r.choice === 'set').map(r => r.facetId)
   if (!take.length) return null
   return typeof batch === 'number' ? { presetId, dimension, take, batch } : { presetId, dimension, take }
-}
-
-/** 只有最新一張追問卡或定稿卡上的推薦可以採用：舊卡的狀態已失效。中間的討論氣泡不出新卡、不算新結果，
- *  但 Discuss 可能改了 facet 狀態，所以對照表讀的是目前的狀態（adoptRows 的 facetStates），不是卡上那份。 */
-export function latestRecommendableTurn(transcript: Entry[]): number | null {
-  for (let i = transcript.length - 1; i >= 0; i--) {
-    const e = transcript[i]
-    if (e.kind === 'final' && (e.data.kind === 'ask' || e.data.kind === 'finalized')) return e.turnIndex
-  }
-  return null
 }
 
 /** 送出當下的使用者泡泡文字；session 事件到了會換成伺服器組的那句。 */
