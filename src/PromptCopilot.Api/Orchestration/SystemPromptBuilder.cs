@@ -13,13 +13,25 @@ public sealed class SystemPromptBuilder(FacetCatalog catalog, OrchestratorOption
     public const string ProposeFlowFile = "flow-propose.md";
     public const string ActFlowFile = "flow-act.md";
 
-    /// <summary>樣板 {{RETRIEVAL_STEP}}／{{RETRIEVAL_RULE}} 的內容。on 是 2026-09-25 之前樣板裡的原文，搬進來只是為了 off 時能整段換掉。</summary>
+    /// <summary>樣板 {{RETRIEVAL_STEP}}／{{RETRIEVAL_RULE}}／{{RETRIEVAL_ACT}}／{{RETRIEVAL_PROPOSE}} 的內容。on 的前兩個是 2026-09-25 之前樣板裡的原文，搬進來是為了 off 時能整段換掉；後兩個是 2026-10-06 檢索時機設計加的。</summary>
     internal const string RetrievalStepOn =
-        "再**用一次 `SearchPresets`**：使用者講到的每個 facet 各一項，用 `facetId` 加上他描述那一項的原話，並附上翻成英文 SD tag 的 `tags`（例：`clothing.footwear`＋「拖鞋」＋`slippers`、`appearance.hair`＋「銀色雙馬尾」＋`silver hair, twintails`；寫法跟 `SetFacetStates` 的 `tags` 一樣）；使用者沒講的維度每個用 `dimension` 給兩個對比方向的項目（例：「寫實攝影」與「日系動漫插畫」）。不要把整句描述丟給一個維度，也不要一個項目一次呼叫。需要風格參考時呼叫 `SearchSimilarPrompts`。";
+        "再**用一次 `SearchPresets`**：使用者講到的每個 facet 各一項，用 `facetId` 加上他描述那一項的原話，並附上翻成英文 SD tag 的 `tags`（例：`clothing.footwear`＋「拖鞋」＋`slippers`、`appearance.hair`＋「銀色雙馬尾」＋`silver hair, twintails`；寫法跟 `SetFacetStates` 的 `tags` 一樣）；使用者沒講的維度每個用 `dimension` 給兩個對比方向的項目，`query` 寫具體方向（例：「寫實攝影」與「日系動漫插畫」），不可只寫維度名稱（「風格」「鏡頭」）。不要把整句描述丟給一個維度，也不要一個項目一次呼叫。需要風格參考時呼叫 `SearchSimilarPrompts`。";
     internal const string RetrievalStepOff = "本段對話沒有知識庫：不做檢索，直接依 facet 狀態追問或定稿。";
     internal const string RetrievalRuleOn =
-        "- `SearchPresets` 回的片段標了「可借入提示詞」或「僅供建議」，以及每個 facet 對本次使用者是 covered 還是 missing：「僅供建議」的片段任何詞都不可進提示詞；「可借入」的片段，標 missing 的 facet 對應的詞也不可進，只可進建議。相似度「低」的片段仍可借用其中與描述相符的詞，不可借與描述矛盾的詞。";
+        "- `SearchPresets` 回的片段標了「可借入提示詞」或「僅供建議」，以及每個 facet 對本次使用者是 covered 還是 missing：「僅供建議」的片段任何詞都不可進提示詞；「可借入」的片段，標 missing 的 facet 對應的詞也不可進，只可進建議。相似度「低」的片段仍可借用其中與描述相符的詞，不可借與描述矛盾的詞。\n" +
+        "- `AskUser` 的選項與 `Discuss` 的參考方向優先從檢索到的片段挑：label 寫片段的內容、tags 用片段的寫法、帶 presetId；知識庫沒有合適的方向才自己提（presetId 留空）。";
     internal const string RetrievalRuleOff = "- 本段對話沒有知識庫片段，所有 tag 由你自行產生。";
+
+    /// <summary>檢索時機設計 §3.1：動手輪第 2–4 條的檢索與借用。flow-act.md 清單之後的獨立段落，off 時整段消失、不留空號。</summary>
+    internal const string RetrievalActOn =
+        "**檢索**：第 2–4 條要寫入新內容前（`SetFacetStates` 或 `FinalizePrompt` 之前），先用一次 `SearchPresets` 查這一輪要寫的 facet：每個 facet 一項，`facetId` 加上確認內容裡那一項的說法，附上你翻的英文 `tags`。使用者選的選項帶 presetId（見「你先前提供過的選項」），或確認卡的內容是從上一輪檢索結果挑的，就直接用那個片段的 tag，不用再查那一項。隨便的確認卡沒列到的 missing facet，配合目前的畫面寫具體查詢（例：「雨夜街頭的外套」）。第 5 條（採用）不查。\n\n" +
+        "**借用**：結果裡標「可借入提示詞」、而且跟確認內容相符的片段，寫 tag 時優先用片段的寫法，只借相符的詞；都不相符才用你自己翻的。";
+    internal const string RetrievalActOff = "";
+    /// <summary>檢索時機設計 §3.2：確認輪要寫出使用者沒講的具體內容時先檢索。flow-propose.md 清單之後的獨立段落。
+    /// 還沒題材的確認輪沒有檢索工具（ToolSetBuilder），段落要明說那時不查，否則就是 known-issues #13 的觸發條件。</summary>
+    internal const string RetrievalProposeOn =
+        "**檢索**：卡片或回答要寫出使用者沒講的具體內容時，先用一次 `SearchPresets`，再從結果挑：說隨便／你決定（每個 missing 維度要列出補什麼）、把單一項目交給你（「衣服你幫我設計」）、要求太模糊要給 2–4 個解讀、問你推薦或還有什麼方向（`Discuss` 的參考方向）。查詢配合目前的畫面寫具體方向（例：「雨夜街頭的外套」「寫實攝影」）：整個維度用 `dimension` 項目，單一 facet 用 `facetId` 項目。卡片正文用中文描述你挑的片段內容，不寫英文 tag；`Discuss` 的參考方向帶片段的 presetId。使用者自己講清楚要改什麼時，這一輪不查，動手輪會查。本輪工具清單裡沒有 `SearchPresets` 時（還沒判定題材）就不查，照常確認。";
+    internal const string RetrievalProposeOff = "";
 
     private readonly string _template = File.ReadAllText(Path.Combine(promptsDir, TemplateFile));
     private readonly string _proposeFlow = File.ReadAllText(Path.Combine(promptsDir, ProposeFlowFile));
@@ -33,6 +45,8 @@ public sealed class SystemPromptBuilder(FacetCatalog catalog, OrchestratorOption
             // 樣板自己的段落先換：之後才塞進來的 session 內容（定稿、選項）就不會誤中這兩個 placeholder。
             .Replace("{{RETRIEVAL_STEP}}", s.RetrievalEnabled ? RetrievalStepOn : RetrievalStepOff)
             .Replace("{{RETRIEVAL_RULE}}", s.RetrievalEnabled ? RetrievalRuleOn : RetrievalRuleOff)
+            .Replace("{{RETRIEVAL_ACT}}", s.RetrievalEnabled ? RetrievalActOn : RetrievalActOff)
+            .Replace("{{RETRIEVAL_PROPOSE}}", s.RetrievalEnabled ? RetrievalProposeOn : RetrievalProposeOff)
             .Replace("{{TOOLS}}", string.Join("\n", tools.Order().Select(t => $"- `{t}`")))
             .Replace("{{FACETS}}", s.Profile is null ? catalog.PromptListing() : catalog.ProfileListing(s.Profile))
             .Replace("{{SESSION_FACTS}}", Facts(s))

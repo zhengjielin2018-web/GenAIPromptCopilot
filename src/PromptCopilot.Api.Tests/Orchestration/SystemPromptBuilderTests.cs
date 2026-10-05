@@ -57,14 +57,14 @@ public class SystemPromptBuilderTests
     public void Offered_section_only_when_ledger_has_offered_entries_and_is_capped()
     {
         var s = new Session("s"); s.ApplyProfile("portrait", Catalog);
-        Assert.DoesNotContain("先前提供過的選項", Make().Build(s, ToolNames.Always, TurnKind.Act).Prompt);
+        Assert.DoesNotContain("## 你先前提供過的選項", Make().Build(s, ToolNames.Always, TurnKind.Act).Prompt);
         for (long i = 1; i <= 3; i++)
         {
             s.Ledger.Record(new LedgerEntry { Id = i, Title = $"t{i}", PromptSnippet = $"snip{i}", FacetIds = Array.Empty<string>() }, new LedgerHit("style", 0.2, true));
             s.Ledger.MarkOffered(i, new OfferedRef((int)i, "style", $"label{i}"));
         }
         var (prompt, _) = Make(offeredLimit: 2).Build(s, ToolNames.Always, TurnKind.Act);
-        Assert.Contains("先前提供過的選項", prompt);
+        Assert.Contains("## 你先前提供過的選項", prompt);
         Assert.Contains("snip3", prompt); Assert.Contains("snip2", prompt); Assert.DoesNotContain("snip1", prompt);
     }
 
@@ -338,5 +338,71 @@ public class SystemPromptBuilderTests
         var (prompt, _) = Make().Build(new Session("s"), ToolNames.Always, TurnKind.Act, new ConfirmedInput(pending, 0));
         Assert.Contains("我會把背景改成 {{TOOLS}} 與 {{FACETS}}", prompt);
         Assert.Contains("使用者選的是：選 {{SESSION_FACTS}}", prompt);
+    }
+
+    // ---- 檢索時機（2026-10-06）----
+
+    /// <summary>設計 §3.1：第 2–4 條寫入前先檢索、借用優先片段寫法；採用不查。確認輪的段落不出現在動手輪。</summary>
+    [Fact]
+    public void Act_prompt_asks_to_search_before_writing_in_rules_2_to_4_and_to_borrow()
+    {
+        var (prompt, _) = Make().Build(new Session("s"), ToolNames.Always, TurnKind.Act);
+        Assert.Contains("**檢索**：第 2–4 條要寫入新內容前（`SetFacetStates` 或 `FinalizePrompt` 之前），先用一次 `SearchPresets`", prompt);
+        Assert.Contains("第 5 條（採用）不查", prompt);
+        Assert.Contains("**借用**：結果裡標「可借入提示詞」、而且跟確認內容相符的片段，寫 tag 時優先用片段的寫法", prompt);
+        Assert.DoesNotContain("卡片或回答要寫出使用者沒講的具體內容時", prompt);
+    }
+
+    /// <summary>設計 §3.2：卡片要寫出使用者沒講的具體內容時先檢索；使用者自己講清楚時不查。</summary>
+    [Fact]
+    public void Propose_prompt_asks_to_search_when_the_card_must_invent_content()
+    {
+        var s = new Session("s"); s.ApplyProfile("portrait", Catalog);
+        var (prompt, _) = Make().Build(s, ToolNames.ProposeAlways, TurnKind.Propose);
+        Assert.Contains("**檢索**：卡片或回答要寫出使用者沒講的具體內容時，先用一次 `SearchPresets`", prompt);
+        Assert.Contains("（「衣服你幫我設計」）", prompt);
+        Assert.Contains("使用者自己講清楚要改什麼時，這一輪不查，動手輪會查", prompt);
+        Assert.DoesNotContain("第 2–4 條要寫入新內容前", prompt);
+    }
+
+    /// <summary>Review Focus 1：還沒題材的確認輪沒有檢索工具；照著叫就是 known-issues #13。</summary>
+    [Fact]
+    public void Propose_retrieval_rule_says_not_to_search_when_the_tool_is_not_listed()
+    {
+        var (prompt, _) = Make().Build(new Session("s"), new HashSet<string> { ToolNames.Confirm }, TurnKind.Propose);
+        Assert.Contains("本輪工具清單裡沒有 `SearchPresets` 時（還沒判定題材）就不查，照常確認", prompt);
+    }
+
+    /// <summary>設計 §3.1、§3.3：維度項目不可只寫維度名稱；選項優先從片段挑；不再鼓勵空 presetId。</summary>
+    [Fact]
+    public void Step_one_forbids_bare_dimension_names_and_options_prefer_presets()
+    {
+        var (act, _) = Make().Build(new Session("s"), ToolNames.Always, TurnKind.Act);
+        Assert.Contains("`query` 寫具體方向（例：「寫實攝影」與「日系動漫插畫」），不可只寫維度名稱（「風格」「鏡頭」）", act);
+        var (propose, _) = Make().Build(new Session("s"), ToolNames.ProposeAlways, TurnKind.Propose);
+        foreach (var p in new[] { act, propose })
+        {
+            Assert.Contains("- `AskUser` 的選項與 `Discuss` 的參考方向優先從檢索到的片段挑：label 寫片段的內容、tags 用片段的寫法、帶 presetId", p);
+            Assert.Contains("`options` 是參考方向；知識庫沒有的方向 `presetId` 留空。", p);
+            Assert.DoesNotContain("可以是知識庫沒有的方向", p);
+        }
+    }
+
+    /// <summary>Review Focus 2：對照組兩種輪都不能出現新段落或 SearchPresets。</summary>
+    [Fact]
+    public void Retrieval_off_drops_the_new_paragraphs_in_both_kinds_of_turn()
+    {
+        var s = new Session("s", retrievalEnabled: false); s.ApplyProfile("portrait", Catalog);
+        var proposeTools = ToolNames.ProposeAlways.Except(new[] { ToolNames.SearchPresets, ToolNames.SearchSimilarPrompts }).ToHashSet();
+        var act = Make().Build(s, ToolsWithoutSearch, TurnKind.Act).Prompt;
+        var propose = Make().Build(s, proposeTools, TurnKind.Propose).Prompt;
+        foreach (var p in new[] { act, propose })
+        {
+            Assert.DoesNotContain("SearchPresets", p);
+            Assert.DoesNotContain("**檢索**", p);
+            Assert.DoesNotContain("**借用**", p);
+            Assert.DoesNotContain("優先從檢索到的片段挑", p);
+            Assert.DoesNotContain("{{", p);
+        }
     }
 }
