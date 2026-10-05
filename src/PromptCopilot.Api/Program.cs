@@ -68,10 +68,12 @@ services.AddSingleton(sp => new SystemPromptBuilder(sp.GetRequiredService<FacetC
 services.AddSingleton<IChatCompletionService>(sp =>
 {
     var llm = sp.GetRequiredService<IOptions<LlmOptions>>();
-    // 自備 HttpClient 為了插兩個 handler（見各自的註解）：GeminiRoleFixHandler 改請求的 role，
-    // GeminiDiagnosticsHandler 讀回應記攔截原因與錯誤本文。單例服務持有單一 client；輸入／輸出分類器也走它。
-    var http = new HttpClient(new GeminiDiagnosticsHandler(
-        new GeminiRoleFixHandler(new HttpClientHandler()), sp.GetRequiredService<ILogger<GeminiDiagnosticsHandler>>()));
+    // 自備 HttpClient 為了插三個 handler（見各自的註解）：GeminiRoleFixHandler 改請求的 role，
+    // GeminiDiagnosticsHandler 讀回應記攔截原因與錯誤本文，GeminiToolNameHandler 把模型寫成裸名的工具呼叫改回宣告的全名。
+    // 名稱修正在最外層：Diagnostics 記的是 Gemini 的原始回應，中止例外也不會被它當成斷線。單例服務持有單一 client；輸入／輸出分類器也走它。
+    var http = new HttpClient(new GeminiToolNameHandler(
+        new GeminiDiagnosticsHandler(new GeminiRoleFixHandler(new HttpClientHandler()), sp.GetRequiredService<ILogger<GeminiDiagnosticsHandler>>()),
+        sp.GetRequiredService<ILogger<GeminiToolNameHandler>>()));
     return new ResilientChatCompletion(
         new GoogleAIGeminiChatCompletionService(llm.Value.Model, llm.Value.ApiKey, GoogleAIVersion.V1_Beta, http), llm);
 });

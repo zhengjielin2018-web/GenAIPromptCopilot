@@ -135,13 +135,15 @@ public sealed class AgenticOrchestrator(
             if (turn.Outcome is null)
             {
                 // 多輪 §5.3：補一則系統提示重試一次
-                await TryAuditAsync(new AuditEntry(session.Id, turnIndex, "Protocol_Violation", version, text, """{"attempt":1}"""));
+                // 斷路器中止的（known-issues #13）把模型叫錯的名字一起記下；平常是 {"attempt":1}
+                await TryAuditAsync(new AuditEntry(session.Id, turnIndex, "Protocol_Violation", version, text,
+                    Payload(("attempt", 1), ("undeclared", Undeclared(upstream)))));
                 // 第一次的純文字先拿出 history：connector 把 system 訊息全搬進 systemInstruction，contents 就會以這則 model 結尾，
                 // Gemini 回 400「Requests ending with a model turn are not supported.」（known-issues #3）。
                 // 重試連文字都沒產的話放回原位，下面的包裝才還能用它（只掃 startIdx 之後）。
                 var firstAt = firstText is null ? -1 : session.ChatHistory.IndexOf(firstText);
                 if (firstAt >= 0) session.ChatHistory.RemoveAt(firstAt);
-                var retryText = await CallWithReminderAsync(turn, kernel, RetryReminder(kernel), tct);
+                var retryText = await CallWithReminderAsync(turn, kernel, RetryReminder(kernel, upstream.UndeclaredToolCalls), tct);
                 if (firstAt >= 0 && turn.Outcome is null && retryText is null) session.ChatHistory.Insert(firstAt, firstText!);
             }
             if (turn.Outcome is null)
@@ -192,6 +194,7 @@ public sealed class AgenticOrchestrator(
             await TryAuditAsync(new AuditEntry(session.Id, turnIndex, "Turn_Completed", version, text,
                 Payload(("retrieval", session.RetrievalMode), ("safety", input.SafetyOn ? "on" : "off"), ("outcome", turn.Outcome.GetType().Name),
                     ("confirmChoices", turn.Outcome is ConfirmOutcome co ? (object)co.Choices.Count : null), ("toolCalls", turn.ToolCalls), ("rejections", turn.Rejections),
+                    ("toolNameRepairs", upstream.ToolNameRepairs > 0 ? (object)upstream.ToolNameRepairs : null), ("undeclared", Undeclared(upstream)),
                     ("askedFacetIds", turn.Outcome is AskOutcome ask ? ask.Asks.SelectMany(a => a.MissingFacetIds).Distinct().ToArray() : null),
                     ("waivedFacetIds", session.FacetStates.Where(kv => kv.Value == FacetState.Waived).Select(kv => kv.Key).ToArray()),
                     ("tagOrigins", turn.Outcome is FinalizedOutcome fin ? TagOrigins(fin.Final.PositiveSources) : null),
@@ -252,7 +255,7 @@ public sealed class AgenticOrchestrator(
             (trace.Result, trace.Detail) = ("Turn_Failed", nameof(ProtocolViolationException));
             writer.TryWrite(new ErrorEvent("protocol_violation", "模型這一輪沒有給出可用的回應，已還原。可以直接再送一次。"));
             await TryAuditAsync(new AuditEntry(session.Id, turnIndex, "Turn_Failed", version, text,
-                Payload(("stage", stage), ("errorClass", nameof(ProtocolViolationException)), ("message", e.Message))));
+                Payload(("stage", stage), ("errorClass", nameof(ProtocolViolationException)), ("message", e.Message), ("undeclared", Undeclared(upstream)))));
         }
         catch (Exception e)
         {
@@ -267,6 +270,10 @@ public sealed class AgenticOrchestrator(
                     ("upstream", http is null ? null : (object)new { status = http.Status, body = http.Body }))));
         }
     }
+
+    /// <summary>這一輪模型叫過、對不上宣告的工具名；沒有就是 null，audit 不寫這個欄位。</summary>
+    private static IReadOnlyList<string>? Undeclared(UpstreamDiagnostics upstream) =>
+        upstream.UndeclaredToolCalls is { Count: > 0 } names ? names : null;
 
     /// <summary>null 的欄位直接不寫進去（主規格 §4.6：attempts 沒有就不要硬塞一個 0）。</summary>
     private static string Payload(params (string Key, object? Value)[] fields) => JsonSerializer.Serialize(Fields(fields), Json);
@@ -330,7 +337,11 @@ public sealed class AgenticOrchestrator(
         ct.ThrowIfCancellationRequested();
         var settings = new GeminiPromptExecutionSettings { FunctionChoiceBehavior = FunctionChoiceBehavior.Auto() };
         var history = turn.Session.ChatHistory;
-        var msg = (await chat.GetChatMessageContentsAsync(history, settings, kernel, ct))[0];
+        ChatMessageContent msg;
+        // 斷路器（known-issues #13）：模型反覆叫沒宣告的工具，這次呼叫就算沒有結果，交給補提示重試或強制收尾。
+        // 已經跑完的 call 與 SK 回的錯誤留在 history 裡，重試時模型看得到自己叫錯了什麼。
+        try { msg = (await chat.GetChatMessageContentsAsync(history, settings, kernel, ct))[0]; }
+        catch (UndeclaredToolCallException) { return null; }
         if (msg.Role != AuthorRole.Assistant || msg.Items.OfType<FunctionCallContent>().Any() || string.IsNullOrWhiteSpace(msg.Content)) return null;
         history.Add(msg);
         return msg;
@@ -353,13 +364,15 @@ public sealed class AgenticOrchestrator(
     private static List<string> QualifiedNames(Kernel kernel, Func<string, bool> pick) =>
         kernel.Plugins.SelectMany(p => p.Where(f => pick(f.Name)).Select(f => $"{p.Name}_{f.Name}")).Order().ToList();
 
-    private static string RetryReminder(Kernel kernel)
+    /// <summary>斷路器中止過的話先點名叫錯的工具：SK 回給模型的只有一句英文的「function that wasn't defined」，沒說能用什麼。</summary>
+    private static string RetryReminder(Kernel kernel, IReadOnlyList<string> undeclared)
     {
         var names = QualifiedNames(kernel, ToolNames.Terminal.Contains);
         var list = string.Join("、", names);
+        var wrong = undeclared.Count > 0 ? $"{string.Join("、", undeclared.Distinct())} 不在這一輪的工具清單裡。" : "";
         return names.Count == 1
-            ? $"你必須呼叫 {list} 來結束這一輪，不要只回純文字。"
-            : $"你必須呼叫 {list} 之一來結束這一輪，不要只回純文字。";
+            ? $"{wrong}你必須呼叫 {list} 來結束這一輪，不要只回純文字。"
+            : $"{wrong}你必須呼叫 {list} 之一來結束這一輪，不要只回純文字。";
     }
 
     private static string ForcedFinalizeReminder(string name) => $"tool 呼叫預算已用盡。請立即以現有資訊呼叫 {name} 定稿，不要再檢索。facetStates 依使用者原話標記：使用者講過的 facet 標 covered，真的沒講的才是 missing，其餘 missing 的 facet 留白。";

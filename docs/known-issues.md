@@ -9,7 +9,6 @@
 | 5 | eval #5、#18 行為不符預期；§14 端到端要在新 HEAD 重跑 | 調整 | 低 |
 | 10 | 整套組合推薦的已知限制：錨靠模型翻譯、SQL 的錨比對比 C# 粗、換了內容沒重給 `tags` 時舊錨留著；採用輪失敗後重試是純文字，HTTP 層就失敗時填回的是佔位字 | 限制 | 低 |
 | 11 | `AskUser`／`Discuss` 的 call args 壓縮對 Gemini 不生效 | 成本 | 低 |
-| 13 | 模型呼叫裸名工具（`Confirm`）：SK 的未定義路徑繞過 filter 與 tool 預算，整輪跑到 120 秒逾時 | 穩定性 | 中 |
 | 6 | 子專案 4 全分支審查留下的小項目 | 整理 | 低 |
 
 ---
@@ -54,14 +53,6 @@
 - 現象（2026-09-29，修 #8 時用真的 connector 查到）：`HistoryTrimmer.CompressTurn` 第二條（call args 去掉 `tags`，主規格 §4.7）改的是 model 訊息 `Items` 裡的 `FunctionCallContent.Arguments`，但 Google connector 送出時讀的是 `GeminiChatMessageContent.ToolCalls`（`GeminiFunctionToolCall.Arguments`），兩份不是同一個物件。實測改了 `FunctionCallContent.Arguments` 後，下一次請求的 `functionCall.args` 原封不動。
 - 影響：選項的 `tags` 每輪留在 history 裡，量比 #8 的片段本文小很多。
 - 修正方向：跟 #8 一樣重建 model 訊息，但 `GeminiFunctionToolCall` 與帶 tool call 的 `GeminiChatMessageContent` 建構子都是 internal，而且要保住 `thoughtSignature`（Gemini 3 要求帶回）。可以考慮直接改請求本文（像 `GeminiRoleFixHandler` 那樣在 HTTP 層處理）。
-
-## 13. 模型呼叫裸名工具，整輪跑到逾時（穩定性，中，2026-10-05）
-
-- 現象：log 先出一次 `Protocol_Violation`（attempt 1），之後 120 秒內呼叫 Gemini 幾十次（一輪 80–100 次，`9bbb5888…` 是 47 次）、工具呼叫幾乎是 0–3 次，最後 `Turn_Failed`（`Timeout`，約 120,013 ms）。回滾是正確的，待確認還在，同一個 session 再按一次就成功。
-- 根因：kernel 宣告的工具名是 `<Plugin>_<Function>`（`Dialog_Confirm`），模型有時只寫 `Confirm`。SK 對沒宣告的函式回「Function call request for a function that wasn't defined」，這條路徑不經過任何 `IAutoFunctionInvocationFilter`，所以 `ToolBudgetFilter` 數不到、`TerminalToolFilter` 也停不下來；模型收到錯誤就重送同一個呼叫，直到逾時。
-- 證據：驗收時在 Gemini 回應 log 暫時印出 functionCall 名稱查到（4 個並行的確認輪合計 182 次裸名 `Confirm`，查完已拿掉）；經過見 `docs/eval-cases.md`「2026-10-05 先確認再動手」一節的補充觀察，以及先確認再動手設計 §5 的驗收後修正說明。發生率跟 prompt 文字有關：沒改過的 prompt 12/12 正常、只加一個空格 4/6、兩個流程段寫明完整名稱之後 12/12 與兩個 20 輪 build 都沒有逾時。
-- 目前的緩解：`flow-propose.md`／`flow-act.md` 都寫完整名稱；最後審查那一波讓純文字補救與預算用盡的強制收尾提示，也改用該輪 kernel 實際宣告的全名（`Dialog_Confirm`、`Dialog_FinalizePrompt`…）。system prompt 的 `{{TOOLS}}` 仍是裸名（它是量測過的主 prompt 的一部分，沒動）。
-- 修正方向：在 Gemini 回應的處理層（`GeminiRoleFixHandler` 那一類）把唯一對得上的裸名改寫成全名，和（或）限制一輪最多呼叫 Gemini 幾次；之後把 `{{TOOLS}}` 也換成全名並重新量測。
 
 ## 6. 子專案 4 全分支審查留下的小項目
 
@@ -287,3 +278,27 @@ prompt_version 都是 `8c10dcfe1f16`，跟子專案 3 驗收時能正常追問�
 **驗收**：單元測試（`KnowledgePluginTests`、`RecommendationServiceTests`、`test_embed_facet_tags.py`、`test_tags.py`）、整合測試 `RepositoryIntegrationTests`。離線重跑與線上驗收見實驗紀錄與 `docs/eval-cases.md` 2026-09-29 facet 向量一節。
 
 2026-09-30 實測（master `d227284` 建的 compose，開發庫跑 `embed_facet_tags.py`：37,011 筆、0 批失敗、737 秒）：17 題走正式 SQL，前 5 名命中 75／85、相異組合 85／85（現行 67／76）；R2「涼鞋」前 5 名 5 種不同的涼鞋；模型 39／39 個 facet 項目都有帶 `tags`；子表清掉鞋履時照常退回整套向量。驗收時再改兩處（分支 `fix/facet-threshold-and-query`）：近似錨門檻 0.23 → 0.30（單一詞的同義詞落在 0.28–0.34，0.23 等於不會觸發，實測表見設計 §6.4）；`SearchFacetSql` 改成先取前 k 筆再 join，地點類型 69 → 33 ms（原寫法為了 join 把片段表全表掃一遍，執行計畫見設計 §7.1）。
+
+### 13. 模型呼叫裸名工具，整輪跑到逾時
+
+**現象**（2026-10-05，先確認再動手驗收）：log 先出一次 `Protocol_Violation`（attempt 1），之後 120 秒內呼叫 Gemini 幾十次（一輪 80–100 次，`9bbb5888…` 是 47 次）、工具呼叫幾乎是 0–3 次，最後 `Turn_Failed`（`Timeout`，約 120,013 ms）。回滾是正確的，待確認還在，同一個 session 再按一次就成功。
+
+**根因**：kernel 宣告的工具名是 `<Plugin>_<Function>`（`Dialog_Confirm`），模型有時只寫 `Confirm`。這段在 connector 的 `GeminiChatCompletionClient`（不是 SK 核心，原本這裡寫錯了）：`FunctionChoiceBehavior.Auto()` 轉成 `EnabledFunctions(autoInvoke: true)`，名字對不上宣告（不分大小寫）就只回模型一句「Error: Function call request for a function that wasn't defined.」，再繼續 auto-invoke 迴圈。這條路徑不經過任何 `IAutoFunctionInvocationFilter`，`ToolBudgetFilter` 數不到、`TerminalToolFilter` 停不下來；一次呼叫的上限是 `DefaultMaximumAutoInvokeAttempts = 128`，模型多半原封不動重送，所以先撞到 120 秒逾時。
+
+**證據**：驗收時在 Gemini 回應 log 暫時印出 functionCall 名稱查到（4 個並行的確認輪合計 182 次裸名 `Confirm`）；經過見 `docs/eval-cases.md`「2026-10-05 先確認再動手」一節的補充觀察。發生率跟 prompt 文字有關：沒改過的 prompt 12/12 正常、只加一個空格 4/6、兩個流程段寫明完整名稱之後 12/12。修正時用真的 connector 接罐頭 handler 離線重現：模型卡在同一個沒宣告的呼叫上，一輪打了 258 次 Gemini（兩次 SK 呼叫各 129 次）。
+
+**修正**（分支 `fix/tool-name-guard`，commit `7845daf`；同分支 `62bdb93` 順帶拿掉一個觸發來源）：
+
+- `GeminiToolNameHandler`（Gemini `HttpClient` 最外層的 `DelegatingHandler`）在 connector 解析回應之前，從同一個請求的 `tools[].functionDeclarations` 讀宣告清單。`candidates[].content.parts[].functionCall.name` 對不上宣告時，裸名只對上一個宣告（`_` 後面那段相同）就改成那個全名，呼叫照常進 plugin 與 filter，預算也數得到。
+- 改名沒有破壞 `thoughtSignature`：2026-10-05 直接打 `gemini-3.5-flash-lite`，把呼叫改名（改成另一個宣告名、或改成裸名）後連簽章送回都是 200，對照組拿掉簽章是 400「Function call is missing a thought_signature」。Gemini 只驗有沒有帶，不綁函式名稱。
+- 改不回來的（這一輪根本沒有的工具、對上兩個宣告的裸名）照原樣交給 connector，記進這一輪的 `UpstreamDiagnostics`；同一輪第 2 次就丟 `UndeclaredToolCallException`。重試層把它當致命錯誤不重試；`AgenticOrchestrator.CallAsync` 把它當成「這次呼叫沒有結果」，走原本的補提示重試，提示先點名「SetProfile 不在這一輪的工具清單裡」。還是不行就以 `protocol_violation` 收掉，離線重現從 258 次降到 3 次。
+- audit：`Turn_Completed` 記 `toolNameRepairs`（有改名才寫），`Protocol_Violation` 與 `Turn_Failed` 記 `undeclared`。log 每次改名一行 `Gemini tool name repaired Confirm → Dialog_Confirm`，每次沒宣告的呼叫一行 warning。
+- `62bdb93`：還沒題材的確認輪（使用者第一句話）不給 `SearchPresets`／`SearchSimilarPrompts`。沒題材時它們只會回「請先呼叫 SetProfile」，這一輪卻沒有 `SetProfile`，模型照錯誤去叫就是上面那條路。
+- 沒採用「限制每輪 Gemini 呼叫數」：數字難定，而且只能讓失敗變快；改名能讓那一輪直接成功。流程段與補救、強制收尾的提示仍寫完整名稱，`{{TOOLS}}` 仍是短名，沒有重新量測：兩種寫法現在都會落到同一個工具。
+
+**驗收**：單元測試 `GeminiToolNameHandlerTests`（8 個）、`ResilientChatCompletionTests.Undeclared_tool_abort_is_not_retried`、`ToolSetBuilderTests.Propose_turn_without_a_profile_has_no_search_tools`；`AgenticOrchestratorGeminiTests` 走真的 connector 驗三個情境（裸名、反覆叫沒宣告的、卡住），修正前三個都紅。全套 494 通過。
+
+2026-10-05 線上實測（分支 build，`start_api.py --port 5077`，`gemini-3.5-flash-lite`）：
+
+- 原本的 prompt：8 個 session 各三輪（第一句 → 按確認 → 問「寫實跟動漫差在哪」）加上第一句就提問，23 輪全部 `Turn_Completed`，Gemini 72 次全是 200。第一句的確認輪都只呼叫 `Confirm`，2.8–5.0 秒。這一批沒有出現裸名。
+- 故意拿掉 `flow-propose.md` 第 5 條的完整名稱提示（重現當初的觸發條件，測完已還原）：16 個第一句的確認輪有 8 輪寫裸名 `Confirm`，全部改名成功，16 輪都是 `Turn_Completed`、每輪 3 次 Gemini、2.6–4.3 秒，audit 這 8 輪記 `toolNameRepairs: 1`。修正前這 8 輪會跑到 120 秒逾時。

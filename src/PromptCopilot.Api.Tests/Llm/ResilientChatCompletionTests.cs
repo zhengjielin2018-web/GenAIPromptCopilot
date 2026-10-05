@@ -79,6 +79,17 @@ public class ResilientChatCompletionTests
         Assert.Single(inner.Calls);
     }
 
+    /// <summary>斷路器的中止（known-issues #13）不是暫時性失敗：重送只會讓模型再叫一次同一個名字。原樣丟給 orchestrator 走補提示重試。</summary>
+    [Fact]
+    public async Task Undeclared_tool_abort_is_not_retried()
+    {
+        var (sut, inner, _) = Make();
+        inner.Throw(new UndeclaredToolCallException(new[] { "SetProfile", "SetProfile" }));
+        var ex = await Assert.ThrowsAsync<UndeclaredToolCallException>(() => sut.GetChatMessageContentsAsync(new ChatHistory()));
+        Assert.Equal(new[] { "SetProfile", "SetProfile" }, ex.Names);
+        Assert.Single(inner.Calls);
+    }
+
     [Fact]
     public async Task Content_block_is_retried_exactly_once_then_surfaces_reason()
     {

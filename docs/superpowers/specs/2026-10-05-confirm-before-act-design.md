@@ -41,13 +41,14 @@
 
 | 輸入 | 輪 | 工具清單 |
 | :--- | :--- | :--- |
-| 使用者文字（`{"text": …}`） | **確認輪** | `Confirm`、`Discuss`、`SearchPresets`、`SearchSimilarPrompts`；`Finalized` 時加 `RequestSaveConsent` |
+| 使用者文字（`{"text": …}`） | **確認輪** | `Confirm`、`Discuss`、`SearchPresets`、`SearchSimilarPrompts`；`Finalized` 時加 `RequestSaveConsent`；還沒題材時不給兩個檢索工具 |
 | 按確認卡（`{"confirm": …}`） | **動手輪** | `SetProfile`、`SetFacetStates`、`FinalizePrompt`、`SearchPresets`、`SearchSimilarPrompts`；`Collecting` 且 `AskCount < MaxAskCount` 且不是「隨便」時加 `AskUser` |
 | 採用（`{"adopt": …}`） | **動手輪** | 同上（採用只在定稿後，見 §8，所以實際上沒有 `AskUser`） |
 
 沿用的既有規則：
 
 - 知識庫關掉（`retrieval: off`）時兩種輪都拿掉兩個檢索工具。
+- 還沒題材（`Profile == null`，也就是使用者第一句話）的確認輪也拿掉兩個檢索工具（2026-10-05 合併後補上）：沒題材時它們只會回「請先呼叫 SetProfile」，這一輪卻沒有 `SetProfile`，模型照錯誤去叫就落進 known-issues #13 的路徑。
 - 確認輪的 `Discuss` 照現在的規則出現：`Finalized`，或 `DiscussStreak < MaxDiscussStreak`；「隨便」那一輪拿掉。所以「隨便」的確認輪只剩 `Confirm`（加檢索）。
 - 追問額度 `MaxAskCount = 2` 不變；確認輪不算追問、不碰 `AskCount`。
 
@@ -162,7 +163,7 @@ record PendingConfirmation(int TurnIndex, string Message, IReadOnlyList<string> 
 > - **確認卡不預告下一步。** 原本 §5.1「回答追問」要卡片講「接著問 X、Y」或「直接定稿」，驗收時常講錯：卡片說直接定稿，動手輪照 §5.2 還是追問了。確認輪猜不到一段自由回答會讓哪些 facet 變 covered；即使伺服器先照規則算好「確認之後的下一步」給它，回答第一次追問那張仍只有 2/6 講對。所以卡片只講要設什麼，下一張卡自然呈現接下來是追問還是定稿。例外是「隨便」：動手輪一律直接定稿，卡片照舊說確認後直接定稿。
 > - **「隨便」補齊每一個 missing facet。** 確認卡要逐維度寫出補成什麼。Session 事實多一行「還有 missing facet 的維度」，算法同動手輪：waived 與有委託 note 的不算。§5.2 區塊在「隨便」那張卡（待確認的 `AutoComplete`）的最後一句改成「使用者把沒講的交給你決定：補齊每一個 missing 的 facet 就是他確認的內容…」：原句「不要加入確認以外的改動」會讓定稿幾乎不補（`tagOrigins.llm` 0–1）。`flow-act.md` 第 4 條同樣寫明補齊不算「確認以外的改動」。
 > - Session 事實的追問改成「追問已用：N／上限 M」。
-> - **兩個流程段寫明工具的完整名稱**（`Dialog_Confirm`、`Dialog_FinalizePrompt` 等）。模型有時只寫 `Confirm`，SK 回「function that wasn't defined」，模型就一直重送，直到整輪 120 秒逾時。改過流程段文字之後特別常見：沒改過的 prompt 12/12 正常，改寫後的規則文字 3/20。寫明完整名稱後 12/12 正常。最終審查再把純文字補救與強制收尾的提示也改成完整名稱（§5.3、§6.1）；`system.md` 的 `{{TOOLS}}` 仍是短名。程式端還沒有防護，列為後續工作（known-issues #13）。
+> - **兩個流程段寫明工具的完整名稱**（`Dialog_Confirm`、`Dialog_FinalizePrompt` 等）。模型有時只寫 `Confirm`，SK 回「function that wasn't defined」，模型就一直重送，直到整輪 120 秒逾時。改過流程段文字之後特別常見：沒改過的 prompt 12/12 正常，改寫後的規則文字 3/20。寫明完整名稱後 12/12 正常。最終審查再把純文字補救與強制收尾的提示也改成完整名稱（§5.3、§6.1）；`system.md` 的 `{{TOOLS}}` 仍是短名。程式端還沒有防護，列為後續工作（known-issues #13）。（合併後已補：`GeminiToolNameHandler` 把唯一對得上的短名改回全名，改不回來的同一輪第 2 次中止、走補提示重試，見主規格 §4.6 最後一列。）
 
 ## 6. 邊界情況
 
@@ -210,7 +211,7 @@ record PendingConfirmation(int TurnIndex, string Message, IReadOnlyList<string> 
 
 ### 10.1 後端單元（xUnit，`FakeChatCompletion`）
 
-- `ToolSetBuilder`：三種輸入各自的清單；「隨便」確認輪只剩 `Confirm`＋檢索；`retrieval: off` 兩種輪都沒有檢索；確認輪 `Finalized` 有 `RequestSaveConsent`、動手輪沒有。
+- `ToolSetBuilder`：三種輸入各自的清單；「隨便」確認輪只剩 `Confirm`＋檢索；`retrieval: off` 兩種輪都沒有檢索；還沒題材的確認輪沒有檢索；確認輪 `Finalized` 有 `RequestSaveConsent`、動手輪沒有。
 - `DialogPlugin.Confirm`：0 個與 2–4 個選項通過；1 個、5 個、超過 40 字、空 `message` 回錯誤；去重後剩 1 個也回錯誤；呼叫後 facet 狀態不變；待確認的輪次與 `AutoComplete` 正確。
 - `DialogPlugin.Discuss`：`Collecting` 帶改過的狀態被拒。
 - `Session`：待確認進快照、`Restore` 回來。

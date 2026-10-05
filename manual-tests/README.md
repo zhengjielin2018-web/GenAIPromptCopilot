@@ -113,7 +113,7 @@ docker compose exec db psql -U postgres -d prompt_copilot -c "SELECT turn_index,
 docker compose exec db psql -U postgres -d prompt_copilot -c "SELECT turn_index, event_type, payload FROM audit_logs WHERE session_id = '<SID>' AND event_type IN ('Blocked_Upstream', 'Turn_Failed') ORDER BY created_at;"
 ```
 
-不想開資料庫時，API 的 log（`start_api.py` 的終端機，或 `docker compose logs -f api`）每輪結束有一行 `Turn <session>#<turn> <事件> <細節> tools=<工具呼叫數> gemini=<Gemini 呼叫數> <毫秒> ms`，每次呼叫 Gemini 有一行 `Gemini <狀態碼> <毫秒> ms finish=… block=…`。
+不想開資料庫時，API 的 log（`start_api.py` 的終端機，或 `docker compose logs -f api`）每輪結束有一行 `Turn <session>#<turn> <事件> <細節> tools=<工具呼叫數> gemini=<Gemini 呼叫數> <毫秒> ms`，每次呼叫 Gemini 有一行 `Gemini <狀態碼> <毫秒> ms finish=… block=…`。模型把工具名寫成裸名時多一行 `Gemini tool name repaired Confirm → Dialog_Confirm`，已經改回來了，那一輪照常進行。
 `.env` 的 `POSTGRES_USER`／`POSTGRES_DB` 不是預設值的話，把指令裡的 `postgres`／`prompt_copilot` 換掉。
 
 ## 6. 自動化測試
@@ -132,7 +132,8 @@ cd src && dotnet test                        # 單元測試，不需要資料庫
 | :--- | :--- |
 | `chat.py` 顯示 `HTTP 404` | API 重啟過或閒置超過 120 分鐘，session 沒了。`chat.py` 會自動開新的，把那句再送一次 |
 | 每一輪都是 `✖ 錯誤（turn_failed）` | 多半是 `Llm:ApiKey` 沒設或失效。看 `start_api.py` 視窗的 log |
-| `✖ 錯誤（timeout）` | 一輪超過 120 秒（`Orchestrator:TurnTimeoutSeconds`）。通常是 Gemini 慢；若 log 的 `Turn …` 行是 `tools` 很少、`gemini=` 幾十次，多半是模型呼叫工具時漏了 `Dialog_` 這類前綴、一路重試（[known-issues #13](../docs/known-issues.md)）。直接重送；按確認那一輪逾時就再打一次 `/ok` |
+| `✖ 錯誤（timeout）` | 一輪超過 120 秒（`Orchestrator:TurnTimeoutSeconds`），通常是 Gemini 慢。直接重送；按確認那一輪逾時就再打一次 `/ok`。模型把工具名寫成 `Confirm`（少了 `Dialog_`）已經不會造成逾時：程式改回全名，log 多一行 `Gemini tool name repaired`（[known-issues #13](../docs/known-issues.md)） |
+| `✖ 錯誤（protocol_violation）` | 模型這一輪沒用工具收尾，提醒過一次還是沒有；或一直呼叫這一輪沒有的工具（log 有 `Gemini called undeclared tool` 的 warning，audit 的 `undeclared` 列出名字）。狀態已還原，直接重送 |
 | `/ok` 之後 `HTTP 409` | 「只有最新一張確認卡可以按」或「沒有待確認的內容」：那張卡已經過期（之後又出了新的確認卡，或已經動過手）。照最新的卡操作，或重打一次要求 |
 | 啟動時說連不到資料庫 | Docker Desktop 沒開，或 `.env` 的 `POSTGRES_PASSWORD` 和容器建立時用的不同 |
 | 用 curl 送中文變亂碼 | Windows 主控台的 cp950 會把 `-d` 裡的中文轉掉。用 `chat.py` 或 Swagger 就沒這個問題 |
