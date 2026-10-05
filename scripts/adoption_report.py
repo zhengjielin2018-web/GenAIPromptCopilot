@@ -15,12 +15,19 @@
 列採用率與取代率、換一批的比例、依原名次分桶的出現與採用。舊資料沒有每套的理由，照列層級的 anchored／similar
 推回，不進名次分桶。原名次分桶只算相關位（anchored／similar／query）；探索位的 rank 是跟相關位的差異排名，不是
 原名次，不列入分桶，否則會把兩種不同意義的名次混在一起算。
+
+檢索時機（2026-10-06 設計 2026-10-06-retrieval-timing-design.md §5.3）：動手輪（不含採用）、「隨便」確認輪、帶參考方向的
+Discuss 輪的檢索率；選項帶 presetId 的比例；每次定稿的借來／碰巧對上／llm／base／adopted；兩種輪有無檢索的延遲中位數。
+只算帶 kind 欄位的新資料。重播腳本跑出來的 session 用 --sessions 篩：
+
+    python adoption_report.py --sessions id1,id2,id3
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import statistics
 import sys
 from collections import Counter
 from dataclasses import dataclass
@@ -30,10 +37,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 SQL = """
-SELECT session_id, turn_index, payload, event_type
+SELECT session_id, turn_index, payload, event_type, latency_ms
 FROM audit_logs
 WHERE event_type IN ('Turn_Completed', 'Recommendations_Next') AND session_id IS NOT NULL AND payload IS NOT NULL
   AND (%(since)s::date IS NULL OR created_at >= %(since)s::date)
+  AND (%(sessions)s::text[] IS NULL OR session_id = ANY(%(sessions)s::text[]))
 ORDER BY session_id, turn_index, id
 """
 
@@ -46,11 +54,18 @@ class Turn:
     turn_index: int
     payload: dict
     event_type: str = "Turn_Completed"
+    latency_ms: int | None = None
 
 
-def fetch_turns(conn, since: date | None) -> list[Turn]:
-    rows = conn.execute(SQL, {"since": since}).fetchall()
-    return [Turn(r[0], r[1], r[2] if isinstance(r[2], dict) else json.loads(r[2]), r[3]) for r in rows]
+def fetch_turns(conn, since: date | None, sessions: list[str] | None = None) -> list[Turn]:
+    rows = conn.execute(SQL, {"since": since, "sessions": sessions}).fetchall()
+    return [Turn(r[0], r[1], r[2] if isinstance(r[2], dict) else json.loads(r[2]), r[3], r[4]) for r in rows]
+
+
+def parse_sessions(text: str | None) -> list[str] | None:
+    """--sessions 的值：逗號分隔，去空白、去空項；什麼都沒有回 None（不篩）。"""
+    ids = [s.strip() for s in (text or "").split(",") if s.strip()]
+    return ids or None
 
 
 def _pct(n: int, d: int) -> str:
@@ -154,12 +169,67 @@ def build_slate_section(completed: list[Turn], nexts: list[Turn]) -> list[str]:
     return lines
 
 
+def build_retrieval_section(completed: list[Turn]) -> list[str]:
+    """檢索時機（設計 §5.3）。只算帶 kind 的新資料；舊資料只列筆數。採用輪（kind=adopt）不算動手輪，但算進定稿平均。"""
+    lines = ["", "## 檢索時機", ""]
+    new = [t for t in completed if "kind" in t.payload]
+    if not new:
+        return lines + ["尚無檢索時機資料（2026-10-06 之後的紀錄才有）。"]
+
+    def searched(t: Turn) -> bool:
+        return (t.payload.get("searches") or 0) > 0
+
+    def rate(ts: list[Turn]) -> str:
+        return _pct(sum(searched(t) for t in ts), len(ts))
+
+    act = [t for t in new if t.payload["kind"] == "act"]
+    auto = [t for t in new if t.payload["kind"] == "propose" and t.payload.get("autoComplete")]
+    discuss = [t for t in new if t.payload.get("outcome") == "MessageOutcome"
+               and (t.payload.get("options") or {}).get("total", 0) > 0]
+    opts = [t.payload["options"] for t in new if isinstance(t.payload.get("options"), dict)]
+    with_preset = sum(o.get("withPreset", 0) for o in opts)
+    lines.append(f"- 動手輪檢索率（不含採用）：{rate(act)}")
+    lines.append(f"- 「隨便」確認輪檢索率：{rate(auto)}")
+    lines.append(f"- 帶參考方向的 Discuss 輪檢索率：{rate(discuss)}")
+    lines.append(f"- 選項帶 presetId：{_pct(with_preset, sum(o.get('total', 0) for o in opts))}")
+
+    finals = [t.payload for t in new
+              if isinstance(t.payload.get("ragSplit"), dict) and isinstance(t.payload.get("tagOrigins"), dict)]
+    if finals:
+        n = len(finals)
+        borrowed = sum(len(p["ragSplit"].get("borrowed", [])) for p in finals)
+        echo = sum(len(p["ragSplit"].get("echo", [])) for p in finals)
+
+        def avg(key: str) -> float:
+            return sum(p["tagOrigins"].get(key, 0) for p in finals) / n
+
+        nonbase = sum(sum(p["tagOrigins"].values()) - p["tagOrigins"].get("base", 0) for p in finals)
+        lines.append(f"- 每次定稿平均（{n} 次）：借來 {borrowed / n:.1f}、碰巧對上 {echo / n:.1f}、"
+                     f"llm {avg('llm'):.1f}、base {avg('base'):.1f}、adopted {avg('adopted'):.1f}")
+        lines.append(f"- rag（借來＋碰巧對上）佔非基礎詞：{_pct(borrowed + echo, nonbase)}")
+    else:
+        lines.append("- 尚無定稿")
+
+    def med(kind: str, with_search: bool) -> str:
+        xs = [t.latency_ms for t in new
+              if t.payload["kind"] == kind and searched(t) == with_search and t.latency_ms is not None]
+        return f"{statistics.median(xs):.0f} ms（{len(xs)} 輪）" if xs else "—（0 輪）"
+
+    lines.append(f"- 延遲中位數：確認輪 有檢索 {med('propose', True)}／沒檢索 {med('propose', False)}；"
+                 f"動手輪 有檢索 {med('act', True)}／沒檢索 {med('act', False)}")
+    old = len(completed) - len(new)
+    if old:
+        lines.append(f"- 沒有 kind 欄位的舊資料：{old} 輪，不計入上面各項")
+    return lines
+
+
 def build_report(turns: list[Turn]) -> str:
     completed = [t for t in turns if t.event_type == "Turn_Completed"]
     nexts = [t for t in turns if t.event_type == "Recommendations_Next"]
     if not completed:
         return "沒有 Turn_Completed 紀錄。"
     slate = build_slate_section(completed, nexts)
+    retrieval = build_retrieval_section(completed)
     ordered = sorted(completed, key=lambda t: (t.session_id, t.turn_index))
     adoptions = [t.payload["adoption"] for t in ordered if t.payload.get("adoption")]
 
@@ -212,7 +282,7 @@ def build_report(turns: list[Turn]) -> str:
     lines.append(f"- adopted tag 佔定稿 tag：{_pct(adopted_tags, all_tags)}")
     if not adoptions:
         lines += ["", "尚無採用紀錄。"]
-        return "\n".join(lines + slate)
+        return "\n".join(lines + slate + retrieval)
     filled = sum(len(a.get("filled", [])) for a in adoptions) / len(adoptions)
     replaced = sum(len(a.get("replaced", [])) for a in adoptions) / len(adoptions)
     lines.append(f"- 採用 {len(adoptions)} 次；平均補上 {filled:.1f} 個 facet、換掉 {replaced:.1f} 個 facet")
@@ -221,18 +291,20 @@ def build_report(turns: list[Turn]) -> str:
     lines += ["", "## 各維度採用次數", ""]
     for dim, n in sorted(Counter(a.get("dimension", "?") for a in adoptions).items()):
         lines.append(f"- {dim}：{n}")
-    return "\n".join(lines + slate)
+    return "\n".join(lines + slate + retrieval)
 
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--since", type=date.fromisoformat, default=None,
                     help="只算這一天（含）之後的紀錄，YYYY-MM-DD；日界以資料庫連線的時區為準")
+    ap.add_argument("--sessions", default=None,
+                    help="只算這些 session（逗號分隔）；manual-tests/replay.py 最後一行會印")
     args = ap.parse_args(argv)
     from pipeline.db import connect
 
     with connect() as conn:
-        turns = fetch_turns(conn, args.since)
+        turns = fetch_turns(conn, args.since, parse_sessions(args.sessions))
     print(build_report(turns))
     return 0
 
