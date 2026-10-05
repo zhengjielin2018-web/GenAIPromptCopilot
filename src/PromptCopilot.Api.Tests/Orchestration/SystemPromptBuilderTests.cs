@@ -207,7 +207,7 @@ public class SystemPromptBuilderTests
         Assert.DoesNotContain("{{", prompt);
     }
 
-    /// <summary>確認輪要知道追問上限，才講得對確認後是追問還是定稿（Task 10 驗收 C2：只給已用次數時模型猜成直接定稿）。</summary>
+    /// <summary>追問帶上限：只給已用次數時，模型看不出還能不能再問（Task 10 驗收修正輪）。</summary>
     [Fact]
     public void Facts_show_asks_used_against_the_limit()
     {
@@ -215,32 +215,6 @@ public class SystemPromptBuilderTests
         var builder = new SystemPromptBuilder(Catalog, new OrchestratorOptions { MaxAskCount = 3 }, Path.Combine(AppContext.BaseDirectory, "Prompts"));
         Assert.Contains("- 追問已用：1／上限 3", builder.Build(s, ToolNames.ProposeAlways, TurnKind.Propose).Prompt);
         Assert.Contains("- 追問已用：0／上限 2\n", Make().Build(new Session("s"), ToolNames.Always, TurnKind.Act).Prompt);
-    }
-
-    /// <summary>確認輪的「確認之後的下一步」照動手輪的規則先算好（Task 10 驗收 C2：模型自己判斷時，回答追問常講成直接定稿、額度用完又講成接著問）。</summary>
-    [Fact]
-    public void Propose_facts_precompute_the_next_step_by_the_act_turn_rules()
-    {
-        static string Line(string prompt) => prompt.Split('\n').SingleOrDefault(l => l.StartsWith("- 確認之後的下一步：")) ?? "";
-        var fresh = new Session("s");
-        Assert.Equal("- 確認之後的下一步：接著問他沒講到的面向（追問還剩 2 次）；使用者說隨便／你決定／直接給我時一律直接定稿",
-            Line(Make().Build(fresh, ToolNames.ProposeAlways, TurnKind.Propose).Prompt));
-        Assert.Equal("", Line(Make().Build(fresh, ToolNames.Always, TurnKind.Act).Prompt));        // 動手輪不給
-
-        var s = new Session("s"); s.ApplyProfile("portrait", Catalog); s.RecordAsk();
-        var labels = string.Join("、", Catalog.DimensionsOf("portrait").Select(d => Catalog.DimensionLabel(d, "portrait")));
-        Assert.Equal($"- 確認之後的下一步：接著問 {labels} 裡這次回答沒補齊的維度（追問還剩 1 次）；這次回答把它們全補齊了才是直接定稿；使用者說隨便／你決定／直接給我時一律直接定稿",
-            Line(Make().Build(s, ToolNames.ProposeAlways, TurnKind.Propose).Prompt));
-
-        s.RecordAsk();
-        Assert.Equal("- 確認之後的下一步：直接定稿（追問已用完）", Line(Make().Build(s, ToolNames.ProposeAlways, TurnKind.Propose).Prompt));
-
-        var done = new Session("s"); done.ApplyProfile("portrait", Catalog);
-        done.ApplyFacetStates(Catalog.DimensionsOf("portrait").SelectMany(d => Catalog.FacetsOf("portrait", d)).ToDictionary(id => id, _ => FacetState.Covered), Catalog);
-        Assert.Equal("- 確認之後的下一步：直接定稿（沒有還缺的維度）", Line(Make().Build(done, ToolNames.ProposeAlways, TurnKind.Propose).Prompt));
-
-        done.RecordFinalize(new FinalPrompt("p", "n", "t", "i"));
-        Assert.Equal("", Line(Make().Build(done, ToolNames.ProposeAlways, TurnKind.Propose).Prompt));   // 定稿後的修改：動手輪一律重新定稿，不給這行
     }
 
     /// <summary>「還有 missing facet 的維度」跟動手輪的判斷同一套：covered、waived、有委託 note 的 facet 都不算缺。</summary>
@@ -268,17 +242,26 @@ public class SystemPromptBuilderTests
         Assert.DoesNotContain("- 還有 missing facet 的維度：", Make().Build(new Session("s"), ToolNames.ProposeAlways, TurnKind.Propose).Prompt);   // 還沒判定題材：沒有這行
     }
 
+    /// <summary>Task 10 修正輪 2：確認輪猜不到一段自由回答會補齊哪些 facet，預告「接著問／直接定稿」連伺服器先算好的提示都常講錯，
+    /// 所以確認卡只講要設什麼，不預告下一步；「隨便」例外（動手輪一律直接定稿），照舊逐維度列出補什麼。</summary>
     [Fact]
-    public void Propose_prompt_states_the_next_step_rule_and_asks_for_concrete_fill_ins()
+    public void Propose_prompt_does_not_announce_the_next_step_except_for_delegation()
     {
-        var (prompt, _) = Make().Build(new Session("s"), ToolNames.ProposeAlways, TurnKind.Propose);
-        Assert.Contains("確認之後的下一步", prompt);
-        Assert.Contains("「Session 事實」的「追問已用」小於上限", prompt);
-        Assert.Contains("「確認後我會接著問 X、Y」", prompt);
-        Assert.Contains("「確認後直接定稿，沒講的留白」", prompt);
-        Assert.Contains("逐一寫出你要補的具體內容", prompt);
-        Assert.Contains("不能只寫「其他我來決定」", prompt);
-        Assert.DoesNotContain("確認之後的下一步", Make().Build(new Session("s"), ToolNames.Always, TurnKind.Act).Prompt);
+        var fresh = Make().Build(new Session("s"), ToolNames.ProposeAlways, TurnKind.Propose).Prompt;
+        var asking = new Session("s"); asking.ApplyProfile("portrait", Catalog); asking.RecordAsk();
+        var answered = Make().Build(asking, ToolNames.ProposeAlways, TurnKind.Propose).Prompt;
+        foreach (var prompt in new[] { fresh, answered })
+        {
+            Assert.DoesNotContain("確認之後的下一步", prompt);
+            Assert.DoesNotContain("「確認後我會接著問 X、Y」", prompt);
+            Assert.Contains("不要預告確認之後是再追問還是定稿：按下按鈕後由系統決定", prompt);
+            Assert.Contains("只有隨便／你決定／直接給我例外，那種一律直接定稿", prompt);
+        }
+        Assert.Contains("「Session 事實」的「還有 missing facet 的維度」", fresh);
+        Assert.Contains("逐一寫出你要補的具體內容", fresh);
+        Assert.Contains("說明確認後直接定稿", fresh);
+        Assert.Contains("不能只寫「其他我來決定」", fresh);
+        Assert.DoesNotContain("不要預告確認之後", Make().Build(new Session("s"), ToolNames.Always, TurnKind.Act).Prompt);
     }
 
     /// <summary>Task 10 驗收：「其他你決定」確認後，「不要加入確認以外的改動」把 AutoFill 的補齊壓掉，定稿幾乎沒補。</summary>

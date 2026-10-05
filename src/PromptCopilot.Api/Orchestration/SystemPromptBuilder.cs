@@ -35,7 +35,7 @@ public sealed class SystemPromptBuilder(FacetCatalog catalog, OrchestratorOption
             .Replace("{{RETRIEVAL_RULE}}", s.RetrievalEnabled ? RetrievalRuleOn : RetrievalRuleOff)
             .Replace("{{TOOLS}}", string.Join("\n", tools.Order().Select(t => $"- `{t}`")))
             .Replace("{{FACETS}}", s.Profile is null ? catalog.PromptListing() : catalog.ProfileListing(s.Profile))
-            .Replace("{{SESSION_FACTS}}", Facts(s, kind))
+            .Replace("{{SESSION_FACTS}}", Facts(s))
             .Replace("{{OFFERED}}", Offered(s))
             // 確認內容最後才放：它是模型與使用者的文字，放進來之後不能再被任何 placeholder 替換掃到（Review Focus 2）
             .Replace("{{CONFIRMED}}", Confirmed(confirmed))
@@ -60,28 +60,25 @@ public sealed class SystemPromptBuilder(FacetCatalog catalog, OrchestratorOption
         return sb.ToString();
     }
 
-    private string Facts(Session s, TurnKind kind)
+    private string Facts(Session s)
     {
         var sb = new StringBuilder();
         sb.AppendLine($"- profile：{s.Profile ?? "尚未設定（請先 SetProfile）"}");
         sb.AppendLine($"- 狀態：{s.Status}");
         sb.AppendLine($"- AutoFill：{s.AutoFill.ToString().ToLowerInvariant()}");
         sb.AppendLine($"- 知識庫：{s.RetrievalMode}");
-        // 帶上限：確認輪要靠它判斷確認後是追問還是定稿（flow-propose.md 第 2 條），跟動手輪 AskUser 有沒有掛上的條件一致
+        // 帶上限：只給已用次數時，模型看不出還能不能再問（2026-10-05 驗收修正輪）
         sb.AppendLine($"- 追問已用：{s.AskCount}／上限 {options.MaxAskCount}");
-        // 算法同動手輪的 missing 維度（flow-act.md 第 1 條）：底下還有 missing 的 facet，waived 與有 note（委託）的不算
-        var missingDims = s.Profile is not { } profile ? null : catalog.Dimensions
-            .Where(dim => catalog.FacetsOf(profile, dim).Any(id =>
-                s.FacetStates.GetValueOrDefault(id, FacetState.Missing) == FacetState.Missing && !s.FacetNotes.ContainsKey(id)))
-            .Select(dim => catalog.DimensionLabel(dim, profile))
-            .ToList();
-        // 確認卡要講對確認後會怎樣（flow-propose.md 第 2 條）。Task 10 驗收：只給規則與逐 facet 狀態時，模型在「回答追問」常講成直接定稿、
-        // 在額度用完時又講成接著問。先照動手輪的規則算好，模型只剩「扣掉這次回答補齊的維度」這一步。動手輪自己有規則，不給它這行。
-        if (kind == TurnKind.Propose && s.Status == SessionStatus.Collecting)
-            sb.AppendLine($"- 確認之後的下一步：{NextStep(s, missingDims)}");
-        if (s.Profile is not null)
+        if (s.Profile is { } profile)
         {
-            sb.AppendLine($"- 還有 missing facet 的維度：{(missingDims!.Count == 0 ? "（無）" : string.Join("、", missingDims))}");
+            // 算法同動手輪的 missing 維度（flow-act.md 第 1 條）：底下還有 missing 的 facet，waived 與有 note（委託）的不算。
+            // 「隨便」的確認卡照這行逐維度列出要補什麼（flow-propose.md 第 2 條）；模型自己從下面逐 facet 的清單彙整時常漏。
+            var missingDims = catalog.Dimensions
+                .Where(dim => catalog.FacetsOf(profile, dim).Any(id =>
+                    s.FacetStates.GetValueOrDefault(id, FacetState.Missing) == FacetState.Missing && !s.FacetNotes.ContainsKey(id)))
+                .Select(dim => catalog.DimensionLabel(dim, profile))
+                .ToList();
+            sb.AppendLine($"- 還有 missing facet 的維度：{(missingDims.Count == 0 ? "（無）" : string.Join("、", missingDims))}");
             sb.AppendLine("- facet 狀態：");
             foreach (var dim in catalog.Dimensions)
             {
@@ -102,18 +99,6 @@ public sealed class SystemPromptBuilder(FacetCatalog catalog, OrchestratorOption
             sb.AppendLine($"  negative：{f.Negative}");
         }
         return sb.ToString().TrimEnd();
-    }
-
-    /// <summary>確認輪 Collecting 時的「確認之後的下一步」：照動手輪的規則（追問額度、missing 維度、隨便一律定稿）先算好。
-    /// missingDims 為 null 表示還沒判定題材（第一次描述）。</summary>
-    private string NextStep(Session s, IReadOnlyList<string>? missingDims)
-    {
-        const string delegated = "；使用者說隨便／你決定／直接給我時一律直接定稿";
-        var left = options.MaxAskCount - s.AskCount;
-        if (left <= 0) return "直接定稿（追問已用完）";
-        if (missingDims is null) return $"接著問他沒講到的面向（追問還剩 {left} 次）{delegated}";
-        if (missingDims.Count == 0) return "直接定稿（沒有還缺的維度）";
-        return $"接著問 {string.Join("、", missingDims)} 裡這次回答沒補齊的維度（追問還剩 {left} 次）；這次回答把它們全補齊了才是直接定稿{delegated}";
     }
 
     private string Offered(Session s)
