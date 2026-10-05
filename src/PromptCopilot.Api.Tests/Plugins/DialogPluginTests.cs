@@ -124,6 +124,30 @@ public class DialogPluginTests
         Assert.Equal(0, s.DiscussStreak);
     }
 
+    /// <summary>設計 §1、§3.3：Discuss 在確認之前什麼都不改。狀態相同但夾帶新 note 與不同 tags 時，
+    /// 照舊回 ok，但 FacetNotes／FacetTags 一個字都不能動（它們會影響定稿閘門、晶片標題與推薦錨點）。</summary>
+    [Fact]
+    public void Discuss_with_unchanged_states_never_writes_notes_or_tags()
+    {
+        var (_, _, s) = Make(finalized: true);
+        s.ApplyFacetStates(new Dictionary<string, FacetState> { ["style.genre"] = FacetState.Covered }, Catalog,
+            new Dictionary<string, string> { ["style.genre"] = "anime" });
+        s.FacetNotes["pose.gaze"] = "使用者委託此項";
+        var turn = new TurnContext(s, 2, GuardResult.Ok(false), ToolNames.Always, Channel.CreateUnbounded<AgentEvent>().Writer);   // 輪初狀態含上面的改動
+        var p = new DialogPlugin(turn, Catalog, O);
+
+        var r = p.Discuss("好的", new[]
+        {
+            new FacetStateEntry("style.genre", "covered", Tags: "photo realism"),
+            new FacetStateEntry("pose.gaze", "missing", Note: "偷塞的備註"),
+        });
+
+        Assert.Equal("ok", r);
+        Assert.IsType<MessageOutcome>(turn.Outcome);
+        Assert.Equal(new Dictionary<string, string> { ["style.genre"] = "anime" }, s.FacetTags);
+        Assert.Equal(new Dictionary<string, string> { ["pose.gaze"] = "使用者委託此項" }, s.FacetNotes);
+    }
+
     [Fact]
     public void AskUser_requires_profile()
     {

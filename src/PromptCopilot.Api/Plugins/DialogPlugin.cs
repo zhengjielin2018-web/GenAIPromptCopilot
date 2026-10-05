@@ -63,7 +63,7 @@ public sealed class DialogPlugin(TurnContext turn, FacetCatalog catalog, Orchest
     }
 
     [KernelFunction(ToolNames.Discuss)]
-    [Description("回應：這是我對使用者問題的回答，使用者可以無視它繼續講別的。用於解說、比較、給參考方向。不宣告需求、不卡住流程。不能改 facet 狀態。")]
+    [Description("回應：這是我對使用者問題的回答，使用者可以無視它繼續講別的。用於解說、比較、給參考方向。不宣告需求、不卡住流程。不能改 facet 狀態，也不會寫入任何 facet 備註或標籤。")]
     // options 排在最後而且有預設值：SK 只看「有沒有預設值」決定必填與否，可為 null 不算；
     // 沒有預設值時 Gemini 照描述省略它會丟 KernelException，白白吃掉一格 tool 預算。
     public string Discuss(
@@ -76,7 +76,8 @@ public sealed class DialogPlugin(TurnContext turn, FacetCatalog catalog, Orchest
             return "錯誤：Discuss 不能改 facet 狀態；使用者要改畫面時，請用 Confirm 跟他確認";
         var opts = AskCleaner.CleanOptions(options ?? Array.Empty<OptionItem>(), S.Ledger, AskCleaner.MaxOptions);
         turn.Rejections.AddRange(opts.Rejected);
-        SessionPlugin.Apply(turn, catalog, facetStates);
+        // 不呼叫 Apply：狀態已被擋成跟輪初一致，但 Apply 還會寫 FacetNotes 與覆蓋 FacetTags，
+        // 那些會動到定稿閘門、晶片標題與推薦錨點，確認之前一律不動（先確認再動手設計 §1、§3.3）
         S.RecordDiscuss();
         MarkOffered(opts.Kept.Select(o => ((string?)null, o)));
         turn.Outcome = new MessageOutcome(message, opts.Kept);

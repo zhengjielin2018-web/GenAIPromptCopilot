@@ -158,7 +158,7 @@ public static class SessionEndpoints
             測試用的審查開關：body 可加 `"safety": "off"`（預設 `on`），這一輪不做程式端審查——denylist 不比對、輸入分類器照跑但只用來判斷「你看著辦」、輸出不檢。Gemini 自己的攔截（`Blocked_Upstream`）不受影響。後端要設 `Safety:AllowDisable=true` 才收；`GET /api/config/safety` 回報目前能不能關。
 
             - `404`：session 不存在或已過期
-            - `400`：`text` 是空白且沒有 `adopt`；`safety` 不是 `on`／`off`；`adopt` 的 preset 不存在、尚未拆分 facet、`take` 為空或含不屬於該維度／這套沒有 tag 的 facet；`confirm` 的 `choice` 跟卡片對不上（有選項沒選、沒選項卻帶、超出範圍）；`confirm` 與 `adopt` 同時送
+            - `400`：`text` 是空白且沒有 `adopt` 也沒有 `confirm`；`safety` 不是 `on`／`off`；`adopt` 的 preset 不存在、尚未拆分 facet、`take` 為空或含不屬於該維度／這套沒有 tag 的 facet；`confirm` 的 `choice` 跟卡片對不上（有選項沒選、沒選項卻帶、超出範圍）；`confirm` 與 `adopt` 同時送
             - `403`：`safety: off` 但後端沒開放
             - `409`：同一個 session 上一輪還沒跑完；`adopt` 但這段對話 `retrieval: off` 或還沒定稿；`confirm` 但沒有待確認，或不是最新一張確認卡
             """)

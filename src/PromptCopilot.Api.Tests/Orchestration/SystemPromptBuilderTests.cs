@@ -317,7 +317,7 @@ public class SystemPromptBuilderTests
         Assert.Contains("### 使用者已確認", flow);
         Assert.Contains("她兩手已經拿著相機和飲料，你想要哪一種？", flow);
         Assert.Contains("使用者選的是：換掉飲料，改拿雨傘", flow);
-        Assert.Contains("不要加入確認以外的改動", flow);
+        Assert.Contains("這一輪照上面的內容動手，不要加入確認以外的改動。", flow);
         Assert.Contains("動手輪", flow);
         Assert.DoesNotContain("{{", prompt);
     }

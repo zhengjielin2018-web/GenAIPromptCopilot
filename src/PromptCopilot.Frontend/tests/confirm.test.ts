@@ -29,6 +29,13 @@ describe('pendingConfirmTurn', () => {
     expect(pendingConfirmTurn([fin(1)])).toBeNull()
     expect(pendingConfirmTurn([])).toBeNull()
   })
+
+  it('treats a confirm card the server already answered 409 as not pressable', () => {
+    expect(pendingConfirmTurn([confirm(1)], [1])).toBeNull()
+    expect(pendingConfirmTurn([confirm(1), user, confirm(2)], [1])).toBe(2)       // 舊卡過期不影響新卡
+    expect(pendingConfirmTurn([confirm(1), user, msg(2)], [1])).toBeNull()        // 討論不會讓過期的卡復活
+    expect(pendingConfirmTurn([confirm(1)], [])).toBe(1)
+  })
 })
 
 describe('confirmDisplay', () => {

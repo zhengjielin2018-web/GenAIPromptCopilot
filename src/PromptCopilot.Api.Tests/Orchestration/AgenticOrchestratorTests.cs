@@ -330,6 +330,27 @@ public class AgenticOrchestratorTests
         Assert.Contains(h.Audit.Entries, a => a.EventType == "Turn_Failed" && a.PayloadJson!.Contains("ProtocolViolationException"));
     }
 
+    /// <summary>Review Focus 4：動手輪沒有 Discuss，兩次都回「非空白」純文字也不能包成 Discuss（那等於繞過確認），照樣協定違反、整輪回滾、待確認還在。</summary>
+    [Fact]
+    public async Task Act_turn_plain_text_twice_is_protocol_violation_and_keeps_the_pending_confirmation()
+    {
+        var h = new Harness();
+        h.Chat.ThenAsync(async (hist, k) =>
+        {
+            await Invoke(hist, k!, "Session", "SetProfile", new { profile = "portrait" });
+            return new[] { FakeChatCompletion.Text("好的，我已經幫你改好了。") };
+        }).Then(FakeChatCompletion.Text("真的改好了。"));
+        var events = await h.ActAsync();
+
+        Assert.Equal("protocol_violation", Assert.Single(events.OfType<ErrorEvent>()).Code);
+        Assert.Empty(events.OfType<FinalEvent>());
+        Assert.Null(h.Session.Profile);
+        Assert.Equal(0, h.Session.DiscussStreak);
+        Assert.Empty(h.Session.ChatHistory);
+        Assert.Equal(0, h.Session.TurnIndex);
+        Assert.NotNull(h.Session.PendingConfirmation);
+    }
+
     [Fact]
     public async Task Cancelled_token_rolls_back()
     {
@@ -614,6 +635,7 @@ public class AgenticOrchestratorTests
         .ThenAsync(async (hist, k) =>
         {
             Assert.Contains("定稿", hist.Last().Content!);
+            Assert.Contains("Dialog_FinalizePrompt", hist.Last().Content!);
             Assert.Contains("covered", hist.Last().Content!);
             Assert.Contains("留白", hist.Last().Content!);
             Assert.Equal(AuthorRole.System, hist.Last().Role);
@@ -1172,7 +1194,7 @@ public class AgenticOrchestratorTests
         .ThenAsync(async (hist, k) =>
         {
             Assert.Equal(AuthorRole.System, hist.Last().Role);
-            Assert.Contains("Confirm", hist.Last().Content!);
+            Assert.Contains("Dialog_Confirm", hist.Last().Content!);
             Assert.Single(k!.Plugins);
             Assert.Equal("Confirm", Assert.Single(k.Plugins["Dialog"]).Name);
             return new[] { await Invoke(hist, k, "Dialog", "Confirm", new { message = "我理解的畫面：一個女生。" }) };
@@ -1224,11 +1246,30 @@ public class AgenticOrchestratorTests
         h.Chat.Then(FakeChatCompletion.Text("好的。"))
               .ThenAsync(async (hist, k) =>
               {
-                  Assert.Contains("你必須呼叫 Confirm、Discuss 之一", hist.Last().Content!);
+                  Assert.Contains("你必須呼叫 Dialog_Confirm、Dialog_Discuss 之一", hist.Last().Content!);
                   Assert.DoesNotContain("FinalizePrompt", hist.Last().Content!);
                   return new[] { await Invoke(hist, k!, "Dialog", "Discuss", DiscussArgs("好")) };
               });
-        await h.RunAsync("寫實跟動漫差在哪");
+        var events = await h.RunAsync("寫實跟動漫差在哪");
+        Assert.Equal("message", Assert.Single(events.OfType<FinalEvent>()).Kind);      // 斷言在 callback 裡：沒有這行，callback 丟例外也會過
+        Assert.Equal(2, h.Chat.Calls.Count);
+    }
+
+    /// <summary>只剩一個收尾工具時用單數說法，而且用宣告的全名：裸名會落進 SK 的未定義路徑、繞過預算（設計 §5.3）。</summary>
+    [Fact]
+    public async Task Retry_reminder_with_a_single_terminal_tool_uses_the_singular_full_name()
+    {
+        var h = new Harness();
+        MakeFinalized(h.Session);                                    // 已定稿：動手輪沒有 AskUser，只剩 FinalizePrompt
+        h.Chat.Then(FakeChatCompletion.Text("好的。"))
+              .ThenAsync(async (hist, k) =>
+              {
+                  Assert.Contains("你必須呼叫 Dialog_FinalizePrompt 來結束這一輪", hist.Last().Content!);
+                  Assert.DoesNotContain("之一", hist.Last().Content!);
+                  return new[] { await Invoke(hist, k!, "Dialog", "FinalizePrompt", FinalizeArgs()) };
+              });
+        var events = await h.ActAsync();
+        Assert.Equal("finalized", Assert.Single(events.OfType<FinalEvent>()).Kind);
         Assert.Equal(2, h.Chat.Calls.Count);
     }
 
@@ -1255,7 +1296,7 @@ public class AgenticOrchestratorTests
         var h = new Harness();
         h.Chat.ThenAsync(async (hist, k) =>
         {
-            Assert.Contains("確認輪", hist[0].Content!);
+            Assert.Contains("這一輪是**確認輪**", hist[0].Content!);
             Assert.DoesNotContain("### 使用者已確認", hist[0].Content!);
             return new[] { await Invoke(hist, k!, "Dialog", "Confirm", new { message = "我理解的畫面：一個女生。" }) };
         });

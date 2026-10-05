@@ -141,8 +141,7 @@ public sealed class AgenticOrchestrator(
                 // 重試連文字都沒產的話放回原位，下面的包裝才還能用它（只掃 startIdx 之後）。
                 var firstAt = firstText is null ? -1 : session.ChatHistory.IndexOf(firstText);
                 if (firstAt >= 0) session.ChatHistory.RemoveAt(firstAt);
-                var retryText = await CallWithReminderAsync(turn, kernel,
-                    $"你必須呼叫 {string.Join("、", ToolNames.Terminal.Where(tools.Contains).Order())} 之一來結束這一輪，不要只回純文字。", tct);
+                var retryText = await CallWithReminderAsync(turn, kernel, RetryReminder(kernel), tct);
                 if (firstAt >= 0 && turn.Outcome is null && retryText is null) session.ChatHistory.Insert(firstAt, firstText!);
             }
             if (turn.Outcome is null)
@@ -349,17 +348,32 @@ public sealed class AgenticOrchestrator(
         finally { history.Remove(note); }
     }
 
-    private const string ForcedFinalizeReminder = "tool 呼叫預算已用盡。請立即以現有資訊呼叫 FinalizePrompt 定稿，不要再檢索。facetStates 依使用者原話標記：使用者講過的 facet 標 covered，真的沒講的才是 missing，其餘 missing 的 facet 留白。";
-    private const string ForcedConfirmReminder = "tool 呼叫預算已用盡。請立即以目前的理解呼叫 Confirm 跟使用者確認，不要再檢索。";
+    /// <summary>提醒裡的工具名要用 kernel 宣告的全名（Dialog_Confirm）：模型照裸名叫會落進 SK 的「function not defined」路徑，
+    /// 繞過所有 filter 與 tool 預算，重複到 120 秒逾時（先確認再動手設計 §5 驗收紀錄）。</summary>
+    private static List<string> QualifiedNames(Kernel kernel, Func<string, bool> pick) =>
+        kernel.Plugins.SelectMany(p => p.Where(f => pick(f.Name)).Select(f => $"{p.Name}_{f.Name}")).Order().ToList();
+
+    private static string RetryReminder(Kernel kernel)
+    {
+        var names = QualifiedNames(kernel, ToolNames.Terminal.Contains);
+        var list = string.Join("、", names);
+        return names.Count == 1
+            ? $"你必須呼叫 {list} 來結束這一輪，不要只回純文字。"
+            : $"你必須呼叫 {list} 之一來結束這一輪，不要只回純文字。";
+    }
+
+    private static string ForcedFinalizeReminder(string name) => $"tool 呼叫預算已用盡。請立即以現有資訊呼叫 {name} 定稿，不要再檢索。facetStates 依使用者原話標記：使用者講過的 facet 標 covered，真的沒講的才是 missing，其餘 missing 的 facet 留白。";
+    private static string ForcedConfirmReminder(string name) => $"tool 呼叫預算已用盡。請立即以目前的理解呼叫 {name} 跟使用者確認，不要再檢索。";
 
     /// <summary>主規格 §4.6：預算耗盡後只掛一個收尾工具再跑一次；kernel 不掛 budget filter，否則第一個 call 又被擋。
     /// 動手輪掛 FinalizePrompt，確認輪掛 Confirm（先確認再動手設計 §6.1）。</summary>
-    private async Task ForcedFinishAsync(TurnContext turn, string tool, string reminder, CancellationToken ct)
+    private async Task ForcedFinishAsync(TurnContext turn, string tool, Func<string, string> reminder, CancellationToken ct)
     {
         turn.Outcome = null;
         turn.ForcedFinalize = tool == ToolNames.FinalizePrompt;   // 定稿閘門放行：只剩 FinalizePrompt，擋下去這一輪就沒有出口
         var kernel = kernelFactory(turn, new HashSet<string> { tool }, false);
-        await CallWithReminderAsync(turn, kernel, reminder, ct);
+        var qualified = QualifiedNames(kernel, n => n == tool).FirstOrDefault() ?? tool;
+        await CallWithReminderAsync(turn, kernel, reminder(qualified), ct);
     }
 
     private static void EnsureSystemMessage(ChatHistory h, string prompt)

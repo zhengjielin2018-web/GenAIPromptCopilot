@@ -58,8 +58,11 @@ export const useSessionStore = defineStore('session', () => {
   /** 最新一張定稿卡：save_consent_requested 要展開它，也只有它可以存（後端永遠存 LastFinal）。 */
   const latestFinalizedTurn = computed<number | null>(() => latestFinalizedTurnOf(state.value.transcript))
 
+  /** 伺服器回過 409 的確認卡輪次（跟 batchState 的 stale 同一個想法）。不存：重載後由 transcript 重新推導；可 JSON 來回。 */
+  const staleConfirms = ref<number[]>([])
+
   /** 可以按的確認卡（先確認再動手設計 §7）；null 表示沒有。輸入框的提示與確認卡的按鈕看它。 */
-  const pendingConfirm = computed<number | null>(() => pendingConfirmTurn(state.value.transcript))
+  const pendingConfirm = computed<number | null>(() => pendingConfirmTurn(state.value.transcript, staleConfirms.value))
 
   /** 對照表正在看的那套；null 表示關閉。 */
   const adoptTarget = ref<{ set: RecommendedSet; dimension: string; turnIndex: number } | null>(null)
@@ -119,6 +122,7 @@ export const useSessionStore = defineStore('session', () => {
     // 舊對話的組合不能採用到新對話
     adoptTarget.value = null
     batchState.value = {}
+    staleConfirms.value = []
     notice.value = null
     persist()
   }
@@ -155,6 +159,9 @@ export const useSessionStore = defineStore('session', () => {
         let msg = r.status === 409 ? '這個對話還有一輪在跑，等它結束再送。' : `送出失敗（HTTP ${r.status}）。`
         // 採用、按確認被拒（400／409）與審查開關被拒（403：後端中途關掉了開放）帶有理由：直接顯示
         if ('adopt' in body || 'confirm' in body || r.status === 403) { try { msg = (await r.json()).error ?? msg } catch { /* 沒 body 就用預設字 */ } }
+        // 按確認被 409 擋下：這張卡不會因為再按而成功，標成過期，按鈕與輸入框提示一起收掉
+        if ('confirm' in body && r.status === 409 && !staleConfirms.value.includes(body.confirm.turnIndex))
+          staleConfirms.value = [...staleConfirms.value, body.confirm.turnIndex]
         state.value = failHttp(state.value, `http_${r.status}`, msg)
         return
       }
