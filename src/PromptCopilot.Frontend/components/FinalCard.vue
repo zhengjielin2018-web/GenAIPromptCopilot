@@ -27,7 +27,7 @@
       <p v-else class="mt-1.5 text-xs text-muted">這次定稿沒有借用知識庫片段。</p>
     </section>
 
-    <RecommendationStrip v-if="recommendations" :recs="recommendations" :turn-index="turnIndex" />
+    <RecommendationStrip v-if="recommendations && s.latestFinalizedTurn === turnIndex" :recs="recommendations" :turn-index="turnIndex" />
 
     <footer :id="`save-${turnIndex}`" class="mt-5 border-t border-rule pt-4">
       <p v-if="superseded" class="text-xs text-muted">這份已被後面的定稿取代。要存進共享知識庫，請用最新那張。</p>
@@ -57,6 +57,7 @@
 <script setup lang="ts">
 import type { FinalizedData, Recommendations } from '../types/api'
 import { contributions } from '../lib/trace'
+/** 參考組合只畫在最新一張定稿卡：舊卡的推薦已不能採用、也不能換一批，留著只占位置。 */
 const props = defineProps<{ data: FinalizedData; turnIndex: number; recommendations?: Recommendations | null }>()
 const s = useSessionStore()
 const intent = ref(props.data.intentSummary)

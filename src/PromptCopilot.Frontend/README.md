@@ -34,4 +34,4 @@ devProxy 不會緩衝 SSE：2026-09-24 實測，一輪的事件在 12 秒內逐�
 
 頂列的三個開關：「使用知識庫」（下一段新對話生效，存 localStorage）、「顯示檢索細節」（即時，存 localStorage）、「程式端審查」（後端 `GET /api/config/safety` 回 `canDisable: true` 才出現，不保存，重新整理回到開著）。
 
-設計：`docs/superpowers/specs/2026-09-24-frontend-sse-design.md`；開關與檢索細節見 `2026-09-25-retrieval-switch-and-trace-design.md`，參考組合與採用見 `2026-09-25-set-recommendations-design.md`（2026-10-05 起只在定稿卡）與 `2026-09-30-recommendation-slate-design.md`，確認卡見 `2026-10-05-confirm-before-act-design.md`。
+設計：`docs/superpowers/specs/2026-09-24-frontend-sse-design.md`；開關與檢索細節見 `2026-09-25-retrieval-switch-and-trace-design.md`，參考組合與採用見 `2026-09-25-set-recommendations-design.md`（2026-10-05 起只在最新一張定稿卡，預設收合）與 `2026-09-30-recommendation-slate-design.md`，確認卡見 `2026-10-05-confirm-before-act-design.md`。
