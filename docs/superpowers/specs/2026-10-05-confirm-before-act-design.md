@@ -72,7 +72,7 @@ Confirm(
 
 現在只有 `Finalized` 時擋「帶著改過的狀態」。改成不分狀態都擋（`Profile` 已設定時才比對，比對基準照舊是 `turn.TurnStartFacetStates`），否則 `Discuss` 是繞過確認的後門。錯誤字串改成：「錯誤：Discuss 不能改 facet 狀態；使用者要改畫面時，請用 Confirm 跟他確認」。
 
-`Discuss` 的 `facetStates` 參數保留（儀表板同步仍用它；值必須等於現值）。
+`Discuss` 的 `facetStates` 參數保留，只用來核對（值必須等於本輪開始時的狀態）。通過核對的 `Discuss` 也不寫回任何東西，`note` 與 `tags` 同樣不寫（最終審查補上：原本經 `SessionPlugin.Apply` 會寫進 `FacetNotes`／`FacetTags`，等於確認前就改了定稿閘門的 missing 計算、推薦的錨與採用句）。儀表板由每輪收尾的 `dimensions` 事件同步。
 
 ### 3.4 待確認（`PendingConfirmation`）
 
@@ -155,18 +155,18 @@ record PendingConfirmation(int TurnIndex, string Message, IReadOnlyList<string> 
 
 ### 5.3 其他
 
-- 純文字補救提示（`CallWithReminderAsync`）改成列出這一輪實際有的終止型工具，不再寫死四個名字。
+- 純文字補救提示（`CallWithReminderAsync`）改成列出這一輪實際有的終止型工具，不再寫死四個名字；名稱從該輪 kernel 組出宣告的完整名稱（`Dialog_Confirm`…），只有一個時寫「你必須呼叫 X 來結束這一輪」（最終審查補上，理由見下方修正的最後一點）。
 - `intentSummary` 範例句不動。
 
 > 2026-10-05 驗收後的修正（`docs/eval-cases.md` 該節的 C2、C8 與補充觀察），現行做法：
 > - **確認卡不預告下一步。** 原本 §5.1「回答追問」要卡片講「接著問 X、Y」或「直接定稿」，驗收時常講錯：卡片說直接定稿，動手輪照 §5.2 還是追問了。確認輪猜不到一段自由回答會讓哪些 facet 變 covered；即使伺服器先照規則算好「確認之後的下一步」給它，回答第一次追問那張仍只有 2/6 講對。所以卡片只講要設什麼，下一張卡自然呈現接下來是追問還是定稿。例外是「隨便」：動手輪一律直接定稿，卡片照舊說確認後直接定稿。
 > - **「隨便」補齊每一個 missing facet。** 確認卡要逐維度寫出補成什麼。Session 事實多一行「還有 missing facet 的維度」，算法同動手輪：waived 與有委託 note 的不算。§5.2 區塊在「隨便」那張卡（待確認的 `AutoComplete`）的最後一句改成「使用者把沒講的交給你決定：補齊每一個 missing 的 facet 就是他確認的內容…」：原句「不要加入確認以外的改動」會讓定稿幾乎不補（`tagOrigins.llm` 0–1）。`flow-act.md` 第 4 條同樣寫明補齊不算「確認以外的改動」。
 > - Session 事實的追問改成「追問已用：N／上限 M」。
-> - **兩個流程段寫明工具的完整名稱**（`Dialog_Confirm`、`Dialog_FinalizePrompt` 等）。模型有時只寫 `Confirm`，SK 回「function that wasn't defined」，模型就一直重送，直到整輪 120 秒逾時。改過流程段文字之後特別常見：沒改過的 prompt 12/12 正常，改寫後的規則文字 3/20。寫明完整名稱後 12/12 正常。程式端還沒有防護，列為後續工作。
+> - **兩個流程段寫明工具的完整名稱**（`Dialog_Confirm`、`Dialog_FinalizePrompt` 等）。模型有時只寫 `Confirm`，SK 回「function that wasn't defined」，模型就一直重送，直到整輪 120 秒逾時。改過流程段文字之後特別常見：沒改過的 prompt 12/12 正常，改寫後的規則文字 3/20。寫明完整名稱後 12/12 正常。最終審查再把純文字補救與強制收尾的提示也改成完整名稱（§5.3、§6.1）；`system.md` 的 `{{TOOLS}}` 仍是短名。程式端還沒有防護，列為後續工作（known-issues #13）。
 
 ## 6. 邊界情況
 
-1. **工具預算用完**：確認輪 → 強制 `Confirm`（只掛 `Confirm`，提示「tool 呼叫預算已用盡。請立即以目前的理解呼叫 Confirm 跟使用者確認」）；動手輪 → 照舊強制 `FinalizePrompt`。`ForcedConfirmAsync` 與 `ForcedFinalizeAsync` 共用同一個骨架。
+1. **工具預算用完**：確認輪 → 強制 `Confirm`（只掛 `Confirm`，提示「tool 呼叫預算已用盡。請立即以目前的理解呼叫 Dialog_Confirm 跟使用者確認」）；動手輪 → 照舊強制 `FinalizePrompt`（提示同樣寫 `Dialog_FinalizePrompt`）。兩者是同一個 `ForcedFinishAsync`，工具名從強制收尾用的 kernel 組出。
 2. **模型只回純文字**：確認輪照舊包成 `Discuss`（`Discuss` 不能改狀態，包了也安全）；動手輪沒有 `Discuss`，重試仍無結果就 `ProtocolViolationException`，整輪回滾，待確認回來，卡片可再按。
 3. **「隨便」**：確認輪偵測到時工具只剩 `Confirm`（加檢索），`AutoComplete` 記在待確認；按下後才 `AutoFill = true`、動手輪不給 `AskUser`。
 4. **確認卡沒按時做了別的**：問問題（`Discuss`）→ 卡片仍有效；採用 → 動手，卡片失效；換一批推薦、存進共享庫 → 不影響。
@@ -180,7 +180,7 @@ record PendingConfirmation(int TurnIndex, string Message, IReadOnlyList<string> 
   - `pendingConfirmTurn(transcript)`：從尾端往回找，先碰到 `confirm` 就回它的輪次；先碰到 `ask`／`finalized` 回 null；`message`、`save_consent_requested`、失敗條目、使用者泡泡、工具卡跳過。規則與 §3.4 一致。
   - `confirmDisplay(data, choice)`：泡泡暫代字（「對，就這樣」或選項原文）。
 - **`ConfirmCard.vue`**：正文；沒有選項時一顆「對，就這樣」，有選項時每個選項一顆；底下一行「不對的話，直接在下面打字修正。」。顏色與追問卡（黃）、失敗（洋紅）區分。按鈕只在 `turnIndex === pendingConfirmTurn` 且不在跑時可按；過期的停用，title「已經有新的進展，這張卡不能再按」。
-- **store**：`confirm(turnIndex, choice)` → `runTurn(confirmDisplay(…), { confirm: … })`。非 200 時顯示伺服器的理由（同 `adopt`）。
+- **store**：`confirm(turnIndex, choice)` → `runTurn(confirmDisplay(…), { confirm: … })`。非 200 時顯示伺服器的理由（同 `adopt`）。按下去回 `409` 的卡記成過期（`pendingConfirmTurn` 多收一份過期輪次清單），按鈕停用、輸入框提示也跟著收回；這份清單不存，重載後從對話流重新推算（最終審查補上）。
 - **失敗**：按確認那一輪的失敗條目不帶原文（不出「重試：把原文放回輸入框」，放回去送出會變成新意見），訊息後補一句「確認卡還在，可以再按一次」。
 - **輸入框**：有可按的確認卡時，placeholder 改成「按上面的按鈕套用；在這裡打字會當成修正」。
 - **追問卡**：選項照舊填進輸入框，送出走確認輪。推薦條拿掉（§8）。

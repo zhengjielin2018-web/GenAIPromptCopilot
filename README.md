@@ -42,18 +42,18 @@ flowchart LR
     pipe --> histories
 ```
 
-一輪對話：使用者送一句話 → 輸入側安全過濾 → 模型在動態組出的工具清單裡自己決定要查知識庫、更新儀表板、追問、討論還是定稿 → 每個工具呼叫即時以 SSE 推到前端 → 該輪以一個終止型工具收尾。會改動畫面的要求一律分兩輪：打字的那一輪模型只拿得到確認、討論與檢索，使用者按下確認卡的按鈕後，下一輪才拿得到改狀態的工具（[先確認再動手設計](docs/superpowers/specs/2026-10-05-confirm-before-act-design.md)）。任何一步失敗整輪回滾，跟資料庫交易一樣。細節見[主規格 §4](docs/superpowers/specs/2026-09-21-genai-prompt-copilot-design.md#4-核心編排全-agentic)；檢索與組裝的逐步拆解（以 Python 單輪 demo 實跑）見 [docs/單輪流程說明.md](docs/單輪流程說明.md)。
+一輪對話：使用者送一句話 → 輸入側安全過濾 → 模型在動態組出的工具清單裡自己決定要查知識庫、跟使用者確認、更新儀表板、追問、討論還是定稿 → 每個工具呼叫即時以 SSE 推到前端 → 該輪以一個終止型工具收尾。會改動畫面的要求一律分兩輪：打字的那一輪模型只拿得到確認、討論與檢索，使用者按下確認卡的按鈕後，下一輪才拿得到改狀態的工具（[先確認再動手設計](docs/superpowers/specs/2026-10-05-confirm-before-act-design.md)）。任何一步失敗整輪回滾，跟資料庫交易一樣。細節見[主規格 §4](docs/superpowers/specs/2026-09-21-genai-prompt-copilot-design.md#4-核心編排全-agentic)；檢索與組裝的逐步拆解（以 Python 單輪 demo 實跑）見 [docs/單輪流程說明.md](docs/單輪流程說明.md)。
 
 ## 技術對照
 
 | 技術 | 這個專案裡做了什麼 | 看哪裡 |
 | :--- | :--- | :--- |
-| Semantic Kernel | 全 agentic function calling；依 session 狀態動態組工具清單；`IAutoFunctionInvocationFilter` 做終止、預算、輸出安全、稽核四道 filter；兩層 RAG | `src/PromptCopilot.Api/Orchestration/`、`Plugins/`、`Filters/`；[主規格 §4](docs/superpowers/specs/2026-09-21-genai-prompt-copilot-design.md#4-核心編排全-agentic) |
+| Semantic Kernel | 全 agentic function calling；依輪的種類（確認輪／動手輪）與 session 狀態動態組工具清單，沒經使用者確認就拿不到改畫面的工具；`IAutoFunctionInvocationFilter` 做終止、預算、輸出安全、稽核四道 filter；兩層 RAG | `src/PromptCopilot.Api/Orchestration/`、`Plugins/`、`Filters/`；[主規格 §4](docs/superpowers/specs/2026-09-21-genai-prompt-copilot-design.md#4-核心編排全-agentic) |
 | ASP.NET Core | SSE 串流（`Channel<AgentEvent>` → `IAsyncEnumerable`）；每輪 snapshot／rollback；session 鎖 | `Streaming/`、`Sessions/`、`Endpoints/`；[主規格 §10](docs/superpowers/specs/2026-09-21-genai-prompt-copilot-design.md#10-api-與-sse-協定) |
 | PostgreSQL + pgvector | 分維度檢索：HNSW 先取近鄰、再套該維度的 facet 過濾，iterative scan 補足過濾後不足 k 筆的部分；候選池大小隨結果回報 | `db/init/001_schema.sql`、`Data/`；[檢索設計](docs/superpowers/specs/2026-09-22-dimension-scoped-retrieval-design.md) |
 | Python | 分階段、可重跑的資料管線：抓取→清洗→Gemini 結構化→向量化→載入；分層抓取解題材偏斜 | `scripts/`；[語料擴增設計](docs/superpowers/specs/2026-09-22-corpus-expansion-design.md) |
 | Nuxt 3 | 純函式 reducer 消費 SSE；tool call 卡片與儀表板即時變燈；整頁重載恢復 | `src/PromptCopilot.Frontend/`；[前端設計](docs/superpowers/specs/2026-09-24-frontend-sse-design.md) |
-| 安全合規 | 輸入側 denylist + 分類器；輸出側對定稿、討論、追問的文字與選項全檢；資料側 NSFW 過濾。測試用的關閉開關預設不開放（`SAFETY_ALLOW_DISABLE`） | `Safety/`、`Filters/OutputSafetyFilter.cs`、`scripts/pipeline/nsfw_filter.py` |
+| 安全合規 | 輸入側 denylist + 分類器；輸出側對定稿、討論、追問、確認卡的文字與選項全檢；資料側 NSFW 過濾。測試用的關閉開關預設不開放（`SAFETY_ALLOW_DISABLE`） | `Safety/`、`Filters/OutputSafetyFilter.cs`、`scripts/pipeline/nsfw_filter.py` |
 
 ## 一鍵跑起來
 
@@ -95,7 +95,7 @@ docker compose up
 ## 文件
 
 - [主規格](docs/superpowers/specs/2026-09-21-genai-prompt-copilot-design.md)：目標、架構、編排、facet 體系、安全、資料模型、API 協定、測試策略
-- 子專案設計：[語料擴增](docs/superpowers/specs/2026-09-22-corpus-expansion-design.md)、[分維度檢索](docs/superpowers/specs/2026-09-22-dimension-scoped-retrieval-design.md)、[多輪對話](docs/superpowers/specs/2026-09-22-multi-turn-dialogue-design.md)、[批次 SearchPresets](docs/superpowers/specs/2026-09-24-batch-search-presets-design.md)、[前端與 SSE](docs/superpowers/specs/2026-09-24-frontend-sse-design.md)、[收尾與展示](docs/superpowers/specs/2026-09-24-subproject-4-packaging-design.md)、[知識庫開關與檢索細節](docs/superpowers/specs/2026-09-25-retrieval-switch-and-trace-design.md)、[整套組合推薦](docs/superpowers/specs/2026-09-25-set-recommendations-design.md)、[先確認再動手](docs/superpowers/specs/2026-10-05-confirm-before-act-design.md)
+- 子專案設計：[語料擴增](docs/superpowers/specs/2026-09-22-corpus-expansion-design.md)、[分維度檢索](docs/superpowers/specs/2026-09-22-dimension-scoped-retrieval-design.md)、[多輪對話](docs/superpowers/specs/2026-09-22-multi-turn-dialogue-design.md)、[批次 SearchPresets](docs/superpowers/specs/2026-09-24-batch-search-presets-design.md)、[前端與 SSE](docs/superpowers/specs/2026-09-24-frontend-sse-design.md)、[收尾與展示](docs/superpowers/specs/2026-09-24-subproject-4-packaging-design.md)、[知識庫開關與檢索細節](docs/superpowers/specs/2026-09-25-retrieval-switch-and-trace-design.md)、[整套組合推薦](docs/superpowers/specs/2026-09-25-set-recommendations-design.md)、[facet 層級向量](docs/superpowers/specs/2026-09-29-facet-vector-retrieval-design.md)、[推薦組法](docs/superpowers/specs/2026-09-30-recommendation-slate-design.md)、[先確認再動手](docs/superpowers/specs/2026-10-05-confirm-before-act-design.md)
 - [SK 架構說明](docs/SK架構說明.md)：哪些是我們寫的、哪些是 Semantic Kernel 與 Google connector 的，一輪在 SK 裡怎麼跑，connector 的怪癖與補丁
 - [單輪流程說明](docs/單輪流程說明.md)、[eval 案例](docs/eval-cases.md)、[資料來源](docs/資料來源.md)、[初步想法](docs/初步想法.md)
 - [已知問題與待修清單](docs/known-issues.md)
