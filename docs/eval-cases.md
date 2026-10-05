@@ -186,15 +186,23 @@ API 層是用 SSE 直接打分支 `feat/set-recommendations` 的 API（本機 50
 
 | # | 操作 | 預期 | 結果 |
 | :--- | :--- | :--- | :--- |
-| C1 | 送「一位金色短髮的中年女士拿著相機和飲料站在雨夜的霓虹街頭」 | 確認卡複述畫面；按下前儀表板不變；按「對，就這樣」後出追問卡，沒有推薦條 | |
-| C2 | 用選項回答追問 | 先出確認卡（「我會把風格設成…」），按下後才追問或定稿 | |
-| C3 | 定稿後送「讓她拿雨傘」，跑 3 次 | 3 次都是有選項的確認卡；選「換掉飲料，改拿雨傘」後定稿有雨傘與相機、沒有飲料 | |
-| C4 | 定稿後送「鞋子換成靴子」 | 單一提案卡；按下後重新定稿 | |
-| C5 | 確認卡沒按時問「寫實跟動漫差在哪」 | `Discuss` 回答；之後舊確認卡仍可按且有效 | |
-| C6 | 確認卡出現後在輸入框打「好」 | 出新的確認卡，不動手 | |
-| C7 | 動手後看舊確認卡；curl 帶舊輪次送確認 | 舊卡停用；curl 409「只有最新一張確認卡可以按」 | |
-| C8 | 送「直接給我」 | 確認卡列出打算補的內容；按下後定稿 | |
-| C9 | 確認卡沒按時重新整理 | 卡片回來，照樣能按 | |
-| C10 | 從定稿卡採用一套；curl 在追問階段送採用 | 採用直接動手、不出確認卡；curl 409「定稿後才能採用組合」 | |
+| C1 | 送「一位金色短髮的中年女士拿著相機和飲料站在雨夜的霓虹街頭」 | 確認卡複述畫面；按下前儀表板不變；按「對，就這樣」後出追問卡，沒有推薦條 | ✅ `6d704d21…` 第 1 輪確認卡「我理解的畫面是：一位金色短髮的中年女士，手裡拿著相機和飲料，站在下著雨的霓虹街頭。風格、鏡頭、穿著等其他面向還沒指定。」，`choices` 空、一顆「對，就這樣」；輸入框 placeholder 變成「按上面的按鈕套用；在這裡打字會當成修正」。送出前與確認輪後各取一次 `GET /api/sessions/{id}`：`profile` 都是 null、`Collecting`、`facetStates` 相同，儀表板 `data-state` 也相同（題材尚未判定）。按下後泡泡「對，就這樣」，第 2 輪追問卡問風格／鏡頭，`profile=portrait`、已涵蓋 5/31；`[data-card="ask"] [data-section="recommendations"]` 0 個、該輪沒有 `recommendations`；舊卡停用，title「已經有新的進展，這張卡不能再按」；audit 第 2 輪 `confirmed: {turnIndex: 1}` |
+| C2 | 用選項回答追問 | 先出確認卡（「我會把風格設成…」），按下後才追問或定稿 | ⚠️ 流程對，但卡片講的下一步跟實際不同。`6d704d21…` 點兩個選項（「[風格] 寫實攝影風格（霓虹燈光反射、雨滴質感）」「[鏡頭] 半身特寫（…）」）送出 → 第 3 輪確認卡「我會將風格設為寫實攝影風格（帶霓虹燈光反射與雨滴質感），鏡頭設為半身特寫（平視角度）。確認後我們就直接定稿，其餘未指定的面向將保持留白。」，狀態不變；按下後第 4 輪卻是追問卡（場景光源／表情／上半身，追問 2/2）。`31be94cf…` 第 4 輪同樣：卡片說「其他細節如表情、穿著將保持留白」，按下後追問。原因：確認輪的 prompt 只有「追問已用：N」，沒有上限，也沒有動手輪「還有 missing 而且有 `AskUser` 就追問」的規則，模型猜成直接定稿 |
+| C3 | 定稿後送「讓她拿雨傘」，跑 3 次 | 3 次都是有選項的確認卡；選「換掉飲料，改拿雨傘」後定稿有雨傘與相機、沒有飲料 | ✅ 3/3，`flow-propose.md` 沒調。每次開新對話，送「一位女生雙手拿著相機和飲料站在街頭，其他你決定，直接給我」，按確認後定稿（含 `holding camera` 與 `holding drink`／`holding beverage`），再送「讓她拿雨傘」。① `61d2a2e0…`「她雙手已經拿著相機和飲料，如果要拿雨傘會衝突。你希望怎麼調整？」3 顆：「換掉飲料，改拿雨傘」「換掉相機，改拿雨傘」「相機、飲料和雨傘三樣都拿（可能較擁擠）」；② `544c12f2…`「她目前雙手已經拿著相機和飲料，再拿雨傘會拿不下。你想要哪一種？」3 顆：「換掉飲料，改拿雨傘」「換掉相機，改拿雨傘」「三樣都拿（相機、飲料、雨傘）」；③ `483c04b7…`「她原本雙手已經拿著相機和飲料，再拿雨傘會衝突。你希望怎麼調整？」3 顆：「換掉飲料，改拿雨傘（相機保留）」「換掉相機，改拿雨傘（飲料保留）」「三樣都拿（相機、飲料、雨傘）」。三次確認輪後 `facetStates` 與定稿都不變；按第 1 顆後泡泡是選項原文，新定稿有 `holding umbrella`、`holding camera`，沒有 drink／cup／bottle／beverage 類 tag；跟前一張定稿比，三次都只把 `holding drink`（②是 `holding beverage`）換成 `holding umbrella`，其餘 tag 相同。② 第一次跑（`9bbb5888…`）在前置的定稿輪就 `Turn_Failed`（`Timeout`），沒走到雨傘那步，換新對話重跑。②③ 的「三樣都拿」沒註明代價 |
+| C4 | 定稿後送「鞋子換成靴子」 | 單一提案卡；按下後重新定稿 | ✅ `6d704d21…` 第 7 輪「我會將鞋履從原本的留白改為靴子（combat boots），其他內容維持不變。確認後會為您重新定稿！」，一顆「對，就這樣」，`facetStates` 與定稿不變；按下後第 8 輪定稿只多 `combat boots`（`facetTags["clothing.footwear"]="combat boots"`），其餘 tag 相同。正文夾了英文 tag，prompt 要求不寫 |
+| C5 | 確認卡沒按時問「寫實跟動漫差在哪」 | `Discuss` 回答；之後舊確認卡仍可按且有效 | ✅ `31be94cf…` 第 1 輪確認卡「我理解的畫面是：一位銀髮少女坐在窗邊看書。風格、鏡頭、場景等細節還沒指定。」；第 2 輪問「寫實跟動漫差在哪」→ audit `Tool_Invoked` `Discuss`、`MessageOutcome`，回一段寫實／動漫的差別，狀態不變，第 1 輪的卡仍可按。按下後第 3 輪追問（風格／場景／鏡頭），`profile=portrait`，audit `confirmed: {turnIndex: 1}`。`Discuss` 帶了 `facetStates`，profile 還是 null，伺服器記「Profile 為 null，facetStates 忽略」後略過 |
+| C6 | 確認卡出現後在輸入框打「好」 | 出新的確認卡，不動手 | ✅ `31be94cf…` 用選項回答追問 → 第 4 輪確認卡；打「好」→ 第 5 輪 `ConfirmOutcome`「要套用的話請按下面的按鈕。我理解的畫面是：一位銀髮少女坐在溫馨室內陽光灑落的窗邊看書，採用寫實攝影風格與半身特寫（視線齊平）鏡頭。」；`facetStates` 不變、追問仍 1/2；第 4 輪的卡停用，第 5 輪的可按 |
+| C7 | 動手後看舊確認卡；curl 帶舊輪次送確認 | 舊卡停用；curl 409「只有最新一張確認卡可以按」 | ✅ `6d704d21…` 第 4 輪動手後，第 1、3 輪的卡都停用（title「已經有新的進展，這張卡不能再按」）。curl（`--data-binary @file`）：定稿後沒有待確認時送 `{"confirm":{"turnIndex":7,"choice":null}}` → 409「沒有待確認的內容」；再送一句「背景改成白天的公園」得到第 10 輪確認卡後，重送同一個 body → 409「只有最新一張確認卡可以按」。瀏覽器腳本在第 7 輪的卡待按時送 `turnIndex: 1`，同樣 409 |
+| C8 | 送「直接給我」 | 確認卡列出打算補的內容；按下後定稿 | ✅ `31be94cf…` 第 6 輪追問（表情／臉部／上半身，2/2）後送「直接給我」→ 第 7 輪「我會幫您補上溫柔微笑的表情與寬鬆針織毛衣的穿著，並直接將畫面定稿輸出提示詞。」，狀態不變；按下後第 8 輪定稿含 `gentle smile`、`oversized knit sweater`。`6d704d21…` 第 5 輪「其他你決定，直接給我」也一樣：卡片列「霓虹燈光、微笑表情與時尚風衣外套」，定稿含 `neon lights`、`smiling`、`stylish trench coat`。卡片沒列具體內容時，定稿可能沒補（見下方補充觀察） |
+| C9 | 確認卡沒按時重新整理 | 卡片回來，照樣能按 | ✅ `31be94cf…` 第 5 輪的卡待按時重新整理：session id 相同，3 張確認卡都回來，只有最後一張可按（可按的按鈕 1 顆），placeholder 仍是「按上面的按鈕套用…」；按下後第 6 輪追問，audit `confirmed: {turnIndex: 5}` |
+| C10 | 從定稿卡採用一套；curl 在追問階段送採用 | 採用直接動手、不出確認卡；curl 409「定稿後才能採用組合」 | ✅ `6d704d21…` 第 8 輪定稿卡的人物穿著列採用 #41743「賽博龐克霓虹勁裝」（全部照它的）→ 第 9 輪直接 `FinalizedOutcome`，中間沒有確認卡（確認卡總數仍是 4），泡泡是伺服器整句「採用〈賽博龐克霓虹勁裝〉（知識庫 #41743）：…」，audit `adoption.filled=["clothing.head","clothing.lower"]`、`replaced=["clothing.upper","clothing.footwear"]`。追問階段送 `{"adopt":{"presetId":41593,…}}`：`6d704d21…` 第 2 輪後（`Collecting`、追問 1/2）與 curl 開的 `1635a8ef…` 第 2 輪追問後都回 409「定稿後才能採用組合」；同一個對話 `confirm`＋`adopt` 一起送 → 400「confirm 與 adopt 不能同時送」 |
 
-耗時（從 `docker compose logs api` 的 `Turn …` 摘要行算中位數）：確認輪 ＿ ms、動手輪 ＿ ms。
+耗時（從 `docker compose logs api` 的 `Turn …` 摘要行算中位數）：確認輪 4,177 ms（`ConfirmOutcome` 17＋`MessageOutcome` 1，n=18，3,115–6,645）、動手輪 6,977 ms（`AskOutcome` 5＋`FinalizedOutcome` 11，n=16，4,164–11,594；含 1 輪採用 11,594）。不含唯一一輪 `Turn_Failed`（`Timeout`，120,013 ms）。
+
+2026-10-05 的驗收：分支 `feat/confirm-before-act` `8ce9de4`。先跑全套測試：.NET 473 過、18 略過（integration）、0 失敗；前端 Vitest 110 過、`vue-tsc --noEmit` 0 錯（本機 `npm run build` 被 Windows 應用程式控制擋下，前端實際建置用的是 Docker）；`scripts` ruff 全過、pytest 280 過。接著 `docker compose up -d --build api frontend`，兩個 image 都建成功，`/health` 200。session：C1、C2、C4、C7、C10 `6d704d21e4594d2bad168517d92a7c7d`；C5、C6、C8、C9 `31be94cf7a704ead867e64ed205bd56e`；C3 見該列；C7、C10 的 curl 另用 `1635a8ef8bbd4fbe9e904409d30a52c2`。整段只有 `9bbb5888…` 第 2 輪 `Protocol_Violation`（attempt 1）後 `Turn_Failed`，沒有被攔。
+
+補充觀察：
+
+- **確認卡講的下一步跟動手輪對不上**（C2）。卡片說「直接定稿，其餘留白」，動手輪照 `flow-act.md` 第 1、2 條，還有 missing 而且有 `AskUser` 就追問，兩次都這樣。要對上，確認輪得知道追問上限與這條規則（例如 Session 事實加上追問上限，`flow-propose.md` 第 2 條「回答追問」寫明判斷方式），這次沒改。
+- **「直接給我」的卡片沒列具體內容時，定稿可能幾乎沒補。** C3 的前置用「其他你決定，直接給我」，三張卡片都沒照 `flow-propose.md` 第 2 條列出具體內容（「由我幫你隨機補齊」「由我為您決定合適的風格、鏡頭…」「補齊風格、場景光源、鏡頭與穿著等細節」）。其中兩次動手輪定稿只有 `1girl, street, holding camera, holding drink` 這種程度（audit `tagOrigins.llm` 0 與 1），風格、鏡頭、穿著都沒補；另一次補了 21 個 llm tag。C8 與 `6d704d21…` 第 5 輪卡片有列具體內容，定稿就照著補。可能的原因是動手輪的「不要加入確認以外的改動」壓過了「你決定」，沒有實驗確認。
+- **一輪動手輪逾時。** `9bbb5888…` 第 2 輪（「其他你決定，直接給我」按下後）：`SetProfile`、`SetFacetStates`、`SearchPresets` 之後 13 秒出現 `Protocol_Violation` attempt 1，之後 120 秒內共呼叫 Gemini 47 次，工具呼叫仍只有 3 次，最後 `Turn_Failed`（`Timeout`，`upstream.calls=47`）。log 看不出這 44 次呼叫回了什麼。同一句在其他三個對話都正常。回滾正確：事後 `GET` 是第 1 輪、profile null；用 curl 對同一個 session 再送 `{"confirm":{"turnIndex":1,"choice":null}}`，待確認還在，這次定稿成功（同樣沒補：`1girl, standing, city street, holding camera, holding drink`）。
