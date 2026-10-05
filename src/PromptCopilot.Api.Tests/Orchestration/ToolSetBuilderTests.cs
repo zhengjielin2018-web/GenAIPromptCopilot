@@ -1,15 +1,19 @@
 using PromptCopilot.Api.Configuration;
 using PromptCopilot.Api.Orchestration;
 using PromptCopilot.Api.Sessions;
+using PromptCopilot.Api.Tests.Configuration;
 
 namespace PromptCopilot.Api.Tests.Orchestration;
 
 public class ToolSetBuilderTests
 {
     private static readonly OrchestratorOptions O = new() { MaxAskCount = 2, MaxDiscussStreak = 8 };
-    private static Session S(int asks = 0, int streak = 0, bool finalized = false)
+    private static readonly FacetCatalog Catalog = FacetCatalogTests.Real();
+    /// <summary>預設已判定題材（第一輪動手輪之後的樣子）；profile: null 是使用者第一句話的那一輪。</summary>
+    private static Session S(int asks = 0, int streak = 0, bool finalized = false, string? profile = "portrait", bool retrieval = true)
     {
-        var s = new Session("s");
+        var s = new Session("s", retrievalEnabled: retrieval);
+        if (profile is not null) s.ApplyProfile(profile, Catalog);
         for (var i = 0; i < asks; i++) s.RecordAsk();
         for (var i = 0; i < streak; i++) s.RecordDiscuss();
         if (finalized) s.RecordFinalize(new FinalPrompt("p", "n", "t", "i"));
@@ -75,6 +79,16 @@ public class ToolSetBuilderTests
         Assert.Contains(ToolNames.Discuss, Propose(s));
     }
 
+    /// <summary>第一句話那一輪還沒有題材：兩個檢索工具一定回「請先呼叫 SetProfile」，而 SetProfile 要到動手輪才有。
+    /// 不給，模型就不會照錯誤去叫這一輪沒有的工具（known-issues #13 的觸發條件）。動手輪不受影響：SetProfile 就在同一輪。</summary>
+    [Fact]
+    public void Propose_turn_without_a_profile_has_no_search_tools()
+    {
+        Assert.Equal(new HashSet<string> { ToolNames.Confirm, ToolNames.Discuss }, Propose(S(profile: null)));
+        Assert.Equal(new HashSet<string> { ToolNames.Confirm }, Propose(S(profile: null), auto: true));
+        Assert.True(ToolNames.Always.IsSubsetOf(Act(S(profile: null))));
+    }
+
     /// <summary>「隨便」的確認輪連 Discuss 都沒有：只能確認要補什麼（設計 §6.3）。</summary>
     [Fact]
     public void Auto_complete_propose_turn_leaves_only_confirm_and_search() =>
@@ -98,7 +112,7 @@ public class ToolSetBuilderTests
         foreach (var kind in new[] { TurnKind.Propose, TurnKind.Act })
         {
             var on = ToolSetBuilder.Build(S(), kind, false, O);
-            var off = ToolSetBuilder.Build(new Session("s", retrievalEnabled: false), kind, false, O);
+            var off = ToolSetBuilder.Build(S(retrieval: false), kind, false, O);
             Assert.Equal(on.Except(new[] { ToolNames.SearchPresets, ToolNames.SearchSimilarPrompts }).ToHashSet(), off);
         }
         Assert.True(ToolNames.Always.IsSubsetOf(Act(S())));   // Always 本身不動

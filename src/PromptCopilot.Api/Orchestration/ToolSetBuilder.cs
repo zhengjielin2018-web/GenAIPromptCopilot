@@ -18,7 +18,7 @@ public static class ToolNames
     /// <summary>動手輪一定有的：會改畫面的工具與檢索（先確認再動手設計 §3.1）。</summary>
     public static readonly IReadOnlySet<string> Always = new HashSet<string>
         { SearchSimilarPrompts, SearchPresets, SetProfile, SetFacetStates, FinalizePrompt };
-    /// <summary>確認輪一定有的：只能確認與檢索，沒有任何會改畫面的工具。</summary>
+    /// <summary>確認輪一定有的：只能確認與檢索，沒有任何會改畫面的工具。還沒題材時連檢索都拿掉（見 <see cref="ToolSetBuilder.Build"/>）。</summary>
     public static readonly IReadOnlySet<string> ProposeAlways = new HashSet<string>
         { SearchSimilarPrompts, SearchPresets, Confirm };
     public static readonly IReadOnlySet<string> Terminal = new HashSet<string>
@@ -35,9 +35,11 @@ public static class ToolSetBuilder
     public static IReadOnlySet<string> Build(Session s, TurnKind kind, bool wantsAutoComplete, OrchestratorOptions o)
     {
         var tools = new HashSet<string>(kind == TurnKind.Act ? ToolNames.Always : ToolNames.ProposeAlways);
-        if (!s.RetrievalEnabled)
+        // 對照組：模型拿不到檢索工具，就不會「自稱」借用。Always／ProposeAlways 是一般情況的宣告，這裡減，不改它。
+        // 還沒題材的確認輪（使用者第一句話）也減：兩個檢索工具一定回「請先呼叫 SetProfile」，SetProfile 卻要到動手輪才有，
+        // 模型照錯誤去叫這一輪沒有的工具，就是 known-issues #13 的觸發條件。
+        if (!s.RetrievalEnabled || (kind == TurnKind.Propose && s.Profile is null))
         {
-            // 對照組：模型拿不到檢索工具，就不會「自稱」借用。Always／ProposeAlways 是一般情況的宣告，這裡減，不改它。
             tools.Remove(ToolNames.SearchPresets);
             tools.Remove(ToolNames.SearchSimilarPrompts);
         }
