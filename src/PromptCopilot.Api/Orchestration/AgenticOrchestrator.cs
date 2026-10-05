@@ -357,6 +357,7 @@ public sealed class AgenticOrchestrator(
         MessageOutcome m => new FinalEvent("message", Message: m.Message, Options: m.Options),
         FinalizedOutcome f => new FinalEvent("finalized", Positive: f.Final.Positive, Negative: f.Final.Negative, Tips: f.Final.Tips, IntentSummary: f.Final.IntentSummary,
             PositiveSources: f.Final.PositiveSources ?? Array.Empty<TagSource>(), NegativeSources: f.Final.NegativeSources ?? Array.Empty<TagSource>()),
+        ConfirmOutcome c => new FinalEvent("confirm", Message: c.Message, Choices: c.Choices),
         SaveConsentOutcome => new FinalEvent("save_consent_requested"),
         _ => throw new InvalidOperationException($"無法轉成 final 事件：{o.GetType().Name}"),
     };

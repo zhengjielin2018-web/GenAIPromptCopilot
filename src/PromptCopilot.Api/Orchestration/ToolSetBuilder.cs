@@ -13,11 +13,16 @@ public static class ToolNames
     public const string Discuss = "Discuss";
     public const string FinalizePrompt = "FinalizePrompt";
     public const string RequestSaveConsent = "RequestSaveConsent";
+    public const string Confirm = "Confirm";
 
+    /// <summary>動手輪一定有的：會改畫面的工具與檢索（先確認再動手設計 §3.1）。</summary>
     public static readonly IReadOnlySet<string> Always = new HashSet<string>
         { SearchSimilarPrompts, SearchPresets, SetProfile, SetFacetStates, FinalizePrompt };
+    /// <summary>確認輪一定有的：只能確認與檢索，沒有任何會改畫面的工具。</summary>
+    public static readonly IReadOnlySet<string> ProposeAlways = new HashSet<string>
+        { SearchSimilarPrompts, SearchPresets, Confirm };
     public static readonly IReadOnlySet<string> Terminal = new HashSet<string>
-        { AskUser, Discuss, FinalizePrompt, RequestSaveConsent };
+        { AskUser, Discuss, FinalizePrompt, RequestSaveConsent, Confirm };
 }
 
 /// <summary>主規格 §4.3 + 多輪 §3.3。LLM 不需要「遵守」規則：違規的選項根本不在清單裡。</summary>

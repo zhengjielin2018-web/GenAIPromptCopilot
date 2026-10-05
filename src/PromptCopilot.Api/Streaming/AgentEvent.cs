@@ -18,12 +18,14 @@ public sealed record PresetRef(long Id, string Title, string? ImageUrl, string? 
 public sealed record ToolResultEvent(string CallId, string Name, string Summary, IReadOnlyList<PresetRef>? Presets, object? Detail = null) : AgentEvent("tool_result");
 /// <summary>FacetTags（2026-09-25）：模型給 covered facet 的英文 tag，儀表板 chip 的 title 顯示。</summary>
 public sealed record DimensionsEvent(string? Profile, IReadOnlyDictionary<string, string> FacetStates, IReadOnlyDictionary<string, string>? FacetTags = null) : AgentEvent("dimensions");
+/// <summary>Choices（2026-10-05）：確認卡的解讀，沒有歧義時是空陣列。</summary>
 public sealed record FinalEvent(
     string Kind,
     string? Preamble = null, IReadOnlyList<AskItem>? Asks = null,
     string? Message = null, IReadOnlyList<OptionItem>? Options = null,
     string? Positive = null, string? Negative = null, string? Tips = null,
     string? IntentSummary = null,
-    IReadOnlyList<TagSource>? PositiveSources = null, IReadOnlyList<TagSource>? NegativeSources = null) : AgentEvent("final");
+    IReadOnlyList<TagSource>? PositiveSources = null, IReadOnlyList<TagSource>? NegativeSources = null,
+    IReadOnlyList<string>? Choices = null) : AgentEvent("final");
 public sealed record BlockedEvent(string Reason, string Message) : AgentEvent("blocked");
 public sealed record ErrorEvent(string Code, string Message) : AgentEvent("error");
