@@ -1,6 +1,6 @@
 # PromptCopilot.Frontend
 
-Nuxt 3 SPA（`ssr: false`）。對話流、六維度儀表板、preset 抽屜。
+Nuxt 3 SPA（`ssr: false`）。對話流（確認卡、追問卡、定稿卡）、六維度儀表板、preset 抽屜。
 
 ## 跑起來
 
@@ -13,9 +13,12 @@ devProxy 不會緩衝 SSE：2026-09-24 實測，一輪的事件在 12 秒內逐�
 
 ## 測試
 
-    npm test             # vitest：lib/ 底下的純函式（SSE 解析、reducer、persist、composer、dashboard、options、prefs、trace、adopt、safety、copy）
+    npm test             # vitest：lib/ 底下的純函式（SSE 解析、reducer、persist、composer、dashboard、options、prefs、trace、adopt、safety、copy、confirm）
+    npx vue-tsc --noEmit # 型別檢查（含 components/）
 
 `lib/` 不依賴 Nuxt，測試在 node 環境跑，不需要瀏覽器或 API。
+
+本機 `npm run build` 若被 Windows 應用程式控制擋下（`oxc-transform` 的原生模組載入失敗），跟程式無關：型別用上面的 `vue-tsc` 檢查，完整建置交給 `docker compose up -d --build frontend` 或 CI。
 
 ## 容器
 
@@ -24,11 +27,11 @@ devProxy 不會緩衝 SSE：2026-09-24 實測，一輪的事件在 12 秒內逐�
 ## 結構
 
 - `types/api.ts`：後端 DTO 與 SSE 事件型別，唯一定義處
-- `lib/`：純函式（reducer、SSE 解析、persist、composer、dashboard、copy、options、prefs、trace、adopt、safety）
+- `lib/`：純函式（reducer、SSE 解析、persist、composer、dashboard、copy、options、prefs、trace、adopt、safety、confirm）。`confirm.ts` 從對話流推算哪張確認卡還能按：往回找，先碰到確認卡就是它，先碰到追問卡或定稿卡代表已經動過手
 - `composables/useApi.ts`：HTTP 呼叫
 - `stores/session.ts`：唯一的 Pinia store
 - `components/`：畫面元件
 
 頂列的三個開關：「使用知識庫」（下一段新對話生效，存 localStorage）、「顯示檢索細節」（即時，存 localStorage）、「程式端審查」（後端 `GET /api/config/safety` 回 `canDisable: true` 才出現，不保存，重新整理回到開著）。
 
-設計：`docs/superpowers/specs/2026-09-24-frontend-sse-design.md`；開關與檢索細節見 `2026-09-25-retrieval-switch-and-trace-design.md`，參考組合與採用見 `2026-09-25-set-recommendations-design.md`。
+設計：`docs/superpowers/specs/2026-09-24-frontend-sse-design.md`；開關與檢索細節見 `2026-09-25-retrieval-switch-and-trace-design.md`，參考組合與採用見 `2026-09-25-set-recommendations-design.md`（2026-10-05 起只在定稿卡）與 `2026-09-30-recommendation-slate-design.md`，確認卡見 `2026-10-05-confirm-before-act-design.md`。

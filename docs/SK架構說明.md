@@ -1,6 +1,6 @@
 # Semantic Kernel 架構說明：我們的程式怎麼接上 SK 與 Gemini
 
-日期：2026-09-29
+日期：2026-09-29（2026-10-05 更新：先確認再動手的兩種輪、未宣告工具名的行為）
 對象：看得懂 C#、但沒用過 Semantic Kernel（SK）的人。讀完應該知道：哪些程式是我們寫的、哪些是框架的；一輪對話在 SK 裡怎麼跑；升級 SK 或 connector 時要檢查什麼。
 設計理由與取捨不在這裡重講，見[主規格 §4](superpowers/specs/2026-09-21-genai-prompt-copilot-design.md#4-核心編排全-agentic)。
 
@@ -68,7 +68,12 @@ SK 的設計是「核心只定義通用格式，每家模型各有一個 connect
 
 **我們刻意沒用的 SK 功能：** 串流（`GetStreamingChatMessageContentsAsync`，`ResilientChatCompletion` 直接丟 `NotSupportedException`，因為終止型工具的參數要一次到位）；SK 的 embedding 抽象；SK 的 prompt template（system prompt 由 [`SystemPromptBuilder`](../src/PromptCopilot.Api/Orchestration/SystemPromptBuilder.cs) 自己組）；Agent Framework。
 
-**「工具清單」怎麼控制：** 模型能看到的工具由 [`ToolSetBuilder.Build`](../src/PromptCopilot.Api/Orchestration/ToolSetBuilder.cs) 依 session 狀態決定（追問額度用完就沒有 `AskUser`、知識庫關掉就沒有檢索工具⋯⋯），`AgentKernelFactory.AddFiltered` 只把清單內的函式註冊進 kernel。不該用的工具根本不在模型眼前，不靠 prompt 叫它不要用。
+**「工具清單」怎麼控制：** 模型能看到的工具由 [`ToolSetBuilder.Build`](../src/PromptCopilot.Api/Orchestration/ToolSetBuilder.cs) 依這一輪的種類與 session 狀態決定，`AgentKernelFactory.AddFiltered` 只把清單內的函式註冊進 kernel。不該用的工具根本不在模型眼前，不靠 prompt 叫它不要用。
+
+- **輪的種類（2026-10-05）：**使用者打字是確認輪，只有 `Confirm`、`Discuss`、檢索，沒有任何會改畫面的工具。按下確認卡或採用是動手輪，才有 `SetProfile`、`SetFacetStates`、`AskUser`、`FinalizePrompt`，沒有 `Confirm` 與 `Discuss`。見[先確認再動手設計](superpowers/specs/2026-10-05-confirm-before-act-design.md) §3.1。
+- **session 狀態：**追問額度用完就沒有 `AskUser`、知識庫關掉就沒有檢索工具⋯⋯
+
+kernel 宣告給 Gemini 的工具名是 `<Plugin>_<Function>`（`Dialog_Confirm`、`Session_SetProfile`），不是 `[KernelFunction]` 上的短名。
 
 ---
 
@@ -85,8 +90,8 @@ sequenceDiagram
     participant K as Kernel（filters + plugins）
 
     E->>O: RunTurnAsync（SSE 串流）
-    O->>O: 快照 session、SafetyGuard 輸入檢查
-    O->>O: ToolSetBuilder → 建 Kernel、組 system prompt、加 user 訊息
+    O->>O: 判定輪的種類、快照 session、SafetyGuard 輸入檢查（按確認的動手輪略過）
+    O->>O: ToolSetBuilder → 建 Kernel、組 system prompt（流程段依輪的種類）、加 user 訊息
     O->>R: GetChatMessageContentsAsync(history, Auto, kernel)
     R->>C: 同一呼叫（失敗時依種類重試）
     loop auto-invoke：模型要工具就執行、回填、再問
@@ -100,14 +105,14 @@ sequenceDiagram
     Note over K: 終止型工具成功 → TerminalToolFilter 設 Terminate，迴圈停
     C-->>O: 回來
     O->>O: 沒有終止型工具？拿掉這次的純文字、帶一則暫時提示再呼叫一次（Protocol_Violation）
-    O->>O: 標 tag 來源、推薦、HistoryTrimmer 壓縮與截斷、寫 audit
+    O->>O: 標 tag 來源、推薦（只在定稿）、HistoryTrimmer 壓縮與截斷、寫 audit
     O-->>E: final／blocked／error 事件
 ```
 
 幾個要點：
 
 - **一次 `GetChatMessageContentsAsync` 裡面可能有好幾趟 HTTP 往返。** auto-invoke 迴圈在 connector 內部跑：模型要求呼叫工具 → connector 回呼 kernel 執行 → 結果加進 `ChatHistory` → 再送一次請求，直到模型回純文字或 filter 叫停。所以 [`ResilientChatCompletion`](../src/PromptCopilot.Api/Llm/ResilientChatCompletion.cs) 的重試是「續跑」：已完成的工具呼叫都還在 history 裡，重試會接著跑。
-- **filter 的順序就是加進 kernel 的順序**，先加的在最外層：`AuditFilter`（記每一次工具呼叫）→ `ToolBudgetFilter`（每輪工具呼叫上限，用完就強制定稿）→ `OutputSafetyFilter`（會把文字送到使用者眼前的工具先過審查）→ `TerminalToolFilter`（終止型工具成功後設 `context.Terminate = true`，讓迴圈停下）。
+- **filter 的順序就是加進 kernel 的順序**，先加的在最外層：`AuditFilter`（記每一次工具呼叫）→ `ToolBudgetFilter`（每輪工具呼叫上限，用完就強制收尾：動手輪強制定稿、確認輪強制確認）→ `OutputSafetyFilter`（會把文字送到使用者眼前的工具先過審查）→ `TerminalToolFilter`（終止型工具成功後設 `context.Terminate = true`，讓迴圈停下）。
 - **一輪就是一個交易。** plugin 直接改 `Session`（facet 狀態、ledger），任何一步失敗，orchestrator 用開頭的快照 `session.Restore(snapshot)` 整輪回滾。
 - **plugin 怎麼拿到這一輪的狀態：** 每輪建 kernel 時把 [`TurnContext`](../src/PromptCopilot.Api/Orchestration/TurnContext.cs) 放進 `kernel.Data`，plugin 建構時也直接拿到它；filter 透過 `context.Kernel.Turn()` 取用。SSE 事件也是 plugin 透過 `TurnContext` 裡的 channel writer 即時推出去的。
 - **輸入與輸出分類器也走同一個 `IChatCompletionService`**，只是不帶 kernel，所以它們的呼叫一樣會經過重試與 HTTP handlers，也算進每輪 log 的 `gemini=` 次數。
@@ -148,7 +153,9 @@ new GoogleAIGeminiChatCompletionService(model, apiKey, GoogleAIVersion.V1_Beta, 
 | 工具結果放在 `GeminiChatMessageContent.CalledToolResults`，`Items` 只有一個空的 `TextContent`；放通用的 `FunctionResultContent` 會丟 `NotSupportedException` | — | `HistoryTrimmer.CompressTurn` 對 Gemini 訊息整則重建（known-issues #8） | `HistoryTrimmerGeminiTests` 釘住這個形狀 | connector 改用通用的 `FunctionResultContent` |
 | 多個工具結果的 `GeminiChatMessageContent` 建構子是 internal | Gemini 要求一則回應裡的 `functionResponse` 數與呼叫數一致，不能拆開 | `HistoryTrimmer` 用反射呼叫；找不到就不壓縮，不會失敗 | `HistoryTrimmerGeminiTests` 的平行呼叫案例 | 建構子公開，或上一條解決 |
 | 模型發出的工具呼叫送回時讀 `ToolCalls`，改 `FunctionCallContent.Arguments` 沒有作用 | — | 尚未處理：`AskUser`／`Discuss` 選項的 tag 剝除在 Gemini 上沒生效（known-issues #11） | — | — |
-| `ChatHistory` 裡**任何位置**的 system 訊息都被併進 `systemInstruction.parts`，不留在 `contents`；只要還在 history，之後每一輪都會送 | — | orchestrator 的暫時提示（純文字補救、強制定稿）由 `CallWithReminderAsync` 帶，呼叫完就從 history 拿掉同一則。不改成 user 訊息：`HistoryTrimmer.Truncate` 以 user 訊息數輪次（known-issues #3） | `AgenticOrchestratorGeminiTests` 釘住這個形狀 | 不是補丁、不用拿掉；connector 改成保留 system 的位置時，重看補救與強制定稿 |
+| `ChatHistory` 裡**任何位置**的 system 訊息都被併進 `systemInstruction.parts`，不留在 `contents`；只要還在 history，之後每一輪都會送 | — | orchestrator 的暫時提示（純文字補救、強制收尾）由 `CallWithReminderAsync` 帶，呼叫完就從 history 拿掉同一則。不改成 user 訊息：`HistoryTrimmer.Truncate` 以 user 訊息數輪次（known-issues #3） | `AgenticOrchestratorGeminiTests` 釘住這個形狀 | 不是補丁、不用拿掉；connector 改成保留 system 的位置時，重看補救與強制收尾 |
+
+**SK 核心的一條行為（不是 connector 的怪癖，2026-10-05 驗收查到，known-issues #13）：**模型呼叫一個 kernel 沒宣告的工具名時（例如寫裸名 `Confirm`，宣告的是 `Dialog_Confirm`），SK 不會丟例外，而是回給模型一句「Function call request for a function that wasn't defined」，再繼續 auto-invoke 迴圈。這條路徑**不經過任何 `IAutoFunctionInvocationFilter`**，所以 `ToolBudgetFilter` 數不到、`TerminalToolFilter` 停不下來，模型重送同一個呼叫就會一路跑到單輪逾時。目前的緩解是讓模型看到完整名稱：`flow-propose.md`／`flow-act.md` 寫明完整名稱，純文字補救與強制收尾的提示也從該輪 kernel 組出 `<Plugin>_<Function>`。`system.md` 的 `{{TOOLS}}` 仍是短名。程式端防護（在 HTTP 層把唯一對得上的裸名改寫成全名，或限制每輪 Gemini 呼叫數）是後續待辦。
 
 另外三條屬於 Gemini 本身的行為，connector 換版也不會變：
 
@@ -172,4 +179,5 @@ new GoogleAIGeminiChatCompletionService(model, apiKey, GoogleAIVersion.V1_Beta, 
 
 - [主規格](superpowers/specs/2026-09-21-genai-prompt-copilot-design.md)：§4.2 Plugins 與 Tools、§4.3 工具清單組裝、§4.5 Filters、§4.6 失敗模式與重試、§4.7 Chat history 修剪、§4.8 Provider 與 connector 選擇
 - [多輪對話設計](superpowers/specs/2026-09-22-multi-turn-dialogue-design.md)：一輪即交易、auto-invoke 迴圈的邊角
-- [已知問題](known-issues.md)：#3、#4、#7、#8、#11 與 connector 相關
+- [先確認再動手設計](superpowers/specs/2026-10-05-confirm-before-act-design.md)：確認輪與動手輪、待確認進快照、動手輪不跑輸入分類器
+- [已知問題](known-issues.md)：#3、#4、#7、#8、#11 與 connector 相關；#13 是 SK 未定義函式路徑繞過 filter

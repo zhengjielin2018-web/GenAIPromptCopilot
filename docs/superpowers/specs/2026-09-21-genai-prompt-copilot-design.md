@@ -1,14 +1,14 @@
 # GenAI Prompt Copilot — 設計規格
 
 日期：2026-09-21
-狀態：已定案。子專案 1（資料地基）已實作並通過 §14 驗收（2026-09-22）；子專案 2（SK Agent 核心）已實作，以 `manual-tests/chat.py` 手動跑完對話迴圈（2026-09-24），降級檢查點結論見 §4.10；子專案 3（Nuxt 3 前端 + SSE）已實作並通過 §14 驗收（2026-09-24，瀏覽器，結果見 `docs/eval-cases.md`）；子專案 4（收尾與展示）打包驗收通過（2026-09-24：fresh clone 一鍵啟動、種子自 Release 匯入、CI 四個 job 綠，結果見 `docs/eval-cases.md`），瀏覽器展示驗收（P3）與截圖（P7）原本等 `docs/known-issues.md` 第 1、2 項，兩項已修正（2026-09-24），尚未補跑；設計見 [2026-09-24-subproject-4-packaging-design.md](2026-09-24-subproject-4-packaging-design.md)
+狀態：已定案。子專案 1（資料地基）已實作並通過 §14 驗收（2026-09-22）；子專案 2（SK Agent 核心）已實作，以 `manual-tests/chat.py` 手動跑完對話迴圈（2026-09-24），降級檢查點結論見 §4.10；子專案 3（Nuxt 3 前端 + SSE）已實作並通過 §14 驗收（2026-09-24，瀏覽器，結果見 `docs/eval-cases.md`）；子專案 4（收尾與展示）打包驗收通過（2026-09-24：fresh clone 一鍵啟動、種子自 Release 匯入、CI 四個 job 綠，結果見 `docs/eval-cases.md`），瀏覽器展示驗收（P3）與截圖（P7）原本等 `docs/known-issues.md` 第 1、2 項，兩項已修正（2026-09-24），尚未補跑；設計見 [2026-09-24-subproject-4-packaging-design.md](2026-09-24-subproject-4-packaging-design.md)。2026-10-05「先確認再動手」（會改畫面的要求先出確認卡、使用者按下才動手；推薦只在定稿卡）已實作並通過瀏覽器驗收，設計見 [2026-10-05-confirm-before-act-design.md](2026-10-05-confirm-before-act-design.md)，本文件各節已改成現況
 前身文件：[docs/初步想法.md](../../初步想法.md)（本文件取代其中的架構與流程章節；技術棧與階段藍圖以本文件為準）
 
 ---
 
 ## 1. 目標與定位
 
-一個協助使用者精煉 AI 生圖提示詞的多輪對話助理。使用者用繁體中文描述需求，系統以六維度 facet 體系分析資訊充足度、主動追問缺失細節、從知識庫推薦可用片段，最後產出 SD/SDXL tag 風格的英文正／負向提示詞，並在使用者同意後沉澱為全域共享知識。
+一個協助使用者精煉 AI 生圖提示詞的多輪對話助理。使用者用繁體中文描述需求，系統以六維度 facet 體系分析資訊充足度、每個會改動畫面的要求先跟使用者確認理解（使用者按下確認才動手）、主動追問缺失細節、從知識庫推薦可用片段，最後產出 SD/SDXL tag 風格的英文正／負向提示詞，並在使用者同意後沉澱為全域共享知識。
 
 **專案目的：求職作品集。** 設計取捨一律以「每項技術都有可展示的實證」與「有一個能跑給人看的 demo」優先，功能深度其次。
 
@@ -56,7 +56,7 @@
 │  preset 抽屜  │                        │        │                            │
 └──────────────┘                        │        ▼                            │
                                         │  AgenticOrchestrator                │
-                                        │   ├ 工具清單組裝（依 session 狀態）  │
+                                        │   ├ 工具清單組裝（依輪的種類與狀態） │
                                         │   ├ SK Kernel + FunctionChoice.Auto │
                                         │   │   Plugins: Knowledge/Dialog/    │
                                         │   │            Session              │
@@ -92,6 +92,8 @@ LLM：**`gemini-3.5-flash-lite`**（子專案 1 執行時實測定案。注意�
 
 流程決策（追問或定稿）交給 LLM 透過 Function Calling 自主決定。**但所有硬性限制由程式碼保證，不靠 prompt 約束**——做法是把「追問」與「定稿」都做成 tool，並依 session 狀態動態決定哪些 tool 存在。LLM 不需要「遵守」規則，因為違規的選項根本不在它的工具清單裡。
 
+「先確認再動手」（2026-10-05）也是用這個原則做的：使用者打字的那一輪（確認輪）沒有任何會改畫面的工具，模型只能用 `Confirm` 講它的理解或打算；使用者按下確認卡的按鈕之後，下一輪（動手輪）才拿得到改狀態的工具（§4.3）。
+
 ### 4.2 Plugins 與 Tools
 
 | Plugin.Function | 參數 | 性質 |
@@ -99,16 +101,18 @@ LLM：**`gemini-3.5-flash-lite`**（子專案 1 執行時實測定案。注意�
 | `KnowledgePlugin.SearchSimilarPrompts` | `intent: string, topK: int = 3` | 可重複；RAG 1，查 `shared_prompt_histories`，以 session profile 過濾 |
 | `KnowledgePlugin.SearchPresets` | `queries: {dimension?, facetId?, query, tags?}[]`（≤ 24；`tags` 只用於 facet 項目，2026-09-29） | RAG 2，**分維度檢索** `prompt_knowledge_presets`：一次呼叫帶本輪所有要查的項目，每項一個 facet 或一個維度的專屬語句，同維度可重複（對比方向），見 §9 |
 | `SessionPlugin.SetProfile` | `profile: portrait \| landscape \| object \| vehicle` | 可重複；設定題材 profile，重置 facet 狀態 |
-| `SessionPlugin.SetFacetStates` | `updates: FacetStateEntry[]` | 可重複；第一輪先標使用者已描述的 facet 為 covered，再檢索；也用於 `waived` 與委託 note；covered 的 facet 附 `tags`（英文，2026-09-25，整套組合推薦的錨） |
+| `SessionPlugin.SetFacetStates` | `updates: FacetStateEntry[]` | 可重複；只在動手輪；第一次動手輪先標使用者已描述的 facet 為 covered，再檢索；也用於 `waived` 與委託 note；covered 的 facet 附 `tags`（英文，2026-09-25，整套組合推薦的錨） |
 | `DialogPlugin.AskUser` | `preamble: string, asks: { dimension, question, missingFacetIds, options }[], facetStates: FacetStateEntry[]` | **終止型**；`asks` 1–3 則，每則 `options` 2–4 個 |
-| `DialogPlugin.Discuss` | `message: string, facetStates: FacetStateEntry[], options: { label, tags, presetId? }[]? = null` | **終止型**；`options` 0–4 個參考方向，不帶 `missingFacetIds` |
-| `DialogPlugin.FinalizePrompt` | `positivePrompt: string, negativePrompt: string, tips: string, intentSummary: string, facetStates: FacetStateEntry[]` | **終止型**；`AskUser` 還在清單上而仍有缺時擋回（定稿閘門，§4.6） |
-| `DialogPlugin.RequestSaveConsent` | 無 | **終止型**；不碰 DB，只觸發前端確認卡片 |
+| `DialogPlugin.Discuss` | `message: string, facetStates: FacetStateEntry[], options: { label, tags, presetId? }[]? = null` | **終止型**；只在確認輪；`options` 0–4 個參考方向，不帶 `missingFacetIds`；不能改任何 facet（§4.5） |
+| `DialogPlugin.FinalizePrompt` | `positivePrompt: string, negativePrompt: string, tips: string, intentSummary: string, facetStates: FacetStateEntry[]` | **終止型**；只在動手輪；`AskUser` 還在清單上而仍有缺時擋回（定稿閘門，§4.6） |
+| `DialogPlugin.RequestSaveConsent` | 無 | **終止型**；只在確認輪、已定稿時；不碰 DB，只觸發前端確認卡片 |
 | `DialogPlugin.Confirm` | `message: string, choices: string[]? = null` | **終止型**（2026-10-05）；只在確認輪；`choices` 0 或 2–4 個；不改 facet，只在 session 記一筆待確認（[先確認再動手設計](2026-10-05-confirm-before-act-design.md) §3.2） |
+
+`AskUser` 也只在動手輪。哪一輪拿到哪些工具見 §4.3。
 
 `FacetState = covered | missing | waived | notApplicable`。
 
-`facetStates` 在 `AskUser` / `Discuss` / `FinalizePrompt` 為必填，後端以此更新 session 並發 `dimensions` 事件。
+`facetStates` 在 `AskUser` / `Discuss` / `FinalizePrompt` 為必填。`AskUser`／`FinalizePrompt` 以此更新 session 並發 `dimensions` 事件；`Discuss` 只拿它核對（必須等於本輪開始時的狀態），不寫回任何東西，連 `note` 與 `tags` 也不寫（§4.5）。
 
 `intentSummary`：繁中一句話的需求描述，存入 `LastFinal`、隨 `finalized` 事件送出，前端用它預填 `save-to-shared` 的 `intent`（子專案 3 設計 §2.2）。空白時回錯誤字串讓模型重試，跟 `positivePrompt` 同一套。
 
@@ -155,16 +159,27 @@ Discuss(
 
 **語意：回應。** 這是我對你問題的回答；你可以無視它繼續講別的。使用者發起的討論與提問走這裡，不消耗 `AskCount`（§4.3、§4.4）。
 
-`Discuss` 不宣告需求，但必須同步事實——這是兩件事：
+`Discuss` 不宣告需求，也不改事實：
 
 | | `missingFacetIds` | `facetStates` |
 | :--- | :--- | :--- |
 | 語意 | **宣告需求**：我需要這幾項才能繼續 | **同步事實**：目前每一項是什麼狀態 |
-| `AskUser` | 有 | 有 |
-| `Discuss` | **沒有** | **有** |
+| `AskUser` | 有 | 有，寫回 session |
+| `Discuss` | **沒有** | 有，只核對、不寫回 |
 | 前端反應 | 該維度高亮 | chip 填色更新 |
 
-`Discuss` 沒有前者。後者必須留，否則使用者在討論裡說「那就寫實」時，`Discuss` 是終止型、這一輪就結束了，儀表板會停在舊狀態。
+原本 `Discuss` 的 `facetStates` 會寫回，讓使用者在討論裡說「那就寫實」時儀表板跟得上。2026-10-05 起那句話是會改畫面的要求，走 `Confirm`，按下確認後的動手輪才寫入；`Discuss` 的 `facetStates` 只用來核對，帶著變更就被擋回（§4.5）。
+
+**`Confirm` 完整簽名**（2026-10-05，[先確認再動手設計](2026-10-05-confirm-before-act-design.md) §3.2）
+
+```text
+Confirm(
+  message: string,                 // 繁中 1–3 句：理解的畫面或打算怎麼改；有 choices 時寫成問題
+  choices: string[]? = null        // 0 個或 2–4 個解讀（陳述句）；有衝突或多種解讀時才給
+)
+```
+
+**語意：確認。** 使用者說了會改畫面的話（描述題材、回答追問、要求修改、說「隨便」），模型先講理解或打算；使用者按下按鈕才算數，在輸入框打「好」不算。`choices` 跟 `Discuss.options` 一樣排在最後、有預設值。清洗：`message` 去空白後不可為空；`choices` 去空白、去空字串、去重複後只能是 0 個或 2–4 個，每個 ≤ 40 字；不合格回錯誤字串讓模型重叫。成功時不改任何 facet，只在 session 記一筆待確認（§4.4），並以 `final.kind = confirm` 送出（§10.2）。
 
 **`options` 的形狀**
 
@@ -195,37 +210,39 @@ Discuss(
 
 「不在 ledger 就降級」跟 demo 的 `validate_suggestions`（來源不在檢索結果 → 移除整個選項）不同：這裡降級不移除，因為 `presetId` 本來就可為 null。
 
-`Discuss.facetStates` 在 `Profile == null` 時：忽略，不更新 session、不發 `dimensions` 事件，記 audit。
+`Discuss.facetStates` 一律不寫回 session；`Profile == null` 時連核對都不做。
 
 ### 4.3 工具清單組裝規則
 
-每次 agent loop 啟動前，由純函式 `ToolSetBuilder.Build(session, userMessage, guardResult)` 決定本輪註冊的工具：
+每次 agent loop 啟動前，由純函式 `ToolSetBuilder.Build(session, kind, wantsAutoComplete, options)` 決定本輪註冊的工具。`kind` 由這一輪的輸入決定（2026-10-05，[先確認再動手設計](2026-10-05-confirm-before-act-design.md) §3.1）：使用者打字是**確認輪**（`Propose`），按下確認卡的按鈕或採用推薦組合是**動手輪**（`Act`）。
 
 ```text
-永遠註冊：  SearchSimilarPrompts, SearchPresets, SetProfile,
-           SetFacetStates, FinalizePrompt
-           （session 的 retrieval 為 off 時不註冊 SearchSimilarPrompts、SearchPresets，2026-09-25 起）
+確認輪（使用者打字）：
+  永遠註冊：          SearchSimilarPrompts, SearchPresets, Confirm
+  Discuss：           !wantsAutoComplete
+                  且 (Status == Finalized
+                      或 DiscussStreak < MaxDiscussStreak (8))
+  RequestSaveConsent： Status == Finalized
 
-AskUser：            Status == Collecting
-                 且  AskCount < MaxAskCount (2)
-                 且  !guardResult.wantsAutoComplete
+動手輪（按確認卡、採用）：
+  永遠註冊：          SearchSimilarPrompts, SearchPresets, SetProfile,
+                      SetFacetStates, FinalizePrompt
+  AskUser：           Status == Collecting
+                  且  AskCount < MaxAskCount (2)
+                  且  !wantsAutoComplete
 
-Discuss：            !guardResult.wantsAutoComplete
-                 且 (Status == Finalized
-                     或 DiscussStreak < MaxDiscussStreak (8))
-
-RequestSaveConsent： Status == Finalized
+兩種輪：session 的 retrieval 為 off 時不註冊 SearchSimilarPrompts、SearchPresets（2026-09-25 起）
 ```
 
-> **2026-10-05 起每一輪先分種類**（[先確認再動手設計](2026-10-05-confirm-before-act-design.md) §3.1）：使用者打字是**確認輪**，只註冊 `Confirm`、`Discuss`（規則同上）與兩個檢索工具，`Finalized` 時加 `RequestSaveConsent`；按確認卡或採用是**動手輪**，註冊上面「永遠註冊」那組，加 `AskUser`（規則同上），沒有 `Confirm`、`Discuss`、`RequestSaveConsent`。`wantsAutoComplete` 在確認輪只記進待確認，按下確認後的動手輪才拿掉 `AskUser`、設 `AutoFill`。
+確認輪沒有任何會改畫面的工具，模型想直接動手也沒有工具可叫；動手輪沒有 `Confirm` 與 `Discuss`，只能照確認的內容追問或定稿。
 
 兩個目標各由一個獨立機制保證，中間沒有耦合：`AskCount` 上限 2 管的是「LLM 不無限追問」，`Discuss` 管的是「使用者能繼續對話」，`Discuss` 不碰 `AskCount`。
 
-`wantsAutoComplete` 命中的那一輪**同時移除 `AskUser` 與 `Discuss`**：「你決定」的語意就是「直接給我」，工具清單只剩 `FinalizePrompt` 與檢索／設定類，LLM 只能立即定稿。否則 LLM 會回一句「好的，我來幫你決定」就結束回合，使用者得再送一句才拿得到東西。
+`wantsAutoComplete`（「隨便」「你決定」「直接給我」）命中的確認輪**拿掉 `Discuss`**，只剩 `Confirm`：模型逐個維度列出打算補什麼讓使用者確認，判斷結果記在待確認裡（§4.4）。確認輪不改 `AutoFill`。按下確認的動手輪沿用這個判斷，**拿掉 `AskUser`**、把 `Session.AutoFill` 設為 true，模型只能補齊後定稿。否則 LLM 會回一句「好的，我來幫你決定」就結束回合，使用者得再送一句才拿得到東西。
 
 `Discuss` **不需要 `Profile`**。§4.6 對 `AskUser` / `FinalizePrompt` 在 `Profile == null` 時擋回要求先 `SetProfile`；`Discuss` 不受此限，使用者第一句就問「這個怎麼用？」時 LLM 要能直接回答。
 
-捷徑指令（「隨便」「你看著辦」「幫我決定」「直接給我」等）**不用關鍵詞比對**——「鞋子隨便，但背景我要想一下」會被誤判。改由 §6.1 的輸入側分類器順帶回傳 `wantsAutoComplete: bool`（判斷整句是否要求系統直接補齊全部），不多花一次呼叫。命中即移除 `AskUser` 與 `Discuss`，並將 `Session.AutoFill` 設為 true（§5.4），與輪次上限走同一機制。針對單一 facet 的「鞋子隨便」則由 LLM 在對話中處理：該 facet 維持 `missing`，並透過 `SetFacetStates` 的 `note` 記下「使用者委託此項」，定稿時只補這一項。
+捷徑指令（「隨便」「你看著辦」「幫我決定」「直接給我」等）**不用關鍵詞比對**——「鞋子隨便，但背景我要想一下」會被誤判。改由 §6.1 的輸入側分類器順帶回傳 `wantsAutoComplete: bool`（判斷整句是否要求系統直接補齊全部），不多花一次呼叫。命中時照上一段處理（§5.4），與輪次上限走同一機制。針對單一 facet 的「鞋子隨便」則由 LLM 在對話中處理：確認後的動手輪讓該 facet 維持 `missing`，並透過 `SetFacetStates` 的 `note` 記下「使用者委託此項」，定稿時只補這一項。
 
 **此函式是整個防死循環機制的核心，必須有單元測試覆蓋。**
 
@@ -243,11 +260,12 @@ Session {
   ChatHistory:   SK ChatHistory
   PresetLedger:  Dictionary<presetId, LedgerEntry>
   LastFinal:     { Positive, Negative, Tips }?
+  PendingConfirmation: { TurnIndex, Message, Choices, AutoComplete }?   // 2026-10-05，見下
   Lock:          SemaphoreSlim(1)
 }
 ```
 
-> 2026-10-05 加 `PendingConfirmation: { TurnIndex, Message, Choices, AutoComplete }?`：確認輪的 `Confirm` 寫入，動手輪（含採用）開始時清掉，進快照（[先確認再動手設計](2026-10-05-confirm-before-act-design.md) §3.4）。
+`PendingConfirmation`（待確認，[先確認再動手設計](2026-10-05-confirm-before-act-design.md) §3.4）：確認輪的 `Confirm` 寫入（覆蓋舊的）；動手輪（含採用輪）取完快照、呼叫模型之前清掉；`Discuss`、`RequestSaveConsent`、被攔、失敗都不清。它跟其他欄位一起進快照，所以確認輪失敗不會留下半張卡，動手輪失敗時卡片會回來、可以再按。只有最新一筆可以按（§10.1）。`AutoComplete` 是確認輪當時分類器判定的「隨便」，按下後才變成 `AutoFill`。
 
 `PresetLedger` 是 §9 跨維度去重所需的 session 帳本，同時兼作對話記憶：
 
@@ -272,17 +290,16 @@ LedgerEntry {
 | `Discuss` 成功（Collecting） | 不變 | +1 | Collecting |
 | `Discuss` 成功（Finalized） | 不變 | 不變 | Finalized |
 | `FinalizePrompt` 成功 | 不變 | **歸零** | Finalized |
+| `Confirm` 成功 | 不變 | 不變 | 不變（只記待確認） |
 | `SetProfile` 切換 | 不變 | 不變 | 不變 |
 | 任何 tool 被 `OutputSafetyFilter` 攔截 | 不變 | 不變 | 不變 |
 
 - 建立 → `Collecting`。
 - `SetProfile` 切換 profile → `FacetStates` 重置；**`AskCount` 與 `DiscussStreak` 不重置**（防死循環針對的是系統，不是限制使用者）。
-- `DiscussStreak` 只由 `FinalizePrompt` 歸零，`AskUser` 不歸零。這讓 `Collecting` 期間的未定稿回合有一個好講的上限：**最多 8 次 `Discuss` + 2 次 `AskUser` = 10 輪**，之後工具清單只剩 `FinalizePrompt`，強制交出一版。跟 §4.6「tool 預算耗盡 → 強制定稿」同一個機制。
+- `DiscussStreak` 只由 `FinalizePrompt` 歸零，`AskUser` 不歸零。這讓 `Collecting` 期間的未定稿回合有一個好講的上限：**最多 8 次 `Discuss` + 2 次 `AskUser`**（確認卡不算，它跟使用者的每個要求一對一），之後打字的那一輪只剩 `Confirm`（加檢索），按下後的動手輪只剩 `FinalizePrompt`，強制交出一版——仍然先確認。跟 §4.6「tool 預算耗盡 → 強制收尾」同一個機制。
 - `Finalized` 之後 `Discuss` 不受 streak 限制。護欄擋的是「一直不交東西」，不是「一直講話」；東西交出去了就沒有要保護的對象。
-- `Finalized` 後使用者要求修改（「把背景改成黃昏」）→ 仍是 `Finalized`，LLM 直接重新 `FinalizePrompt`；`AskUser` 永久不可用。**純討論（「negative 裡的 `blurry` 是幹嘛的？」）走 `Discuss`，不出新定稿卡**；只有真的動到 prompt 才重新定稿（§4.6 會擋下「`Discuss` 卻改了 facet」）。
+- `Finalized` 後使用者要求修改（「把背景改成黃昏」）→ 仍是 `Finalized`。確認輪先用 `Confirm` 講要改哪裡（跟現有內容衝突或有多種解讀時給 `choices`），使用者按下後的動手輪才重新 `FinalizePrompt`；`AskUser` 永久不可用。**純討論（「negative 裡的 `blurry` 是幹嘛的？」）走 `Discuss`，不出新定稿卡**；只有真的動到 prompt 才重新定稿（§4.5 會擋下「`Discuss` 卻改了 facet」）。
 - 一個 session = 一個 prompt。「再來一張」由前端開新 session。
-
-> 2026-10-05 起修改要先過確認輪：模型用 `Confirm` 講要改哪裡（有歧義時給解讀），使用者按下確認後的動手輪才 `FinalizePrompt`。
 
 儲存：`IMemoryCache`，滑動過期 2 小時。不落 DB。
 
@@ -291,32 +308,33 @@ LedgerEntry {
 | Filter | 介面 | 職責 |
 | :--- | :--- | :--- |
 | `TerminalToolFilter` | `IAutoFunctionInvocationFilter` | 終止型 tool 成功（plugin 設了 `TurnContext.Outcome`）後設 `context.Terminate = true` |
-| `ToolBudgetFilter` | `IAutoFunctionInvocationFilter` | 計數單輪 tool 呼叫，超過 `MaxToolCallsPerTurn`（預設 16）→ `Terminate`，觸發強制定稿（§4.6） |
-| `OutputSafetyFilter` | `IAutoFunctionInvocationFilter` | 掛在 `FinalizePrompt` / `AskUser` / `Discuss`；檢查範圍見 §6.2，命中則設 `BlockedOutcome` + `Terminate`，由 orchestrator 回滾本輪（§4.6） |
+| `ToolBudgetFilter` | `IAutoFunctionInvocationFilter` | 計數單輪 tool 呼叫，超過 `MaxToolCallsPerTurn`（預設 16）→ `Terminate`，觸發強制收尾（動手輪定稿、確認輪確認，§4.6） |
+| `OutputSafetyFilter` | `IAutoFunctionInvocationFilter` | 掛在 `FinalizePrompt` / `AskUser` / `Discuss` / `Confirm`；檢查範圍見 §6.2，命中則設 `BlockedOutcome` + `Terminate`，由 orchestrator 回滾本輪（§4.6） |
 | `AuditFilter` | `IAutoFunctionInvocationFilter` | 每次 tool 呼叫、每次攔截、token 與延遲寫入 `audit_logs`；也把本次的 `callId` 掛上 `TurnContext` 供 plugin 發 `tool_result`（§10.2） |
 
 **四個都是 `IAutoFunctionInvocationFilter`。** `IFunctionInvocationFilter` 在 auto-invoke 路徑上拿不到這一輪的 `AutoFunctionInvocationContext`（`Terminate`、`RequestSequenceIndex`），而攔截要能停下整個迴圈，不只是讓一次呼叫失敗。
 
 **攔截一律走 `Terminate` + outcome，不丟例外。** SK 的 auto-invoke 迴圈會把 filter 丟出的例外當成連線層失敗往上冒，重試層看不懂；改成在 `TurnContext` 上留下 `BlockedOutcome`、把 `context.Result` 換成一句錯誤字串，再由 orchestrator 在迴圈外判定要回滾還是繼續。
 
-**擋回檢查在 plugin 裡，不在 filter 裡。** `Profile == null`、`asks` 清洗後為空、`Finalized` 下變更 facet、定稿閘門（§4.6）這四件事都是「這個 tool 的參數不合格」，plugin 直接回結構化錯誤字串、不設 outcome，迴圈自然繼續、也自然計入 tool 預算。filter 不需要知道每個 tool 的參數語意。
+**擋回檢查在 plugin 裡，不在 filter 裡。** `Profile == null`、`asks`／`choices` 清洗不合格、`Discuss` 變更 facet、定稿閘門（§4.6）這四件事都是「這個 tool 的參數不合格」，plugin 直接回結構化錯誤字串、不設 outcome，迴圈自然繼續、也自然計入 tool 預算。filter 不需要知道每個 tool 的參數語意。
 
-**`Finalized` 之下 `Discuss` 不得變更 facet 狀態。** 定稿後使用者說「風格改成動漫」，LLM 可能 `Discuss` 回「好的」並帶著改過的 `facetStates`，但沒有 `FinalizePrompt`——儀表板變了、定稿卡沒變。任何 facet 變動都意味著 prompt 該重組。程式碼保證：`Status == Finalized` 且 `Discuss.facetStates` 與**本輪開始時**的狀態不同 → 回結構化錯誤「facet 狀態有變更，請改用 `FinalizePrompt`」，計入 tool 預算。比的是本輪開始時而不是現值：`SetFacetStates` 每輪都在清單裡，先用它改掉再用 `Discuss` 回報同一組值，比現值就永遠相等，這道閘門等於不存在。
+**`Discuss` 不得變更 facet 狀態，不分 `Collecting` 或 `Finalized`。** 使用者說「風格改成動漫」，LLM 可能 `Discuss` 回「好的」並帶著改過的 `facetStates`——那等於沒經確認就改了畫面，而且定稿卡沒跟著變。程式碼保證：`Discuss.facetStates` 與**本輪開始時**的狀態不同 → 回結構化錯誤「Discuss 不能改 facet 狀態；使用者要改畫面時，請用 Confirm 跟他確認」，計入 tool 預算。比的是本輪開始時而不是現值：同一輪先用別的路徑改掉再用 `Discuss` 回報同一組值，比現值就永遠相等，這道閘門等於不存在。通過閘門的 `Discuss` 也不寫回任何東西（`note`、`tags` 同樣不寫，2026-10-05 最終審查補上）。原本這道閘門只在 `Finalized` 擋，2026-10-05 起不分狀態（[先確認再動手設計](2026-10-05-confirm-before-act-design.md) §3.3）。
 
-> 2026-10-05 起不分狀態：`Discuss` 任何時候帶著跟本輪開始時不同的 facet 狀態都擋回，錯誤字串要模型改用 `Confirm`；`OutputSafetyFilter` 也檢 `Confirm` 的 `message` 與 `choices`。
-
-輸入側安全檢查（`SafetyGuard`）在 service 層、進 kernel 之前執行，不是 SK filter——因為 agentic chat completion 路徑不會觸發 `IPromptRenderFilter`。它本身也會失敗（上游攔截、分類器回不出 JSON），所以呼叫點在 orchestrator 的交易 `try` 之內，失敗走跟其他階段一樣的 `blocked`／`error` 事件與 audit。
+輸入側安全檢查（`SafetyGuard`）在 service 層、進 kernel 之前執行，不是 SK filter——因為 agentic chat completion 路徑不會觸發 `IPromptRenderFilter`。它本身也會失敗（上游攔截、分類器回不出 JSON），所以呼叫點在 orchestrator 的交易 `try` 之內，失敗走跟其他階段一樣的 `blocked`／`error` 事件與 audit。按下確認卡的動手輪不跑它（§6.1）。
 
 ### 4.6 失敗模式處理
 
 | 情況 | 處理 |
 | :--- | :--- |
-| LLM 回純文字、未呼叫終止 tool | 補一則系統提示重試一次。重試前先把第一次的純文字拿出 history（Gemini 不收以 model 結尾的請求），提示只給這一次呼叫看、呼叫完就拿掉（known-issues #3）。仍為純文字：若 `Discuss` 本輪可用，包成 `Discuss`（`message` = 原文，`options` 留空，`facetStates` 用 session 現值原樣填回，`DiscussStreak++`）；否則發 `error` 事件。LLM 吐散文時想做的九成是講話，不是追問；包成追問會憑空生出追問氣泡與 chip，還燒掉一次 `AskCount`。`Finalized` 之後 `Discuss` 永遠可用，所以定稿後這條路徑不會掉到 `error` 分支 |
+| LLM 回純文字、未呼叫終止 tool | 補一則系統提示重試一次。重試前先把第一次的純文字拿出 history（Gemini 不收以 model 結尾的請求），提示只給這一次呼叫看、呼叫完就拿掉（known-issues #3）。提示列出這一輪實際有的終止型工具，用 kernel 宣告的完整名稱（`Dialog_Confirm`…，見最後一列）。仍為純文字：若 `Discuss` 本輪可用，包成 `Discuss`（`message` = 原文，`options` 留空，`facetStates` 用 session 現值原樣填回，`DiscussStreak++`）；否則發 `error`（`protocol_violation`）事件並回滾。LLM 吐散文時想做的九成是講話，不是追問；包成追問會憑空生出追問氣泡與 chip，還燒掉一次 `AskCount`。定稿後的確認輪 `Discuss` 永遠可用，不會掉到 `error` 分支；動手輪沒有 `Discuss`，兩次純文字一律 `protocol_violation`，回滾後待確認回來，卡片可以再按 |
 | `Profile` 為 null 時呼叫 `AskUser` / `FinalizePrompt` | `TerminalToolFilter` 不終止，改回傳結構化錯誤「請先呼叫 SetProfile」給 LLM，讓它補呼叫後再繼續；計入 tool 預算。`Discuss` 不受此限（§4.3） |
-| `Finalized` 下 `Discuss` 帶了與 session 現值不同的 `facetStates` | 不終止，回結構化錯誤「facet 狀態有變更，請改用 `FinalizePrompt`」；計入 tool 預算（§4.5） |
+| `Discuss` 帶了與本輪開始時不同的 `facetStates`（不分狀態） | 不終止，回結構化錯誤要模型改用 `Confirm`；計入 tool 預算（§4.5） |
+| `Confirm` 的 `message` 空白或 `choices` 清洗後不是 0 個或 2–4 個、超過 40 字 | 不終止，回結構化錯誤要 LLM 重呼叫；計入 tool 預算 |
 | `AskUser.asks` 經 §4.2 清洗後為空 | 不終止，回結構化錯誤要 LLM 重呼叫；計入 tool 預算 |
-| `FinalizePrompt` 時 `AskUser` 仍在清單上，且套用這次的 `facetStates` 後仍有 `missing`、又沒有委託 note 的 facet（定稿閘門） | 不終止、不定稿，回結構化錯誤要求先 `AskUser`（一次最多 3 個維度），列出缺的 facet id；計入 tool 預算。預算耗盡後的強制定稿（下一列）不受此限（`TurnContext.ForcedFinalize`）。`FinalizePrompt` 永遠在清單上，拿不掉，所以在呼叫時擋 |
-| Tool 預算耗盡 | `Terminate` 後再跑一次強制定稿：只掛 `FinalizePrompt`，附「請立即以現有資訊定稿」提示；提示同樣呼叫完就從 history 拿掉 |
+| `FinalizePrompt` 時 `AskUser` 仍在清單上，且套用這次的 `facetStates` 後仍有 `missing`、又沒有委託 note 的 facet（定稿閘門） | 不終止、不定稿，回結構化錯誤要求先 `AskUser`（一次最多 3 個維度），列出缺的 facet id；計入 tool 預算。預算耗盡後的強制定稿（下一列）不受此限（`TurnContext.ForcedFinalize`）。動手輪的 `FinalizePrompt` 永遠在清單上，拿不掉，所以在呼叫時擋 |
+| Tool 預算耗盡 | `Terminate` 後再跑一次強制收尾：動手輪只掛 `FinalizePrompt`，附「請立即以現有資訊定稿」提示；確認輪只掛 `Confirm`，附「請立即以目前的理解確認」提示（強制定稿等於跳過確認）。提示寫該輪 kernel 宣告的完整工具名，同樣呼叫完就從 history 拿掉 |
+| 按確認卡（`confirm`）時沒有待確認、或不是最新一張 | 端點回 `409`，不進 orchestrator；`choice` 跟卡片對不上（有選項沒選、沒選項卻帶、超出範圍）回 `400`（§10.1） |
+| 模型呼叫未宣告的工具名（例如裸名 `Confirm`，kernel 宣告的是 `Dialog_Confirm`） | SK 回一句錯誤給模型，這條路徑**不經過任何 filter**，`ToolBudgetFilter` 數不到，模型可能一路重送到逾時（known-issues #13）。目前靠 prompt 與補救／強制提示寫完整名稱緩解；程式端防護是後續待辦 |
 | LLM 呼叫失敗（傳輸／空回應／內容攔截） | 依下方三層規則內部重試；重試耗盡才算本輪失敗 |
 | 單輪逾時（預設 120s） | `CancellationToken` 取消；退避等待吃同一個 token，不會出現「逾時了還在退避」 |
 | **任何失敗**（逾時、取消、例外、上游攔截、輸出側攔截） | **session 回滾至本輪開始前**，發 `error` 或 `blocked` 事件 |
@@ -327,9 +345,9 @@ LedgerEntry {
 **一輪是一個交易。** 多輪對話下一個 session 可能累積十幾輪的狀態，任何一種失敗都不能把它毀掉：
 
 ```text
-RunTurnAsync(session, input, ct):  // input = TurnInput(text, adoption?, adoptedPreset?)，§4.10
+RunTurnAsync(session, input, ct):  // input = TurnInput(text, adoption?, adoptedPreset?, safetyOn, confirmed?)，§4.10
   snapshot = session.Snapshot()     // AskCount, DiscussStreak, Status, Profile, AutoFill,
-                                    // FacetStates, PresetLedger, ChatHistory.Count
+                                    // FacetStates, PresetLedger, ChatHistory.Count, PendingConfirmation
   try:
     agent loop …
     終止型 tool 成功 → 交易成立，snapshot 丟棄
@@ -365,19 +383,15 @@ RunTurnAsync(session, input, ct):  // input = TurnInput(text, adoption?, adopted
 
 **容器 log**：handler 每次呼叫寫一行 `Gemini {status} {ms} ms finish={finishReason} block={promptFeedback.blockReason}`（沒有的寫 `-`）；`AgenticOrchestrator` 每輪結束（任何結局）寫一行 `Turn {session}#{turn} {事件} {細節} tools={工具呼叫數} gemini={Gemini 呼叫數} {ms} ms`，事件是那一輪的 audit 事件（`Turn_Completed`、`Blocked_*`、`Turn_Failed`），細節是結局型別、攔截理由或 `errorClass`。`System.Net.Http` 的 log 等級調到 Warning，embedding 請求不再每次洗一行。完整紀錄仍以 `audit_logs` 為準，log 只是在終端機上看得出發生什麼事。
 
-> 2026-10-05：確認輪的 tool 預算用盡時強制的是 `Confirm`（只掛它），不是 `FinalizePrompt`；純文字補救的提示改列本輪實際有的終止型工具。動手輪只回純文字時沒有 `Discuss` 可包，走 `protocol_violation` 回滾，待確認跟著回來。
-
 ### 4.7 Chat history 修剪與截斷
 
 `Finalized` 之後 `Discuss` 不限次，history 沒有上限；而 `options` 改成結構化之後，call args 每輪都留在 history 裡，越積越肥。三條：
 
 1. **tool result 壓縮**：每輪結束後，將本輪 tool result 訊息內容壓成摘要（`SearchPresets` → `{results: [{dimension, facetId?, poolSize, hits: [{id, title}]}]}`，`facetId` 只有 facet 項目才留；`SearchSimilarPrompts` → `[{id, intent 前 40 字}]`）。
 2. **call args 也壓**：該輪結束後，`AskUser.asks[].options` 與 `Discuss.options` 壓成 `[{label, presetId}]`，去掉 `tags`。完整內容 ledger 有（§4.4）。
-3. **整體截斷**：保留 system message + 最近 **10 輪**（一輪 = 一則 user message 起到終止型 tool 止），更早的丟掉。`PresetLedger`、`FacetStates`、`LastFinal` 是 session 事實，不靠 history 記住，所以丟掉是安全的。
+3. **整體截斷**：保留 system message + 最近 **20 輪**（`Orchestrator:HistoryTurns`；一輪 = 一則 user message 起到終止型 tool 止），更早的丟掉。2026-10-05 由 10 改 20：每個要求多一則按確認的使用者訊息（「對，就這樣」或選的解讀），維持原本記得的要求數。`PresetLedger`、`FacetStates`、`LastFinal` 是 session 事實，不靠 history 記住，所以丟掉是安全的。
 
 **Gemini connector 的 tool 結果形狀（2026-09-29，known-issues #8）。** `Connectors.Google` 1.80.1-alpha 不把 tool 結果放成 `FunctionResultContent`：tool 訊息是 `GeminiChatMessageContent`，結果在 `CalledToolResults`（`GeminiFunctionToolResult` 包一個 `FunctionResult`），送出時從這裡序列化成 `functionResponse`；`Items` 只有一個空的 `TextContent`。模型一次發多個呼叫時，全部結果在同一則 tool 訊息裡。所以第 1 條的壓縮對這種訊息是**整則重建**：壓得動的結果換成帶壓縮字串的新 `FunctionResult`（`functionResponse` 的 `name` 取自前一則 model 訊息的 `ToolCalls`），其餘沿用原物件，在同一個位置換掉；單一結果用公開建構子，多個結果用 internal 建構子（反射），不能拆成多則，因為 Gemini 要求回覆的 part 數與 call 數相同。重建失敗就不壓這則。改放 `FunctionResultContent` 不可行，connector 序列化時會丟 `NotSupportedException`。第 2 條改的是 `Items` 裡的 `FunctionCallContent`，connector 送出時讀的是 `ToolCalls`，目前對 Gemini 不生效（known-issues #11）。
-
-> 2026-10-05：`HistoryTurns` 預設由 10 改 20：每個要求多一則「對，就這樣」使用者訊息，維持原本記得的要求數。
 
 ### 4.8 Provider 抽象
 
@@ -392,12 +406,13 @@ RunTurnAsync(session, input, ct):  // input = TurnInput(text, adoption?, adopted
 
 ### 4.9 System prompt
 
-- 存於 `src/PromptCopilot.Api/Prompts/system.md`，不寫在 C# 字串裡
-- 由 template + `facets.yaml`（依 session profile 篩選）+ session 既定事實（已 waived 的 facet、`AutoFill` 狀態、已定稿內容）組裝
-- 組裝後的 prompt 取 SHA-256 前 12 碼寫入每筆 `audit_logs.prompt_version`，讓 eval 紀錄可對應 prompt 版本
-- 兩條行為要求只能靠 prompt 約束，程式不擋（列入 §12.3 eval 觀察）：
-  - **使用者在描述題材時不得用 `Discuss` 閒聊**，要推進流程（檢索、追問或定稿）。LLM 第一輪就 `Discuss` 是可能的，由 `DiscussStreak` 兜底，代價是多一輪
-  - **`Finalized` 之後只要 facet 有變動就必須用 `FinalizePrompt`**，不能用 `Discuss` 帶過（違反時由 §4.5 擋回）
+- 存於 `src/PromptCopilot.Api/Prompts/`，不寫在 C# 字串裡：`system.md` 是共用樣板，其中的流程段是 `{{FLOW}}`，依這一輪的種類換進 `flow-propose.md`（確認輪）或 `flow-act.md`（動手輪），模型只看得到這一輪適用的規則（2026-10-05）
+- 由 template + `facets.yaml`（依 session profile 篩選）+ session 既定事實（已 waived 的 facet、`AutoFill` 狀態、追問已用與上限、還有 missing facet 的維度、已定稿內容）組裝。動手輪的流程段開頭另有伺服器組的「使用者已確認」區塊（確認卡正文與選的解讀，`{{CONFIRMED}}`）；它是模型與使用者的文字，所以最後才替換，裡面的 `{{…}}` 不會再被展開
+- 組裝後的 prompt 取 SHA-256 前 12 碼寫入每筆 `audit_logs.prompt_version`，讓 eval 紀錄可對應 prompt 版本；兩種輪的 prompt 不同，版本也不同
+- 下列行為要求只能靠 prompt 約束，程式不擋（列入 §12.3 eval 觀察）：
+  - **會改畫面的話用 `Confirm`，純提問才用 `Discuss`**。用錯成 `Discuss` 而且帶了變更時由 §4.5 擋回；沒帶變更就只是多一輪對話，由 `DiscussStreak` 兜底
+  - **確認卡的寫法**：用使用者的說法、不寫英文 tag；跟現有內容衝突或有多種解讀時給 `choices`；不預告確認後是追問還是定稿（確認輪無法得知使用者的自由回答補了哪些維度，2026-10-05 驗收實測一直講錯），只有「隨便」例外——那一定直接定稿，而且要逐個維度列出補什麼
+  - **工具名寫完整**：流程段寫明 `Dialog_Confirm`、`Dialog_FinalizePrompt` 這類 kernel 宣告的名稱（模型偶爾呼叫裸名，見 §4.6 最後一列）
 
 **先前提供過的選項注入**（來源是 `Session.PresetLedger` 的 `OfferedAs`，§4.4）：
 
@@ -412,8 +427,6 @@ RunTurnAsync(session, input, ct):  // input = TurnInput(text, adoption?, adopted
 - 按最近 offered 的 `turnIndex` 排序，取前 **24** 個 preset（3 維度 × 4 選項 × 2 次 `AskUser` 的最壞情況）。
 - 一筆一行，token 成本可控。
 
-> 2026-10-05：`system.md` 的流程段換成 `{{FLOW}}`，依這一輪的種類換進 `Prompts/flow-propose.md` 或 `flow-act.md`；動手輪的流程開頭是伺服器組的「使用者已確認」區塊（`{{CONFIRMED}}`，最後才替換，裡面的文字不會再被展開）。
-
 ### 4.10 降級路徑
 
 定義 `IPromptOrchestrator`：
@@ -424,7 +437,7 @@ interface IPromptOrchestrator {
 }
 ```
 
-`TurnInput(Text, Adoption?, AdoptedPreset?)`（2026-09-25）：一般訊息只有 `Text`；採用推薦組合的那一輪另帶要記帳的 `Adoption` 與片段（`2026-09-25-set-recommendations-design.md` §6）。
+`TurnInput(Text, Adoption?, AdoptedPreset?, SafetyOn, Confirmed?)`：一般訊息只有 `Text`；採用推薦組合的那一輪另帶要記帳的 `Adoption` 與片段（2026-09-25，`2026-09-25-set-recommendations-design.md` §6）；按下確認卡的那一輪另帶 `Confirmed`（待確認與選的解讀，`Text` 是「對，就這樣」或那個解讀的原文；2026-10-05）。有 `Adoption` 或 `Confirmed` 的是動手輪，其餘是確認輪。
 
 兩個實作：`AgenticOrchestrator`（本設計）與 `StateMachineOrchestrator`（後端決定 ASK/DISCUSS/FINALIZE，LLM 只做分析、檢索與產文）。組態 `Orchestrator:Mode` 切換。API 契約與前端不變。
 
@@ -502,7 +515,7 @@ interface IPromptOrchestrator {
 | `waived` | 使用者明示「不要指定」 | 否 | **不寫入**，即使 `AutoFill` 為 true 也不補 |
 | `notApplicable` | profile 判定不適用 | 否 | 忽略 |
 
-**發明細節的決定權在使用者。** 系統預設不替使用者補上他沒說的東西；只有使用者明說「隨便／你決定／你看著辦」（§6.1 分類器回傳 `wantsAutoComplete`）才把 `Session.AutoFill` 設為 true，此後定稿時 LLM 補齊所有 `missing`。`AutoFill` 一旦為 true 在該 session 內保持（使用者已委託）。**但使用者透過討論（`Discuss`，§4.2）把某一項變成 `covered` 或 `waived`，`AutoFill` 即管不到它**——`AutoFill` 補的是 `missing`，不在那個集合裡就不在補齊範圍內，`waived` 本來就是為「即使委託也不補」存在的。委託之後想回頭細談某一項，走討論即可，不需要讓 `AutoFill` 可逆。「不要指定 X」是 `waived`，永遠不補。System prompt 需明確區分這三種情況。
+**發明細節的決定權在使用者。** 系統預設不替使用者補上他沒說的東西；只有使用者明說「隨便／你決定／你看著辦」（§6.1 分類器回傳 `wantsAutoComplete`）、而且按下了列出補齊內容的確認卡（2026-10-05），才把 `Session.AutoFill` 設為 true，此後定稿時 LLM 補齊所有 `missing`——確認卡列了的照列的補，沒列到的也補，補齊本身就是使用者確認的內容。`AutoFill` 一旦為 true 在該 session 內保持（使用者已委託）。**但使用者之後再提修改（經確認卡）把某一項變成 `covered` 或 `waived`，`AutoFill` 即管不到它**——`AutoFill` 補的是 `missing`，不在那個集合裡就不在補齊範圍內，`waived` 本來就是為「即使委託也不補」存在的。委託之後想回頭細談某一項，提修改即可，不需要讓 `AutoFill` 可逆。「不要指定 X」是 `waived`，永遠不補。System prompt 需明確區分這三種情況。
 
 定稿卡片與儀表板會顯示哪些 facet 仍為 `missing`（「未指定，交由生圖模型」），讓使用者知道自己留了什麼空白。
 
@@ -550,6 +563,7 @@ profiles:
 1. 快速路徑：可組態 denylist（NSFW 關鍵詞 + 少量高頻名人），命中直接擋。
 2. 分類路徑：一次 Gemini Flash 結構化呼叫，回傳 `{ nsfw: bool, realPerson: bool, personName?: string, wantsAutoComplete: bool, reason: string }`。`nsfw` 或 `realPerson` 為 true 即擋；`wantsAutoComplete` 交給 §4.3 的工具清單組裝。
 3. 命中 → 回 `blocked` 事件、寫 `audit_logs`（`Blocked_NSFW` / `Blocked_Celebrity`）、本輪不進 kernel、不計 `AskCount`。
+4. 按下確認卡的動手輪**不跑**這一段（2026-10-05，[先確認再動手設計](2026-10-05-confirm-before-act-design.md) §3.5）：這一輪的使用者訊息是伺服器組的「對，就這樣」或確認卡上的解讀原文，都是上一輪模型的輸出、已過 §6.2；使用者的原話在確認輪已過這一段。`wantsAutoComplete` 沿用確認輪當時的判斷（記在待確認裡）。採用輪照跑。
 
 > **測試用的審查開關（2026-09-25）。** `POST /messages` 的 body 可帶 `"safety": "off"`，那一輪不做程式端審查：denylist 不比對；輸入分類器照跑，但只用它的 `wantsAutoComplete`（「你看著辦」只有它判得出來，跳過它等於連流程一起改掉），`nsfw`／`realPerson` 不攔；§6.2 的 `OutputSafetyFilter` 與純文字補救的輸出檢查都跳過。Gemini 自己的攔截（`Blocked_Upstream`）不受影響。後端 `Safety:AllowDisable`（compose 用 `.env` 的 `SAFETY_ALLOW_DISABLE`）預設 `false`，沒開時帶 `off` 回 `403`：誰都能打 API，不能一個欄位就關掉審查。那一輪的 `Turn_Completed` payload 記 `"safety": "off"`；那一輪產生的定稿標成未審查，`save-to-shared` 回 `409`，不讓沒檢過的內容進共享庫。
 
@@ -562,6 +576,7 @@ profiles:
 | `FinalizePrompt` | `positivePrompt`、`tips`、`intentSummary` |
 | `Discuss` | `message`、`options[].label`、`options[].tags` |
 | `AskUser` | `preamble`、`asks[].question`、`asks[].options[].label`、`asks[].options[].tags` |
+| `Confirm` | `message`、每一個 `choices`（2026-10-05） |
 
 **是這張表，不是「把全部參數串起來」。** `negativePrompt` 與 `facetStates` 不在表內，而且不能在：SD 的負向詞常態就是 `nsfw, nude, naked`——那是排除清單，把它餵給分類器等於要它攔我們自己的排除詞，每一次定稿都會被自己擋下來。`facetStates` 則是機器狀態，沒有人會看到。
 
@@ -724,7 +739,7 @@ scripts/
 | :--- | :--- | :--- |
 | `SearchPresets` | **分維度**：一次呼叫帶多個項目；維度項目 `facetIds` 過濾後以整套向量排序；facet 項目（2026-09-29）以該 facet 自己的向量排序、依 tag 組合去重，查詢句「原話（英文 tag）」 | 維度：`WHERE facet_ids && $facets ORDER BY preset_embedding <=> $vec LIMIT k`；facet：`preset_facet_embeddings WHERE facet_id = $f`，`DISTINCT ON (tag_key)` 後依 `embedding <=> $vec` |
 | `SearchSimilarPrompts` | 向量 Top-K + profile 過濾 | `WHERE subject_profile = $1 ORDER BY intent_embedding <=> $2 LIMIT k` |
-| 整套組合推薦（伺服器自動，不是模型的工具） | 每個維度：有錨先以錨過濾再向量排序，不足 2 筆整批改用純向量排序（2026-09-25） | 見本節末「整套組合推薦」 |
+| 整套組合推薦（伺服器自動，不是模型的工具） | 只在定稿卡（2026-10-05 起）。每個維度：字面錨、近似錨、純向量三層各取候選，接成一條名單後挑 2 套相關＋1 套探索（2026-09-30） | 見本節末「整套組合推薦」 |
 
 **GIN 過濾本身不夠。** 實測（2026-09-22）：同樣過濾到 Style 候選池，用使用者整句描述的向量排序撈回無關片段（dist 0.354），用該維度專屬的查詢語句撈回正確風格（0.229–0.234）。單一整句向量是六維度的模糊平均，只會貼近最泛用的片段，且使用者沒提到的維度永遠撈不到。因此 agent 呼叫 `SearchPresets` 時：
 
@@ -740,15 +755,15 @@ scripts/
 - **候選池大小要跟著 tool result 一起回。** `池 2 → 2` 這種「這維度過濾後有多少候選、其中命中幾筆」的資訊，是分維度檢索最有價值的副產品：它讓知識庫覆蓋缺口（例如 vehicle 的 pose 只有 2 筆）在使用當下就看得見，不必事後查資料庫才發現。tool result 除了相似度分級，也要帶上 GIN 過濾後的候選池筆數，否則子專案 2 會失去這個可見度。
 - **`SearchSimilarPrompts` 是選用的。** `system.md` 只寫「需要風格參考時呼叫」；查詢句由模型給（使用者的整句需求），取 1–5 筆（預設 3），以 `subject_profile` 過濾。結果只給模型參考，不進 ledger，不算 tag 來源。
 
-**整套組合推薦（2026-09-25，伺服器自動跑，結果不經過模型）。** 跟 `SearchPresets` 不同，檢索結果不進模型的 context 讓它借 tag，而是直接攤給使用者看。每輪以追問結束時查被問的維度、以定稿結束時查本 profile 全部維度；模型看不到結果，使用者按「採用」之後，伺服器組的採用句才進對話。`retrieval: off` 的對話不跑。每個維度：
+**整套組合推薦（2026-09-25，伺服器自動跑，結果不經過模型）。** 跟 `SearchPresets` 不同，檢索結果不進模型的 context 讓它借 tag，而是直接攤給使用者看。只在以定稿結束的那一輪查本 profile 全部維度（2026-10-05 起追問卡不推薦，[先確認再動手設計](2026-10-05-confirm-before-act-design.md) §8）；模型看不到結果，使用者按「採用」之後，伺服器組的採用句才進對話（採用只在定稿後收）。`retrieval: off` 的對話不跑。每個維度：
 
-1. **查詢向量**：本 session 使用者說過的話（不含伺服器組的採用句）依序串接、取最後 500 字，一輪只嵌入一次，各維度共用。
+1. **查詢向量**：本 session 使用者說過的話依序串接、取最後 500 字，一輪只嵌入一次，各維度共用。伺服器組的採用句與按確認的「對，就這樣」不算（那不是描述）；選了解讀的確認句（「換掉飲料，改拿雨傘」）照算。
 2. **候選必須是整套**：已回填 `facet_tags`，且該維度至少 2 個 facet 有 tag。
-3. **錨**：該維度 covered facet 的 `FacetTags`（模型在 `SetFacetStates` 附的英文 tag，如涼鞋 → `sandals`）；定稿時再加 positive 的 tag（基礎畫質詞除外）。
-4. **有錨**：只留 covered facet 底下有 tag 等於錨、或以「空白＋錨」結尾的片段，再依距離取 3 筆（`MATERIALIZED` CTE 精確排序，不走 HNSW，罕見的錨不會被掃描上限漏掉）。**不足 2 筆先試近似錨**（2026-09-29：該 facet 的 `FacetTags` 向量對子表同一 facet 的向量，距離 ≤ 0.30（`RecommendationSimilarMaxDist`，2026-09-30 驗收後由 0.23 放寬）且仍是組合的列，各 covered facet 合併取最小距離；≥ 2 筆顯示「接近你講的 …」），仍不足就改成不過濾、依距離取 3 筆（HNSW），不跟前面的結果合併。
-5. **沒錨**：直接走第 4 步的「不過濾」那條。
+3. **錨**：該維度 covered facet 的 `FacetTags`（模型在 `SetFacetStates` 附的英文 tag，如涼鞋 → `sandals`），再加定稿 positive 的 tag（基礎畫質詞除外）。
+4. **三層候選**（2026-09-30，各取 `RecommendationPoolSize` = 30 筆，三層都查）：字面錨（covered facet 底下有 tag 等於錨、或以「空白＋錨」結尾的片段，`MATERIALIZED` CTE 精確排序，不走 HNSW）、近似錨（錨的 facet 向量對子表同一 facet 的向量，距離 ≤ `RecommendationSimilarMaxDist` = 0.30，見 [facet 向量設計](2026-09-29-facet-vector-retrieval-design.md) §6）、純向量（不過濾、依查詢向量）。三層依序接成一條名單，同一維度 tag 集合相同的只留名次最前的一筆。
+5. **挑法**：2 套相關位（第 1 位取有效名次最前；第 2 位依 `exp(−(名次＋10×看過次數)/5)` 抽，名單前段有另一個來源時優先換來源）＋最多 1 套探索位（從純向量那層依跟相關位的差異排名再抽，卡片標「換個搭法」）。看過的組合往後延，不踢掉；整張卡都成功才記看過。每套標自己的理由（含你講的／接近你講的／最接近你描述的／換個搭法）。定稿卡每排可以「換一批」（§10.1）。
 
-有錨與沒錨兩條依第 1 步的查詢向量排序；不足 2 筆時試的近似錨（2026-09-29）改依錨的 facet 向量比子表同一 facet 的向量排序，不是查詢向量，見 [facet 向量設計](2026-09-29-facet-vector-retrieval-design.md) §6。卡片上有錨的顯示「含你講的 sandals」、近似錨顯示「接近你講的 …」，都沒有則顯示「最接近你描述的組合」。細節見 [整套組合推薦設計](2026-09-25-set-recommendations-design.md) §4.4、§5.3。2026-09-30 起定稿卡改成 2 套相關＋1 套探索、看過加權延後、可換一批，追問卡不變，見 [推薦組法設計](2026-09-30-recommendation-slate-design.md)。
+細節見 [整套組合推薦設計](2026-09-25-set-recommendations-design.md) §4.4、§5.3 與 [推薦組法設計](2026-09-30-recommendation-slate-design.md)。
 
 查詢向量於 runtime 以同一 embedding 模型計算；多個維度的查詢語句合併為單次 `embed_batch` 呼叫（2026-09-24 起 C# 端也是：批次簽名的緣由見 [批次 SearchPresets 設計](2026-09-24-batch-search-presets-design.md)）。
 
@@ -764,7 +779,7 @@ scripts/
 | :--- | :--- | :--- |
 | `POST` | `/api/sessions` | body 可省略 `{ retrieval?: "on" \| "off" }`（預設 `on`；`off` 不查知識庫，建立後不可改，2026-09-25 起）→ `{ sessionId, retrieval }` |
 | `GET` | `/api/sessions/{id}` | session 目前的權威狀態（status、profile、facetStates、askCount／askLimit、lastFinal，含 tag 來源、retrieval、facetTags）；前端重載重建用；不拿 session 鎖；`404` 表示不存在或已過期 |
-| `POST` | `/api/sessions/{id}/messages` | body `{ text }` 或 `{ adopt: { presetId, dimension, take, batch? } }`（2026-09-25 採用推薦組合，伺服器組句；`batch` 是 2026-09-30 加的可省欄位，記這套來自定稿卡第幾批，只寫進 audit），兩者都可加 `safety: "on" \| "off"`（預設 `on`；`off` 是測試用的審查開關，§6.1）；回 `text/event-stream`；同一 session 已有一輪在跑 → `409`；`adopt` 但 `retrieval: off` 或未判定題材 → `409`；`adopt` 不合法、`safety` 不是 on／off → `400`；`safety: off` 但後端沒開放 → `403` |
+| `POST` | `/api/sessions/{id}/messages` | body 三選一：`{ text }`（確認輪）；`{ confirm: { turnIndex, choice } }`（2026-10-05 按確認卡：`turnIndex` 是那張卡的輪次，必須是最新一筆待確認；沒有選項的卡 `choice` 為 null 或省略，伺服器以「對，就這樣」當使用者訊息，有選項時以那個選項的原文）；`{ adopt: { presetId, dimension, take, batch? } }`（2026-09-25 採用推薦組合，伺服器組句；`batch` 是 2026-09-30 加的可省欄位，記這套來自定稿卡第幾批，只寫進 audit）。有 `confirm` 或 `adopt` 時 `text` 忽略。都可加 `safety: "on" \| "off"`（預設 `on`；`off` 是測試用的審查開關，§6.1）；回 `text/event-stream`。同一 session 已有一輪在跑 → `409`；`confirm` 但沒有待確認或不是最新一張 → `409`；`adopt` 但 `retrieval: off` 或還沒定稿 → `409`；`text` 空白且沒有 `confirm`／`adopt`、`confirm` 的 `choice` 跟卡片對不上、`confirm` 與 `adopt` 同時送、`adopt` 不合法、`safety` 不是 on／off → `400`；`safety: off` 但後端沒開放 → `403` |
 | `POST` | `/api/sessions/{id}/save-to-shared` | body `{ intent }`；需 `Finalized`，否則 `409`；最後一次定稿是在 `safety: off` 時產生的也 `409`；寫 `shared_prompt_histories` 並向量化；**唯一的寫入路徑** |
 | `POST` | `/api/sessions/{id}/recommendations/next` | body `{ dimension, turnIndex }`（2026-09-30；`turnIndex` 是那張定稿卡的輪次，必須是最新一張）；回一個維度的推薦，不經過模型、不算一輪；`404` session 不存在或已過期；`409` 該 session 還有一輪在跑、`turnIndex` 不是最新一張定稿卡、或 `retrieval: off`；`400` `dimension` 空白或不屬於這段對話的題材；`503` 推薦失敗或逾時，可以再按一次 |
 | `GET` | `/api/config/facets` | 回 `facets.yaml` 內容供前端渲染 |
@@ -778,36 +793,35 @@ scripts/
 
 前端以 `fetch` + `ReadableStream` 消費 SSE（`EventSource` 不支援 POST）。
 
-> 2026-10-05：`messages` 的 body 多一種 `{"confirm": {"turnIndex": n, "choice": k | null}}`，按確認卡；沒有待確認或不是最新一張回 409，`choice` 跟卡片對不上、或與 `adopt` 同時送回 400。`adopt` 改成定稿後才收（未定稿 409）。
+`confirm` 的驗證在拿到 session 鎖之後才做：同一張卡連按兩次，第二次看到的是被動手輪清掉的待確認，回 `409`。
 
 ### 10.2 SSE 事件
 
 | `event:` | `data:` | 前端反應 |
 | :--- | :--- | :--- |
-| `session` | `{ sessionId, turnIndex, status, text? }` | 初始化。`text`（2026-09-25）只在採用輪出現，是伺服器組的採用句，前端用它換掉使用者泡泡 |
+| `session` | `{ sessionId, turnIndex, status, text? }` | 初始化。`text` 只在動手輪出現：採用輪是伺服器組的採用句（2026-09-25），按確認的那一輪是「對，就這樣」或選的解讀（2026-10-05）；前端用它換掉使用者泡泡 |
 | `tool_call` | `{ callId, name, argsSummary }` | 對話流插入行內卡片 |
 | `tool_result` | `{ callId, name, summary, presets?: [{id, title, imageUrl, sourceRef?}], detail? }` | 展開卡片；餵抽屜。`callId` **等於**對應 `tool_call` 的 `callId`（同一次呼叫的兩個事件），前端據此配對。`sourceRef`（2026-09-25 起）是資料來源識別，縮圖依前綴標來源名（`docs/資料來源.md`「署名機制」）。`detail`（2026-09-25 起）只有 `SearchPresets`（`{ items: [{ dimension, facetId?, label, query, tags?, method, grounded, poolSize, k, error?, hits: [{ id, title, band, dist, usable, facets }] }] }`，`tags`／`method` 2026-09-29 起：`tags` 是這一項用了什麼英文（沒有就 null）、`method` 是 `facet` 或退路 `preset`，見 [facet 向量設計](2026-09-29-facet-vector-retrieval-design.md) §5.5）與 `SearchSimilarPrompts`（`{ hits: [{ intent, profile, dist }] }`）帶，給「顯示檢索細節」用，不含 snippet 本文；見 `2026-09-25-retrieval-switch-and-trace-design.md` §3.5 |
 | `dimensions` | `{ profile, facetStates: {facetId: state}, facetTags?: {facetId: "sandals"} }` | 儀表板更新 |
-| `recommendations` | `{ turnIndex, dimensions: [{ dimension, label, anchored, similar, anchorTags, sets: [{ presetId, title, imageUrl?, sourceRef?, dist, facets: [{ facetId, label, state, tags }] }] }] }` | 整套組合推薦（2026-09-25）：追問時只有被問的維度、定稿時全部維度，跟在 `final`＋`dimensions` 之後；掛在該輪的追問卡／定稿卡下方。`retrieval: off` 的對話沒有。見 `2026-09-25-set-recommendations-design.md` §5。`similar`（`RecommendedDimension.Similar`，2026-09-29）：字面錨不到 2 筆、facet 向量的近似錨找到 ≥ 2 筆時為 true，跟 `anchored` 不會同時為 true；此時 `anchorTags` 列「有貢獻」的近似錨、卡片文案「接近你講的 …」。見 [facet 向量設計](2026-09-29-facet-vector-retrieval-design.md) §6.5。2026-09-30 起定稿卡多 `batch` 與每套的 `reason`／`anchorTags`／`rank`／`prob`，排層級的 `anchored`／`similar` 固定 `false`；追問卡不變；可用 `POST /api/sessions/{id}/recommendations/next` 換一批，見 [推薦組法設計](2026-09-30-recommendation-slate-design.md) §5.1 |
+| `recommendations` | `{ turnIndex, dimensions: [{ dimension, label, anchored, similar, anchorTags, sets: [{ presetId, title, imageUrl?, sourceRef?, dist, facets: [{ facetId, label, state, tags }] }] }] }` | 整套組合推薦（2026-09-25）：只在定稿那一輪（2026-10-05 起追問卡不推薦），全部維度，跟在 `final`＋`dimensions` 之後；掛在定稿卡下方。`retrieval: off` 的對話沒有。見 `2026-09-25-set-recommendations-design.md` §5。2026-09-30 起每排帶 `batch`，每套帶 `reason`／`anchorTags`／`rank`／`prob`；排層級的 `anchored`／`similar` 固定 `false`（兩欄是舊的追問卡推薦留下的，前端只對沒有 `batch` 的舊資料顯示排層級文案）；可用 `POST /api/sessions/{id}/recommendations/next` 換一批，見 [推薦組法設計](2026-09-30-recommendation-slate-design.md) §5.1 |
 | `token` | `{ text }` | 接到最近一則討論訊息後面。**後端現況不發**（回覆內容都是終止型 tool 的參數，一次到位）；前端 reducer 保留處理，但不對一次到位的文字做假的逐字動畫（子專案 3 設計 §1.2） |
-| `final` | 四種 `kind`，見下 | 追問卡／對話氣泡／定稿卡片／高亮入庫按鈕 |
+| `final` | 五種 `kind`，見下 | 確認卡／追問卡／對話氣泡／定稿卡片／高亮入庫按鈕 |
 | `blocked` | `{ reason, message }` | 標記原因，**保留失敗的訊息並附「重試」按鈕；按下把原文填回輸入框**，使用者可改可直接送 |
 | `error` | `{ code, message }` | 同上（不加 `retryable` 欄位——session 已回滾，重送等價首次送出，§4.6） |
 
-`final` 的四種 `kind`：
+`final` 的五種 `kind`：
 
 ```text
+{ kind: "confirm",   message, choices: [string] }            // 2026-10-05；沒有歧義時 choices 是空陣列
 { kind: "ask",       preamble, asks: [{ dimension, question, missingFacetIds, options }] }
 { kind: "message",   message, options? }
 { kind: "finalized", positive, negative, tips, intentSummary, positiveSources, negativeSources }
 { kind: "save_consent_requested" }
 ```
 
-`options` 的每筆是 `{ label, tags, presetId? }`（§4.2）。`positiveSources`／`negativeSources` 的每筆是 `{ tag, origin, presetIds, presetTitle?, sourceRef? }`，依 tag 在提示詞裡的順序；`origin` 為 `rag`（知識庫片段）／`adopted`（採用的組合帶進來的，2026-09-25）／`llm`（模型生成）／`base`（基礎詞），由伺服器比對 ledger 算出（§9），其中 `adopted` 比對的是 `Session.Adoptions`（`2026-09-25-set-recommendations-design.md` §6.5）；`sourceRef`（2026-09-25 起）跟 `presetTitle` 取同一筆命中片段，`rag` 與 `adopted` 有。`dimensions` 事件不變，`Discuss` 一樣會發（帶 `facetStates`）。
+`options` 的每筆是 `{ label, tags, presetId? }`（§4.2）。`positiveSources`／`negativeSources` 的每筆是 `{ tag, origin, presetIds, presetTitle?, sourceRef? }`，依 tag 在提示詞裡的順序；`origin` 為 `rag`（知識庫片段）／`adopted`（採用的組合帶進來的，2026-09-25）／`llm`（模型生成）／`base`（基礎詞），由伺服器比對 ledger 算出（§9），其中 `adopted` 比對的是 `Session.Adoptions`（`2026-09-25-set-recommendations-design.md` §6.5）；`sourceRef`（2026-09-25 起）跟 `presetTitle` 取同一筆命中片段，`rag` 與 `adopted` 有。每一輪成功收尾都會再發一次完整的 `dimensions`；確認輪的狀態不變，送的是現值。
 
-`Discuss.message` 不會有打字機效果：它是 tool call 的參數，一次到位。這跟 `AskUser` / `FinalizePrompt` 現況一致，不是新問題；前端不要對 `message` 期待 `token` 事件。
-
-> 2026-10-05：`final.kind` 多 `confirm`（`message`、`choices`）；`session.text` 在動手輪都會帶（採用句或確認句）；`recommendations` 只跟在定稿之後。
+`Discuss.message` 不會有打字機效果：它是 tool call 的參數，一次到位。這跟 `AskUser` / `FinalizePrompt` / `Confirm` 現況一致，不是新問題；前端不要對 `message` 期待 `token` 事件。
 
 ### 10.3 串流實作
 
@@ -823,15 +837,14 @@ scripts/
 - 右側 sticky 側欄：六維度儀表板。
 - 定稿卡片出現在對話流內（不用 modal），含正／負向 prompt、複製按鈕、生成建議、「儲存至共享知識庫」按鈕。prompt 逐 tag 以 chip 標示來源（知識庫片段／模型生成／基礎詞，§9），知識庫片段的 chip 可點開 preset 抽屜；複製仍是整段原文。
 - preset 預覽抽屜從右側滑出，覆蓋儀表板；顯示 `image_url`、snippet、tags。
-- `kind: "ask"` 渲染成一張**多維度追問卡**：`preamble` 在最上，每則 ask 一區（維度標題 + `question` + 一排 `options` chip），該維度在儀表板高亮。
+- `kind: "confirm"` 渲染成一張**確認卡**（2026-10-05）：正文加按鈕。沒有 `choices` 時一顆「對，就這樣」，有 `choices` 時每個解讀一顆；底下一行「不對的話，直接在下面打字修正」。只有最新一張、而且之後還沒動手的卡可以按：從對話流尾端往回找，先碰到確認卡就是它，先碰到追問卡或定稿卡代表已動過手；討論氣泡、存檔提示、失敗條目不影響（跟後端待確認的規則一致）。按下去伺服器回 `409` 的卡也標成過期。有可按的確認卡時，輸入框提示改成「按上面的按鈕套用；在這裡打字會當成修正」。
+- `kind: "ask"` 渲染成一張**多維度追問卡**：`preamble` 在最上，每則 ask 一區（維度標題 + `question` + 一排 `options` chip），該維度在儀表板高亮。2026-10-05 起追問卡不附推薦組合。
 - `kind: "message"` 渲染成一般對話氣泡；`options` 若有，渲染成比追問 chip 更輕的「參考方向」列表，儀表板**不**高亮。
 - chip 點選是**填入輸入框可累積**，不是點了就送；否則三個維度要送三次。
 - chip 送出時帶維度前綴：`[風格] 寫實攝影`，讓 LLM 能對回 `asks` 的哪一則。
 - `options[].presetId` 非 null 的選項可點開 preset 抽屜。
-- 任何 `error` / `blocked`：失敗的訊息保留顯示並標記原因，附「重試」按鈕；按下把原文填回輸入框，使用者可改可直接送（§4.6）。
+- 任何 `error` / `blocked`：失敗的訊息保留顯示並標記原因，附「重試」按鈕；按下把原文填回輸入框，使用者可改可直接送（§4.6）。例外是按確認卡的那一輪：原文放回輸入框送出會變成新的意見，所以不給「重試」，改提示「確認卡還在，可以再按一次」（HTTP 被拒的不提示，多半是過期的卡）。
 - 頂部「新對話」按鈕。
-
-> 2026-10-05：對話流多一種確認卡：只有最新一張、而且之後還沒動手時按鈕可按；有可按的確認卡時，輸入框提示「在這裡打字會當成修正」。追問卡不再有推薦條。
 
 ### 11.2 儀表板
 
@@ -850,7 +863,7 @@ hover 顯示 facet 名稱與狀態。`notApplicable` 的整個維度（如風景
 
 **前端也要回滾。** 失敗前已串出去的 `tool_call` 卡片、`dimensions` 更新都是這一輪的半成品。reducer 是純函式，做法跟後端對稱：**送出當下**就 snapshot store（不是等 `session` 事件——斷線可能發生在第一個事件之前），收到 `error`／`blocked`、或串流沒有以終止事件收尾就斷掉（記成 `stream_ended`）時 restore，再推一筆帶原文的失敗條目。後端回滾、前端回滾，兩邊一致（§4.6）。
 
-**重載恢復。** 對話流（顯示用的 transcript）與 sessionId 存 `sessionStorage`；權威狀態（status、profile、facetStates、askCount、lastFinal）重載時從 `GET /api/sessions/{id}` 拿回，`404` 就開新 session 並提示已過期（子專案 3 設計 §3.4）。
+**重載恢復。** 對話流（顯示用的 transcript）與 sessionId 存 `sessionStorage`；權威狀態（status、profile、facetStates、askCount、lastFinal）重載時從 `GET /api/sessions/{id}` 拿回，`404` 就開新 session 並提示已過期（子專案 3 設計 §3.4）。哪張確認卡可以按不另存，重載後從對話流重新推算；跟伺服器不一致時，按下去的 `409` 會說明。
 
 ## 12. 測試策略
 
@@ -858,18 +871,21 @@ hover 顯示 facet 名稱與狀態。`notApplicable` 的整個維度（如風景
 
 `ToolSetBuilder.Build`：
 
-- `AskCount >= 2` 時無 `AskUser`；`Finalized` 時無 `AskUser` 有 `RequestSaveConsent`
-- `Collecting` 且 `DiscussStreak < 8` → 有 `Discuss`；`= 8` → 無
-- `Finalized` 且 `DiscussStreak = 8` → 仍有 `Discuss`
-- `wantsAutoComplete` 命中 → 無 `AskUser` 也無 `Discuss`
-- `AskCount = 2` 且 `DiscussStreak = 8` 且 `Collecting` → 只剩永遠註冊的那五個
+- 確認輪只有 `Confirm`、`Discuss`、檢索，沒有任何會改畫面的工具；動手輪有改狀態的工具，沒有 `Confirm`、`Discuss`、`RequestSaveConsent`
+- 動手輪 `AskCount >= 2` 時無 `AskUser`；`Finalized` 的確認輪有 `RequestSaveConsent`、動手輪無 `AskUser`
+- 確認輪 `Collecting` 且 `DiscussStreak < 8` → 有 `Discuss`；`= 8` → 無
+- 確認輪 `Finalized` 且 `DiscussStreak = 8` → 仍有 `Discuss`
+- `wantsAutoComplete` 命中 → 確認輪只剩 `Confirm` 與檢索；動手輪無 `AskUser`
+- 動手輪 `AskCount = 2` 且 `Collecting` → 只剩永遠註冊的那五個
+- `retrieval: off` 兩種輪都只拿掉兩個檢索工具
 
-Filters：
+Filters 與 plugin 閘門：
 
 - `ToolBudgetFilter`：超過上限 `Terminate`
-- `TerminalToolFilter`：四個終止 tool 各自 `Terminate`
-- `Finalized` 下 `Discuss` 帶變更的 `facetStates` → 拒絕、不終止、計預算
-- `Profile == null` 下 `Discuss` 的 `facetStates` → 忽略、不發 `dimensions`
+- `TerminalToolFilter`：五個終止 tool 各自 `Terminate`
+- `Discuss` 帶變更的 `facetStates`（不分狀態）→ 拒絕、不終止、計預算；狀態相同但帶了 `note`／`tags` → 成功但不寫回
+- `Confirm`：`choices` 0 或 2–4 個通過、1 個或超過 4 個或超過 40 字拒絕；成功時 facet 狀態不變、記下待確認
+- `OutputSafetyFilter` 檢 `Confirm` 的 `message` 與每個 `choices`
 
 Session 狀態機：
 
@@ -877,6 +893,8 @@ Session 狀態機：
 - `Discuss` 成功：`Collecting` 下 `DiscussStreak++`，`Finalized` 下不變；兩者 `AskCount` 皆不變
 - `FinalizePrompt` 成功 → `DiscussStreak = 0`；`AskUser` 成功 → `DiscussStreak` 不變
 - `OutputSafetyFilter` 攔截 → 所有計數器不變
+- 待確認進快照：確認輪失敗不留卡；動手輪失敗待確認回來；採用輪清掉待確認
+- 按確認：沒有待確認或不是最新一張 → `409`；`choice` 對不上 → `400`；動手輪不呼叫輸入分類器，`AutoFill` 只在按下確認後打開
 
 後端清洗（§4.2 表格每一列一個案例）：
 
@@ -892,7 +910,7 @@ Session 狀態機：
 Chat history：
 
 - call args 壓縮後 `options` 無 `tags`
-- 超過 10 輪時最舊的被丟，system message 保留
+- 超過 `HistoryTurns`（20）輪時最舊的被丟，system message 保留
 
 錯誤復原（§4.6）：
 
@@ -906,12 +924,10 @@ Chat history：
 其他：
 
 - `SafetyGuard` 快速路徑（denylist）
-- 純文字協定違規處理：以 fake `IChatCompletionService` 回純文字，驗證重試後包成 `Discuss` 而非 `AskUser`；`Discuss` 不可用時發 `error`
-- 前端 `applyEvent` reducer，含 `session` 事件 snapshot / `error`／`blocked` restore
+- 純文字協定違規處理：以 fake `IChatCompletionService` 回純文字，驗證重試後包成 `Discuss` 而非 `AskUser`；`Discuss` 不可用時（例如動手輪）發 `error`，動手輪回滾後待確認還在；補救與強制收尾的提示用 kernel 宣告的完整工具名
+- 前端 `applyEvent` reducer，含 `session` 事件 snapshot / `error`／`blocked` restore；可按的確認卡推算（`lib/confirm.ts`）；按確認那一輪失敗時不帶原文
 
-**不 fake 整個 auto-invoke 迴圈**——那在 connector 內部，fake 它等於重寫它。測的是清單組裝與 filter 本身。
-
-> 2026-10-05 先確認再動手的測試見[先確認再動手設計](2026-10-05-confirm-before-act-design.md) §10。
+**不 fake 整個 auto-invoke 迴圈**——那在 connector 內部，fake 它等於重寫它。測的是清單組裝與 filter 本身。完整清單見[先確認再動手設計](2026-10-05-confirm-before-act-design.md) §10。
 
 ### 12.2 契約測試 — 真打 Gemini，只斷言形狀
 
@@ -923,32 +939,33 @@ Chat history：
 
 ### 12.3 人工 Eval — `docs/eval-cases.md`
 
-固定輸入（目前 24 條），每次改 system prompt 後手動跑並記錄結果與 `prompt_version`：
+固定輸入（目前 25 條），每次改 system prompt（`system.md`、`flow-propose.md`、`flow-act.md`）後手動跑並記錄結果與 `prompt_version`。2026-10-05 起每個會改畫面的輸入先出確認卡，下列「應追問／應定稿」都指按下確認之後：
 
 1. 極簡人像（「一個女生」）→ 應追問
-2. 完整人像 → 應直接定稿
+2. 完整人像 → 應直接定稿（facet 全 covered 時；還有缺口就先追問）
 3. 風景（「山上的日出」）→ profile=landscape，人物三維 notApplicable
 4. 載具 → profile=vehicle
-5. 含「隨便」→ 不追問直接定稿，且所有 `missing` 被補齊
+5. 含「隨便」→ 確認卡逐個維度列出要補什麼；按下後不追問直接定稿，且所有 `missing` 被補齊
 6. 「不要指定鞋子」→ `clothing.footwear` waived，定稿 prompt 無鞋子描述
 7. 連續兩輪模糊回答 → 第三輪強制定稿，`missing` 不補，定稿卡片列出未指定項目
 8. 「鞋子隨便，背景我要想一下」→ 仍追問背景，只有鞋子被補
 9. NSFW 輸入 → blocked
 10. 真實公眾人物 → blocked
-11. 定稿後「把背景改成黃昏」→ 重新定稿，不追問
+11. 定稿後「把背景改成黃昏」→ 確認卡講要改哪裡；按下後重新定稿，不追問
 12. 中途改題材（人像改風景）→ facet 重置
 13. 使用者回答與追問無關 → LLM 應能處理不崩
 14. 中途提問（「寫實跟動漫差在哪？」）→ LLM 走 `Discuss`，`AskCount` 不變，前端是對話氣泡不是追問卡
 15. 定稿後討論（「`blurry` 是幹嘛的？」）→ 沒有新定稿卡
-16. `Collecting` 一路聊到 streak 踩滿 → 強制定稿 → 之後還能繼續聊
+16. `Collecting` 一路聊到 streak 踩滿 → 確認輪只剩 `Confirm`，按下後定稿（追問額度還在就先追問）→ 之後還能繼續聊
 17. 回頭引用先前選項（「厚塗油畫那個具體會加哪些 tag？」）→ LLM 回答內容與 ledger 裡的 snippet 一致，沒有重撈也沒有編造
 18. 「一個少女」六缺五 → 第一次 `AskUser` 問三個維度、第二次問剩下的
-19. 「都你決定」→ 該輪直接定稿，沒有中間的 `Discuss`
-20. 定稿後說「風格改成動漫」→ LLM 用 `FinalizePrompt` 不是 `Discuss`（或被 §4.5 拒絕後改用）
+19. 「都你決定」→ 確認卡列出要補的內容（沒有中間的 `Discuss`）；按下後直接定稿
+20. 定稿後說「風格改成動漫」→ LLM 出確認卡，不是 `Discuss`（`Discuss` 帶變更會被 §4.5 擋回）；按下後重新定稿
 21. 以 fake connector 讓第二次 LLM 呼叫 500 兩次後成功 → 使用者無感，audit 無 `Turn_Failed`
 22. 讓它連續失敗超過重試次數 → `error` 事件、儀表板回到輪次開始、按「重試」後正常完成、`AskCount` 只算一次
 23. 送出會觸發上游攔截的描述 → `blocked` 事件、訊息保留、按「重試」原文回到輸入框、改寫後送出正常完成
-24. 整套組合推薦與採用 → `docs/eval-cases.md` S1–S7（2026-09-25）
+24. 整套組合推薦與採用 → `docs/eval-cases.md` S1–S7（2026-09-25；S1、S7 的追問卡推薦 2026-10-05 起已不適用）
+25. 先確認再動手 → `docs/eval-cases.md` C1–C10（2026-10-05：確認卡、衝突時的解讀選項、打「好」不算確認、過期的卡）
 
 ### 12.4 TDD 適用範圍
 
@@ -978,14 +995,14 @@ GenAIPromptCopilot/
 │  │  ├─ Llm/                            # ResilientChatCompletion, 失敗分類,
 │  │  │                                  # GeminiEmbeddingClient, GeminiRoleFixHandler
 │  │  ├─ Streaming/                      # AgentEvent, Channel 基礎建設, SSE writer
-│  │  ├─ Sessions/                       # Session, SessionStore, PresetLedger
+│  │  ├─ Sessions/                       # Session, SessionStore, PresetLedger, Confirmation（待確認與按確認的驗證）
 │  │  ├─ Data/                           # repositories（Npgsql 原生 SQL，無 DbContext／entity）
-│  │  ├─ Prompts/system.md
+│  │  ├─ Prompts/                        # system.md + flow-propose.md／flow-act.md（依輪的種類換進 {{FLOW}}）
 │  │  └─ Configuration/facets.yaml
 │  ├─ PromptCopilot.Api.Tests/
 │  └─ PromptCopilot.Frontend/            # Nuxt 3 SPA（ssr: false）+ Tailwind + Pinia + vitest
 │     ├─ types/api.ts                     # 後端 DTO 與 SSE 事件型別，唯一定義處
-│     ├─ lib/                             # 純函式：sse、reducer、persist、composer、dashboard、copy、options、prefs、trace、adopt、safety
+│     ├─ lib/                             # 純函式：sse、reducer、persist、composer、dashboard、copy、options、prefs、trace、adopt、safety、confirm
 │     ├─ composables/useApi.ts
 │     ├─ stores/session.ts                # 唯一的 Pinia store，狀態變更全走 lib/reducer
 │     ├─ components/
@@ -1048,7 +1065,7 @@ Azure 部署排除。
 | `modelId`／`tags` 針對性抓取 | 已實測不可行，不採用 | `modelId` 反查圖片回傳內容 100% 無 `meta.prompt`；`tags` 查詢參數回 400 Bad Request。見 `docs/superpowers/specs/2026-09-22-corpus-expansion-design.md` §4.3 |
 | 使用者提問時重設或豁免 `AskCount` | **否決**，改加 `Discuss` | 重設把「系統的打斷額度」跟「使用者的參與度」綁在一起，兩者沒有因果關係；使用者要的是「能繼續對話」，不是「讓 LLM 多問我兩次」。豁免則要靠分類器判斷「這句是提問還是回答」，邊界模糊（「你覺得寫實比較好嗎？我選寫實」兩者皆是），把閘門建在分類器上等於把硬保證降級成猜測——跟 §4.3 拒絕關鍵詞比對是同一個理由 |
 | `Discuss` 帶不帶選項 | 帶「參考方向」，不帶 `missingFacetIds` | 純文字的討論體驗差（「再多給我幾個方向」只能收到散文）；界線靠「索取 vs 回應」的語意與 streak 護欄守住 |
-| `Discuss` 帶不帶 `facetStates` | 帶，必填 | 終止型工具是該輪最後一次同步狀態的機會；不帶則討論期間儀表板變死的。這跟「不宣告需求」是兩回事 |
+| `Discuss` 帶不帶 `facetStates` | 帶，必填；2026-10-05 起只核對、不寫回 | 原理由是終止型工具是該輪最後一次同步狀態的機會。先確認再動手之後，會改畫面的話一律走 `Confirm`，`Discuss` 寫回就成了繞過確認的後門（§4.5）；參數留著當核對用，儀表板由每輪收尾的 `dimensions` 同步 |
 | `DiscussStreak` 上限 | 8 | 使用者指定。`Collecting` 期間最多 10 個未定稿回合 |
 | `DiscussStreak` 誰歸零 | 只有 `FinalizePrompt` | 讓上限可以講成一個數字；`AskUser` 不代表進展 |
 | `Finalized` 後 `Discuss` 限不限次 | 不限 | 護欄的目的是確保交出東西，交了就功成身退 |
@@ -1057,12 +1074,12 @@ Azure 部署排除。
 | tag 來源 | 伺服器定稿時比對 ledger 標 `rag`／`llm`／`base`（2026-09-25 起加 `adopted`，比對 `Session.Adoptions`），不信模型自述 | 同 §9 借用來源驗證的原則：少一個可被捏造的欄位；ledger 本來就是那一本帳 |
 | tag 來源字尾相符 | 片段或 tag 以對方為字尾即算 rag | 片段多為更具體的複合 tag（`platform sandals`）；只在空白邊界比字尾，不做子字串（§9） |
 | 定稿閘門 | 有缺就不准定稿，直到追問額度用完（`AskUser` 離開清單）；委託 note 的 facet 不算缺；強制定稿放行 | system.md 的追問政策模型不遵守（2026-09-25 實測：`AskUser` 還在清單上、31 個 facet 有 20 個 missing，模型直接 `FinalizePrompt`）；沿用 §4.3「違規的選項不給選」 |
-| `OutputSafetyFilter` 範圍 | 全檢（定稿 + 討論 + 追問的文字與選項） | §6.2 原文的理由對 `options` 一字不差地成立；合規是對外賣點，出口不一致難講 |
+| `OutputSafetyFilter` 範圍 | 全檢（定稿 + 討論 + 追問 + 確認卡的文字與選項） | §6.2 原文的理由對 `options` 一字不差地成立；合規是對外賣點，出口不一致難講 |
 | `presetId` 不在 ledger | 降級為 null，不移除 | `presetId` 本來就可為 null；輸出過濾兜住自由發明的內容 |
-| `AutoFill` 可逆 | **不做** | 有了 `Discuss` 之後問題自己解掉：`Discuss` 不看 `AutoFill`，使用者透過討論把某項變成 `covered` 或 `waived`，那一項就不在 `AutoFill` 補齊的範圍內。`waived` 本來就是為「即使委託也不補」存在的 |
+| `AutoFill` 可逆 | **不做** | 委託之後使用者再提修改（經確認卡），把某項變成 `covered` 或 `waived`，那一項就不在 `AutoFill` 補齊的範圍內。`waived` 本來就是為「即使委託也不補」存在的 |
 | 純文字補救的預設目標 | `Discuss`（原為 `AskUser`） | LLM 吐散文時九成是想講話，不是追問 |
 | ledger 只收 presets | 是 | histories 是參考不是選項，不會被回頭引用 |
-| history 截斷 | 最近 10 輪 | session 事實都在 ledger／`FacetStates`／`LastFinal`，history 只需最近脈絡 |
+| history 截斷 | 最近 20 輪（原 10） | session 事實都在 ledger／`FacetStates`／`LastFinal`，history 只需最近脈絡；2026-10-05 每個要求多一則按確認的使用者訊息，加倍才維持原本記得的要求數 |
 | session 總輪次上限 | 不加 | 純成本護欄，既有設計就沒有 |
 | 一輪失敗的處理 | 回滾至本輪開始前，所有失敗一律 | 一般化原本只對逾時的回滾；「不全毀」靠原子性保證，不靠逐項列舉哪個欄位不動 |
 | 手動重試 | 不加端點；不分 `error`／`blocked` 一律給重試按鈕，原文填回輸入框 | session 已回滾，重送等價首次送出；不給按鈕使用者也只是重打一次，區分是做樣子。「只重試一次」管的是系統自動重送的上限，不是使用者的決定 |
@@ -1089,4 +1106,10 @@ Azure 部署排除。
 | `tool_result.callId` | 等於 `tool_call.callId` | 前端要配對；id 由 `AuditFilter` 算好掛在 `TurnContext` 上（§10.2） |
 | 錯誤 frame 的內容 | 固定句子，不帶例外訊息 | 例外訊息可能帶連線字串、路徑、上游原文；內文留在 audit 與 log |
 | `save-to-shared` 的併發 | 與 `/messages` 共用 session 鎖，拿不到回 409 | 它讀的 `FacetStates`／`LastFinal` 在一輪跑完之前都還可能被回滾（§10.1） |
+| 先確認再動手（2026-10-05） | 會改畫面的要求一律先 `Confirm`，按下確認卡才動手；範圍包含第一次描述、每一批追問回答、定稿後修改、「隨便」 | 使用者回報「對話感不太重」，要「盡量謹慎」；由工具清單保證，不靠 prompt（§4.1、§4.3；[設計](2026-10-05-confirm-before-act-design.md) §2） |
+| 什麼算確認 | 只認按鈕（按「對，就這樣」或點解讀）；打字的「好」當成新意見 | 讓模型判斷「打的字是同意還是修正」，半同意半修改的話會直接動手，又變成靠 prompt |
+| 確認卡預告下一步 | 不預告（「隨便」除外，那一定直接定稿） | 確認輪無法得知自由回答補了哪些維度；驗收時連伺服器先算好的提示都講錯 |
+| 動手輪的輸入檢查 | 不跑 | 這一輪的使用者訊息是上一輪模型已過輸出審查的確認文字，原話在確認輪已過輸入審查；省一次 LLM 呼叫 |
+| 推薦範圍 | 只在定稿卡；採用只在定稿後 | 使用者 2026-10-05 決定未定稿前不推薦（推翻 2026-09-25「每次追問也推薦」） |
+| 未宣告工具名的防護 | 目前只在 prompt 與補救／強制提示寫完整名稱 | 根因在 SK 的未定義函式路徑不經 filter；程式端防護（改寫裸名或限制每輪 Gemini 呼叫數）列為後續（known-issues #13） |
 | 測試用審查開關 | 逐則帶 `safety: off`，後端 `Safety:AllowDisable` 預設關、沒開回 403；輸入分類器照跑只取 `wantsAutoComplete`；Gemini 的攔截不動；未審查的定稿不能 `save-to-shared` | 要能重現「我們自己的防線誤擋」與「關掉之後上游還擋不擋」；做成逐則而不是 session 屬性，重新整理就回到開著。共享庫會被別的對話檢索到，沒檢過的內容不能從唯一的寫入路徑進去（§6.1） |

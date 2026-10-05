@@ -29,8 +29,17 @@ ASPNETCORE_ENVIRONMENT=Development dotnet run --project PromptCopilot.Api --no-l
 ```bash
 SID=$(curl -s -X POST localhost:5000/api/sessions | jq -r .sessionId)
 curl -N -X POST localhost:5000/api/sessions/$SID/messages -H 'content-type: application/json' \
-  -d '{"text":"一個銀髮少女站在雨夜的霓虹街頭"}'
+  -d '{"text":"一位金色短髮的中年女士站在雨夜的霓虹街頭"}'
 ```
+
+打字的這一輪只會回確認卡（`final.kind = confirm`），什麼都還沒改。記下 `session` 事件的 `turnIndex`，按下確認：
+
+```bash
+curl -N -X POST localhost:5000/api/sessions/$SID/messages -H 'content-type: application/json' \
+  -d '{"confirm":{"turnIndex":1,"choice":null}}'
+```
+
+確認卡有 `choices` 時，`choice` 填選第幾個（0 起算）。這一輪才會追問或定稿。之後每個會改畫面的要求都是同樣兩步；只是問問題（「寫實跟動漫差在哪」）一輪就回答。
 
 `-N` 讓 curl 不緩衝，能看到 SSE 逐筆吐出。事件形狀見主規格 §10.2。
 
@@ -53,6 +62,8 @@ GEMINI_API_KEY=<key> PC_INTEGRATION=1 dotnet test --filter GeminiContractTests  
 
 所有數字在 `appsettings.json`（`Orchestrator:*`、`Llm:*Retries`），本機覆寫用 `appsettings.Development.json` 或 user-secrets。
 
+本機 `dotnet test` 若在新建的 Debug dll 上被 Windows 應用程式控制擋下，改跑 `dotnet test -c Release`，結果相同。
+
 ## Eval
 
-改完 `Prompts/system.md` 照 [`docs/eval-cases.md`](../docs/eval-cases.md) 手跑一遍，把 `prompt_version` 與結果填回去。
+改完 `Prompts/` 底下的樣板（`system.md`、`flow-propose.md`、`flow-act.md`）照 [`docs/eval-cases.md`](../docs/eval-cases.md) 手跑一遍，把 `prompt_version` 與結果填回去。確認輪與動手輪用的 prompt 不同，`prompt_version` 也不同。改 prompt 文字要多跑幾輪看 `Turn_Failed`：模型呼叫工具時偶爾漏掉 `Dialog_` 這類前綴，會一路重試到逾時，發生率跟 prompt 文字有關（[known-issues #13](../docs/known-issues.md)）。

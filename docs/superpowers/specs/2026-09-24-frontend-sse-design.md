@@ -5,6 +5,8 @@
 主規格：[2026-09-21-genai-prompt-copilot-design.md](2026-09-21-genai-prompt-copilot-design.md) §10、§11、§14 第 3 列
 多輪設計：[2026-09-22-multi-turn-dialogue-design.md](2026-09-22-multi-turn-dialogue-design.md) §5.1、§5.4、§5.6、§11 最後一條
 
+> 2026-10-05：對話流多了確認卡（打字的那一輪只出確認卡，按下按鈕才追問或定稿），追問卡不再附推薦組合，見[先確認再動手設計](2026-10-05-confirm-before-act-design.md) §7、§8。前端現況以主規格 §11 為準。
+
 ---
 
 ## 1. 目標與範圍

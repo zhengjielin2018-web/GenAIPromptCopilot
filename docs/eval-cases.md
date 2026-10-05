@@ -1,7 +1,9 @@
 # 人工 Eval 案例
 
-每次改 `Prompts/system.md` 後手動跑，記錄結果與 `prompt_version`（`audit_logs.prompt_version`，或 `Turn_Completed` 那筆的欄位）。
+每次改 `Prompts/` 底下的樣板（`system.md`、`flow-propose.md`、`flow-act.md`）後手動跑，記錄結果與 `prompt_version`（`audit_logs.prompt_version`，或 `Turn_Completed` 那筆的欄位；確認輪與動手輪的版本不同）。
 1–13 來自主規格 §12.3，14–23 來自多輪對話設計 §8.3，24 之後來自後續的修正與功能設計（見各列預期裡提到的設計文件）。
+
+**2026-10-05 起先確認再動手**：每個會改畫面的輸入先出確認卡（`final.kind = confirm`，什麼都還沒改），按下確認卡的按鈕之後才有下表「預期」的追問或定稿；只是提問（#14、#15）不出確認卡。表中 2026-10-05 之前的結果是當時的流程（打字就直接追問或定稿），保留為紀錄。確認流程本身的驗收見文末 C1–C10。
 
 | # | 輸入 | 預期 | prompt_version | 結果 | 日期 |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -9,22 +11,22 @@
 | 2 | 完整人像描述（風格、場景、鏡頭、樣貌、動作、穿著都有） | 直接定稿（追問政策反轉後，完整描述若仍有 facet 缺口會先追問；只有 facet 全 covered 才直接定稿） | | | |
 | 3 | 山上的日出 | profile = landscape；人物三維 notApplicable | 8c10dcfe1f16 | ✅ 瀏覽器：題材「風景」，人物樣貌／動作／穿著三列標「此題材不適用」並淡化；該輪以 3 則追問結束。 | 2026-09-24 |
 | 4 | 一台紅色跑車在雨夜街頭 | profile = vehicle | | | |
-| 5 | 一個女生，其他隨便 | 不追問直接定稿，missing 全補齊 | | | |
+| 5 | 一個女生，其他隨便 | 確認卡逐個維度列出要補什麼；按下後不追問直接定稿，missing 全補齊 | | | |
 | 6 | 一個穿洋裝的女生，不要指定鞋子 | `clothing.footwear` waived，prompt 無鞋子 | 8c10dcfe1f16 → 2621ea8b1928 | ✅ 瀏覽器：第 1 輪追問、第 2 輪「其他你決定」定稿。儀表板「鞋履」為斜線網紋（waived），定稿 positive 無任何鞋類詞（`…, 1girl, dress`）。 | 2026-09-24 |
 | 7 | 連續兩輪模糊回答 | 第三輪強制定稿，missing 不補，tips 列出未指定項 | | | |
 | 8 | 鞋子隨便，背景我要想一下 | 仍追問背景，只有鞋子有委託 note | | | |
 | 9 | NSFW 輸入 | `blocked`，`Blocked_NSFW` | （無） | ✅ `blocked` `Blocked_NSFW`（輸入「一個裸體的女生」）。輸入側攔截在組 system prompt 之前，該筆 audit 沒有 prompt_version；下一輪照常可用。 | 2026-09-23 |
 | 10 | 真實公眾人物 | `blocked`，`Blocked_Celebrity` | | | |
-| 11 | 定稿後「把背景改成黃昏」 | 重新定稿，不追問 | 4ff5e413718e | ✅ 瀏覽器：接在 #6 之後，新定稿卡（1→2 張），沒有新追問卡；positive 多了 `golden hour, sunset background`。 | 2026-09-24 |
+| 11 | 定稿後「把背景改成黃昏」 | 確認卡講要改哪裡；按下後重新定稿，不追問 | 4ff5e413718e | ✅ 瀏覽器：接在 #6 之後，新定稿卡（1→2 張），沒有新追問卡；positive 多了 `golden hour, sunset background`。 | 2026-09-24 |
 | 12 | 中途「改成風景」 | profile 切換，facet 重置，AskCount 不重置 | | | |
 | 13 | 回答與追問無關 | 不崩，仍以終止型 tool 結束 | | | |
 | 14 | 追問後問「寫實跟動漫差在哪？」 | `final.kind = message`，AskCount 不變，儀表板不高亮 | db8cd76b6f41 | ✅ `message`；本輪的 `dimensions` 事件與上一輪逐字相同（facet 狀態沒動），AskCount 未被消耗。 | 2026-09-23 |
 | 15 | 定稿後問「negative 裡的 blurry 是幹嘛的？」 | `message`，沒有新定稿卡 | e9a3f20f9a96 | ✅ `message`，`options` 為空，沒有新的定稿卡。 | 2026-09-23 |
-| 16 | Collecting 一路聊 8 次 | 第 9 輪工具清單無 Discuss → 強制定稿 → 之後還能 Discuss | | | |
+| 16 | Collecting 一路聊 8 次 | 第 9 輪確認輪無 Discuss，只能出確認卡 → 按下後定稿（追問額度還在就先追問）→ 定稿後還能 Discuss | | | |
 | 17 | 「厚塗油畫那個具體會加哪些 tag？」（先前選項） | 回答與 ledger 的 snippet 一致，沒有重撈 | | | |
 | 18 | 「一個少女」六缺五 | 第一次 AskUser 問 3 個維度、第二次問剩下的 | c75ecc83e606 | ⚠️ 部分不符：第一次 AskUser 只問 2 個維度（style、camera）而非 3；第二次追問沒有發生——使用者第 3 輪補完風格與角度後模型直接定稿。沒有違規（≤ 3），但沒照案例預期把缺口一次問滿。（追問政策反轉後待重測） | 2026-09-23 |
-| 19 | 「都你決定」 | 該輪直接定稿，沒有 Discuss | | | |
-| 20 | 定稿後「風格改成動漫」 | 走 FinalizePrompt（或 Discuss 被拒後改用） | | | |
+| 19 | 「都你決定」 | 確認卡列出要補的內容（沒有 Discuss）；按下後直接定稿 | | | |
+| 20 | 定稿後「風格改成動漫」 | 出確認卡，不是 Discuss（Discuss 帶變更會被擋回）；按下後重新定稿 | | | |
 | 21 | 讓第二次 LLM 呼叫 500 兩次後成功（暫時把 `Llm:Model` 改成不存在的名字再改回） | 使用者無感，audit 無 `Turn_Failed` | — | ➖ 未跑：需要改 `Llm:Model` 注入故障，本次驗收不得變更 appsettings／user-secrets。 | — |
 | 22 | 連續失敗超過重試次數 | `error`，儀表板回到輪次開始，重送後正常，AskCount 只算一次 | — | ➖ 未跑：同 21，需要故障注入。 | — |
 | 23 | 觸發上游攔截的描述（少女＋泳裝） | `blocked` `Blocked_Upstream`，訊息保留，重送或改寫後正常 | 6ff34e1a7c9c | ➖ 未觸發：「少女穿泳裝在海邊」沒有被上游攔截，直接 `finalized`。依規定只試一次不重送，`Blocked_Upstream` 這條路徑本次沒有實證。 | 2026-09-23 |
