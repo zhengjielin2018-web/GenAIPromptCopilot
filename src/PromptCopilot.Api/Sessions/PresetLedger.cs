@@ -29,9 +29,16 @@ public sealed class PresetLedger
 {
     private readonly Dictionary<long, LedgerEntry> _entries = new();
 
+    /// <summary>檢索時機設計 §5.1：tag 第一次出現的先後。片段在這裡記；模型寫的由各 plugin 記。</summary>
+    public TagTimeline Timeline { get; private set; } = new();
+
     public void Record(LedgerEntry seed, LedgerHit hit)
     {
-        if (!_entries.TryGetValue(seed.Id, out var e)) { e = seed; _entries[seed.Id] = e; }
+        if (!_entries.TryGetValue(seed.Id, out var e))
+        {
+            e = seed; _entries[seed.Id] = e;
+            Timeline.SeeSnippet(seed.PromptSnippet);
+        }
         e.Hits.Add(hit);
     }
 
@@ -54,7 +61,7 @@ public sealed class PresetLedger
 
     public PresetLedger Clone()
     {
-        var c = new PresetLedger();
+        var c = new PresetLedger { Timeline = Timeline.Clone() };
         foreach (var (k, v) in _entries) c._entries[k] = v.Clone();
         return c;
     }
