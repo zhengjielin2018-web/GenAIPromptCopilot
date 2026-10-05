@@ -4,6 +4,8 @@
 來源：`docs/superpowers/specs/2026-09-25-set-recommendations-design.md` 的後續案（2026-09-29 facet 向量案 brainstorm 時排定），facet 向量案完成（master `a2287a3`）後開案。
 實驗紀錄：`docs/experiments/2026-09-30-recommendation-slate.md`（本文件的數字都出自那裡）。
 
+> 2026-10-05：追問卡不再推薦，採用改成定稿後才收（[先確認再動手設計](2026-10-05-confirm-before-act-design.md) §8）。本文講到追問卡推薦的地方以那裡為準。
+
 ---
 
 ## 1. 問題與目標

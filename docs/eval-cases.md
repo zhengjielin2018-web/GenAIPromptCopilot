@@ -117,6 +117,8 @@ fresh clone 在暫存目錄進行，只放 `.env`；開發用的 stack 先 `dock
 
 設計：`docs/superpowers/specs/2026-09-25-set-recommendations-design.md`。瀏覽器驗收，需要 API、知識庫，且 `facet_tags` 已回填（`scripts/backfill_facet_tags.py` 或 seed-v2）。
 
+> 2026-10-05 起追問卡不再推薦（先確認再動手設計 §8）：S1 的「追問卡底下參考組合」與 S7 的「在追問卡採用」已不適用。
+
 | # | 操作 | 應該看到 | 結果 |
 | :--- | :--- | :--- | :--- |
 | S1 | 新對話，送「一個少女穿涼鞋」 | 儀表板鞋履 chip 的 title 含模型給的英文 tag（如 `sandals`）；追問卡底下「參考組合」只有被問的維度；人物穿著那列副標「含你講的 sandals」（`anchored=true`）、2–3 張縮圖有來源標籤；縮圖點開抽屜 | ✅ API 層：`dimensions.facetTags` 有 `clothing.footwear: "sandals"`；`final ask` 問風格／場景／鏡頭，隨後的 `recommendations` 恰好是這三維、各 3 套都有縮圖與 `sourceRef`。模型沒問穿著，這輪沒有穿著列（錨在 S2 驗）。畫面（chip title、副標、抽屜）未看 |
@@ -162,6 +164,8 @@ API 層是用 SSE 直接打分支 `feat/set-recommendations` 的 API（本機 50
 
 設計：`docs/superpowers/specs/2026-09-30-recommendation-slate-design.md`。Claude 用 Playwright（`playwright-core` 驅動系統的 Edge，headless）跑，`docker compose up -d --build api frontend` 重建後執行，實際呼叫 Gemini。腳本放 scratchpad，不進 repo。G1–G4 同一個 session（`a62c51fd8bb74a63b39dff3a7d2189bd`），G5 另開一個乾淨的 browser context（新 session `ecc143f6c0e2406db6e5750ffb9fa695`）。全程沒有 `Turn_Failed`、`Protocol_Violation`。
 
+> 2026-10-05 起追問卡不再推薦，G5 已不適用。
+
 | # | 情境 | 期望 | 結果 |
 | :--- | :--- | :--- | :--- |
 | G1 | 定稿卡 | 每排 2 相關＋1 探索、每套有理由、探索位虛線 | ✅ 輸入「一個穿涼鞋和白色洋裝的少女坐在海邊」，第 1 輪追問（風格／場景／鏡頭），回「其他都你決定，直接定稿」後第 2 輪定稿。六個人像維度（風格、場景、鏡頭、人物樣貌、人物動作、人物穿著）每排恰好 3 張、2 相關＋1 探索，本次沒有任何維度候選不足。理由文字逐項核對：有錨的維度是「含你講的 X」（如場景「含你講的 beach」、人物穿著「含你講的 white dress」、人物動作「含你講的 sitting」）；風格維度沒錨到，2 個相關位都是「最接近你描述的」（`reason:"query"`）；每排第 3 張都是「換個搭法」（`reason:"explore"`），DOM 上都帶 `outline-dashed` 樣式與 `data-reason="explore"`。排頭沒有列層級文案（`d.batch != null` 時該 `<span>` 不渲染）。截圖 `g1-final.png`、逐維度 DOM 結構存於 `g1-final.json`（scratchpad） |
@@ -175,3 +179,22 @@ API 層是用 SSE 直接打分支 `feat/set-recommendations` 的 API（本機 50
 - 這次驗收六個人像維度在 G1 都拿到滿額的 2＋1，沒有出現「候選不足只給 1～2 張」的情況；候選不足的分支這次沒有實證，之後如果要驗可以挑一個 `preset_facet_embeddings` 覆蓋率低的冷門 facet 组合。
 - headless Edge 對外部圖床（Civitai／Kisegae）的縮圖有時在截圖那一刻還沒畫出來（`g1-final.png` 少數格子空白），但 `<img>` 的 `src` 與來源標籤都在，換一批後的截圖（`g2-after-nextbatch.png`）縮圖正常顯示；判斷是這個環境對外部圖檔的載入時序問題，不是產品缺陷，DOM 斷言不受影響。
 - `Recommendations_Next` 這一輪呼叫的 `latency_ms` 中位數 538ms（n=13，其中 1 筆 2432ms 的暖機樣本），沒有拖慢互動；數字與量測方式見設計 §8。
+
+## 2026-10-05 先確認再動手（含追問卡不再推薦）
+
+設計：`docs/superpowers/specs/2026-10-05-confirm-before-act-design.md`。Claude 用 Playwright（`playwright-core` 驅動系統的 Edge，headless）跑，`docker compose up -d --build api frontend` 重建後執行，實際呼叫 Gemini。腳本放 scratchpad，不進 repo。
+
+| # | 操作 | 預期 | 結果 |
+| :--- | :--- | :--- | :--- |
+| C1 | 送「一位金色短髮的中年女士拿著相機和飲料站在雨夜的霓虹街頭」 | 確認卡複述畫面；按下前儀表板不變；按「對，就這樣」後出追問卡，沒有推薦條 | |
+| C2 | 用選項回答追問 | 先出確認卡（「我會把風格設成…」），按下後才追問或定稿 | |
+| C3 | 定稿後送「讓她拿雨傘」，跑 3 次 | 3 次都是有選項的確認卡；選「換掉飲料，改拿雨傘」後定稿有雨傘與相機、沒有飲料 | |
+| C4 | 定稿後送「鞋子換成靴子」 | 單一提案卡；按下後重新定稿 | |
+| C5 | 確認卡沒按時問「寫實跟動漫差在哪」 | `Discuss` 回答；之後舊確認卡仍可按且有效 | |
+| C6 | 確認卡出現後在輸入框打「好」 | 出新的確認卡，不動手 | |
+| C7 | 動手後看舊確認卡；curl 帶舊輪次送確認 | 舊卡停用；curl 409「只有最新一張確認卡可以按」 | |
+| C8 | 送「直接給我」 | 確認卡列出打算補的內容；按下後定稿 | |
+| C9 | 確認卡沒按時重新整理 | 卡片回來，照樣能按 | |
+| C10 | 從定稿卡採用一套；curl 在追問階段送採用 | 採用直接動手、不出確認卡；curl 409「定稿後才能採用組合」 | |
+
+耗時（從 `docker compose logs api` 的 `Turn …` 摘要行算中位數）：確認輪 ＿ ms、動手輪 ＿ ms。
