@@ -390,4 +390,31 @@ public class DialogPluginTests
         Assert.Equal(FacetState.Waived, s.FacetStates["pose.main"]);
         Assert.Contains(turn.Rejections, r => r.Contains("bogus"));
     }
+
+    // ---- 檢索時機（2026-10-06）----
+
+    /// <summary>設計 §5：選項數與帶 presetId 的進本輪計數；沒帶 presetId 的 tags 是模型寫的，帶的不記（片段那邊記過）。</summary>
+    [Fact]
+    public void AskUser_counts_options_and_records_tags_of_options_without_a_preset()
+    {
+        var (p, turn, s) = Make();
+        var ask = new AskItem("style", "q?", new[] { "style.genre" },
+            new[] { new OptionItem("寫實", "photorealistic", 5), new OptionItem("動漫", "anime style", null) });
+        Assert.Equal("ok", p.AskUser("hi", new[] { ask }, Array.Empty<FacetStateEntry>()));
+        Assert.Equal(2, turn.OptionsTotal);
+        Assert.Equal(1, turn.OptionsWithPreset);
+        Assert.Equal(TagTimeline.Source.Model, s.Ledger.Timeline.FirstSeen("anime style"));
+        Assert.Null(s.Ledger.Timeline.FirstSeen("photorealistic"));
+    }
+
+    [Fact]
+    public void Discuss_counts_options_too()
+    {
+        var (p, turn, _) = Make();
+        var r = p.Discuss("可以參考這些方向", Array.Empty<FacetStateEntry>(),
+            new[] { new OptionItem("雨夜咖啡廳", "night, cafe", 5), new OptionItem("書店", "bookstore", null) });
+        Assert.Equal("ok", r);
+        Assert.Equal(2, turn.OptionsTotal);
+        Assert.Equal(1, turn.OptionsWithPreset);
+    }
 }

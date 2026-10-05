@@ -41,7 +41,11 @@ public sealed class SessionPlugin(TurnContext turn, FacetCatalog catalog)
             if (!FacetStateParser.TryParse(u.State, out var st)) { turn.Rejections.Add($"facet {u.FacetId} 的狀態 '{u.State}' 無法解析，略過"); continue; }
             parsed[u.FacetId] = st;
             if (!string.IsNullOrWhiteSpace(u.Note)) turn.Session.FacetNotes[u.FacetId] = u.Note!;
-            if (!string.IsNullOrWhiteSpace(u.Tags)) tags[u.FacetId] = u.Tags!;
+            if (!string.IsNullOrWhiteSpace(u.Tags))
+            {
+                tags[u.FacetId] = u.Tags!;
+                turn.Session.Ledger.Timeline.SeeModel(u.Tags);           // 檢索時機設計 §5.1：模型寫的 tag
+            }
         }
         turn.Session.ApplyFacetStates(parsed, catalog, tags);
         turn.Emit(turn.DimensionsSnapshot());

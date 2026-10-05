@@ -52,9 +52,11 @@ public sealed class KnowledgePlugin(TurnContext turn, FacetCatalog catalog, IEmb
         CancellationToken ct)
     {
         var s = turn.Session;
+        turn.Searches++;                                                // 檢索時機設計 §5.2：整次被擋也算，模型有照流程去查
         if (s.Profile is null) return "錯誤：請先呼叫 SetProfile";
         if (queries is null || queries.Length == 0) return "錯誤：queries 不可為空，請一次帶上本輪所有要查的項目";
         if (queries.Length > MaxQueries) return $"錯誤：queries 最多 {MaxQueries} 個項目（使用者講到的每個 facet 各一項，加上沒講的維度各兩項），收到 {queries.Length} 個";
+        turn.SearchItems += queries.Length;
 
         var grounded = s.GroundedDimensions(catalog);
         var profileFacets = catalog.IdsForProfile(s.Profile);
@@ -84,7 +86,11 @@ public sealed class KnowledgePlugin(TurnContext turn, FacetCatalog catalog, IEmb
             else { errors[i] = "每個項目要有 dimension 或 facetId"; continue; }
             if (string.IsNullOrWhiteSpace(q.Query)) { errors[i] = facetId is null ? $"維度 {dimension} 的 query 空白" : $"facet {facetId} 的 query 空白"; continue; }
             valid.Add((i, dimension, facetId, q.Query, facetId is null ? null : CleanTags(q.Tags), facetIds));
+            // 模型送進來的翻譯，在看到任何命中之前記（檢索時機設計 §5.1）；維度項目沒有 tags
+            s.Ledger.Timeline.SeeModel(valid[^1].tags);
         }
+
+        turn.SearchItemErrors += errors.Count;
 
         var vectors = valid.Count == 0
             ? Array.Empty<float[]>()

@@ -583,4 +583,33 @@ public class KnowledgePluginTests
     [InlineData(0.249, false, "高")] [InlineData(0.25, false, "中")] [InlineData(0.30, false, "低")]
     public void Band_uses_the_facet_thresholds_only_for_facet_vectors(double dist, bool facet, string expected) =>
         Assert.Equal(expected, KnowledgePlugin.Band(dist, facet));
+
+    // ---- 檢索時機（2026-10-06）----
+
+    /// <summary>設計 §5.2：每次呼叫都算一次檢索（整次被擋也算），項目與逐項錯誤分開數。</summary>
+    [Fact]
+    public async Task Counts_calls_items_and_item_errors_on_the_turn()
+    {
+        var (p, turn, _, _, _, _) = Make();
+        await p.SearchPresetsAsync(Q(("hair", "捲髮"), ("style", "寫實")), default);
+        await p.SearchPresetsAsync(Array.Empty<SearchQuery>(), default);           // 整次被擋：只算呼叫
+        Assert.Equal(2, turn.Searches);
+        Assert.Equal(2, turn.SearchItems);
+        Assert.Equal(1, turn.SearchItemErrors);
+    }
+
+    /// <summary>設計 §5.1：facet 項目的 tags 是模型在看到命中之前寫的；命中的片段後到。</summary>
+    [Fact]
+    public async Task Facet_item_tags_are_seen_as_model_before_the_hits_are_recorded()
+    {
+        var (p, _, s, _, presets, _) = Make();
+        presets.FacetPools["appearance.hair"] = 10;
+        presets.FacetHits["appearance.hair"] = new[]
+        {
+            new PresetHit(1, "金短髮", "Appearance", new[] { "appearance.hair" }, "short hair, blonde hair", null, null, 0.18, null),
+        };
+        await p.SearchPresetsAsync(new[] { F("appearance.hair", "金色短髮", "blonde hair") }, default);
+        Assert.Equal(TagTimeline.Source.Model, s.Ledger.Timeline.FirstSeen("blonde hair"));
+        Assert.Equal(TagTimeline.Source.Snippet, s.Ledger.Timeline.FirstSeen("short hair"));
+    }
 }

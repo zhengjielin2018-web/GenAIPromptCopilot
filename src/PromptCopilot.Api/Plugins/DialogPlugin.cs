@@ -137,9 +137,19 @@ public sealed class DialogPlugin(TurnContext turn, FacetCatalog catalog, Orchest
         return false;
     }
 
+    /// <summary>攤出去的選項：帶 presetId 的記進 ledger 的 offered；沒帶的 tags 是模型自己寫的，記進 timeline（檢索時機設計 §5.1）。
+    /// 順便數本輪的選項數與帶 presetId 的（§5.2）。清洗時 presetId 不在 ledger 而被降級的，這裡已經是 null。</summary>
     private void MarkOffered(IEnumerable<(string? dimension, OptionItem option)> offered)
     {
         foreach (var (dim, o) in offered)
-            if (o.PresetId is { } id) S.Ledger.MarkOffered(id, new OfferedRef(turn.TurnIndex, dim, o.Label));
+        {
+            turn.OptionsTotal++;
+            if (o.PresetId is { } id)
+            {
+                turn.OptionsWithPreset++;
+                S.Ledger.MarkOffered(id, new OfferedRef(turn.TurnIndex, dim, o.Label));
+            }
+            else S.Ledger.Timeline.SeeModel(o.Tags);
+        }
     }
 }
