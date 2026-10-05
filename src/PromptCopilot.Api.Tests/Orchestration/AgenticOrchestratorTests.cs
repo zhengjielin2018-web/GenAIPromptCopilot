@@ -1372,4 +1372,33 @@ public class AgenticOrchestratorTests
         Assert.Contains("\"ragSplit\":{\"borrowed\":[\"streetspace\"],\"echo\":[\"cafe\"]}", completed.PayloadJson!);
         Assert.Contains("\"kind\":\"act\"", completed.PayloadJson!);
     }
+
+    /// <summary>設計 §4：確認輪的 SearchPresets 結果，動手輪看得到完整片段，動手輪收尾才壓掉。</summary>
+    [Fact]
+    public async Task Propose_turn_search_results_survive_until_the_next_turn_ends()
+    {
+        var h = new Harness();
+        h.Session.ApplyProfile("portrait", Catalog);
+        const string search = """{"results":[{"dimension":"clothing","facetId":"clothing.upper","query":"家居服","grounded":false,"poolSize":70,"hits":[{"id":9726,"title":"粉紅睡衣","positive":"pink pajamas"}]}]}""";
+        static bool HasSnippet(ChatHistory hist) =>
+            hist.Any(m => m.Items.OfType<FunctionResultContent>().Any(r => r.Result?.ToString()?.Contains("pink pajamas") == true));
+        h.Chat.ThenAsync(async (hist, k) =>
+        {
+            // 模擬 connector 已跑完一次 SearchPresets（harness 沒掛 KnowledgePlugin）
+            var call = new FunctionCallContent(ToolNames.SearchPresets, "Knowledge", "c-search");
+            var callMsg = new ChatMessageContent(AuthorRole.Assistant, content: null); callMsg.Items.Add(call); hist.Add(callMsg);
+            var toolMsg = new ChatMessageContent(AuthorRole.Tool, content: null); toolMsg.Items.Add(new FunctionResultContent(call, search)); hist.Add(toolMsg);
+            return new[] { await Invoke(hist, k!, "Dialog", "Confirm", new { message = "穿著我會從知識庫挑粉紅睡衣。" }) };
+        });
+        await h.RunAsync("衣服你幫我設計");
+        Assert.True(HasSnippet(h.Session.ChatHistory));                               // 確認輪收尾沒壓
+
+        h.Chat.ThenAsync(async (hist, k) =>
+        {
+            Assert.True(HasSnippet(hist));                                            // 動手輪看得到
+            return new[] { await Invoke(hist, k!, "Dialog", "AskUser", AskArgs()) };
+        });
+        await h.RunAsync(new TurnInput(ConfirmValidator.AcceptText, Confirmed: new ConfirmedInput(h.Session.PendingConfirmation!, null)));
+        Assert.False(HasSnippet(h.Session.ChatHistory));                              // 動手輪收尾壓掉
+    }
 }

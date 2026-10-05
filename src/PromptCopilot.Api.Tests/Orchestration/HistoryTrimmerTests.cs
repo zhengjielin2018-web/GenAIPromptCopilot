@@ -153,4 +153,50 @@ public class HistoryTrimmerTests
         HistoryTrimmer.Truncate(h, keepTurns);
         Assert.Equal(7, h.Count);
     }
+
+    // ---- 檢索時機（2026-10-06 設計 §4）----
+
+    private const string FullSearch = """{"results":[{"dimension":"clothing","facetId":"clothing.upper","query":"家居服","grounded":true,"poolSize":70,"hits":[{"id":9726,"title":"粉紅睡衣","positive":"pink pajamas"}]}]}""";
+
+    [Fact]
+    public void Keep_search_results_leaves_SearchPresets_whole_but_still_strips_option_tags()
+    {
+        var h = new ChatHistory();
+        h.Add(ToolResult("SearchPresets", FullSearch));
+        h.Add(Call("Discuss", new { message = "m", options = new[] { new { label = "睡衣", tags = "pink pajamas", presetId = 9726 } } }));
+
+        HistoryTrimmer.CompressTurn(h, 0, keepSearchResults: true);
+
+        Assert.Contains("pink pajamas", h[0].Items.OfType<FunctionResultContent>().Single().Result!.ToString());
+        Assert.DoesNotContain("pink pajamas", h[1].Items.OfType<FunctionCallContent>().Single().Arguments!["options"]!.ToString());
+    }
+
+    [Fact]
+    public void Compress_search_results_before_only_touches_earlier_search_results()
+    {
+        var h = new ChatHistory();
+        h.Add(ToolResult("SearchPresets", FullSearch));                               // 上一個確認輪留下的
+        h.Add(ToolResult("SearchSimilarPrompts", """[{"intent":"短","positive":"x"}]"""));
+        h.AddUserMessage("對，就這樣");
+        var end = h.Count;
+        h.Add(ToolResult("SearchPresets", FullSearch));                               // 這一輪的
+
+        HistoryTrimmer.CompressSearchResultsBefore(h, end);
+
+        Assert.DoesNotContain("pink pajamas", h[0].Items.OfType<FunctionResultContent>().Single().Result!.ToString());
+        Assert.Contains("\"positive\":\"x\"", h[1].Items.OfType<FunctionResultContent>().Single().Result!.ToString());   // 只壓 SearchPresets
+        Assert.Contains("pink pajamas", h[end].Items.OfType<FunctionResultContent>().Single().Result!.ToString());
+    }
+
+    /// <summary>Review Focus 3：每輪都掃一次，已壓過的必須原樣不動。</summary>
+    [Fact]
+    public void Compressing_an_already_compressed_search_result_is_a_no_op()
+    {
+        var h = new ChatHistory();
+        h.Add(ToolResult("SearchPresets", FullSearch));
+        HistoryTrimmer.CompressTurn(h, 0);
+        var once = h[0].Items.OfType<FunctionResultContent>().Single();
+        HistoryTrimmer.CompressSearchResultsBefore(h, h.Count);
+        Assert.Same(once, h[0].Items.OfType<FunctionResultContent>().Single());
+    }
 }

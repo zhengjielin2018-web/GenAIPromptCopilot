@@ -170,4 +170,25 @@ public class HistoryTrimmerGeminiTests
 
         Assert.Same(tool, run.History.Single(m => m.Role == AuthorRole.Tool));
     }
+
+    /// <summary>檢索時機設計 §4：確認輪留著的結果下一輪照樣帶片段；下一輪收尾壓掉之後才不帶；已壓過的 Gemini 訊息不重建（Review Focus 3）。</summary>
+    [Fact]
+    public async Task Kept_search_results_reach_the_next_request_and_are_compressed_at_its_end()
+    {
+        var run = await FirstTurnAsync(CallSearch, Text, Text);
+        HistoryTrimmer.CompressTurn(run.History, run.StartIdx, keepSearchResults: true);
+
+        await NextRequestAsync(run);
+        Assert.Contains("silver hair", run.Http.Bodies[^1]);                          // 下一輪看得到完整片段
+
+        var secondStart = run.History.ToList().FindIndex(m => m.Role == AuthorRole.User && m.Content == "第二輪") + 1;
+        HistoryTrimmer.CompressSearchResultsBefore(run.History, secondStart);         // 下一輪收尾
+        var tool = run.History.Single(m => m.Role == AuthorRole.Tool);
+        await NextRequestAsync(run);
+        Assert.DoesNotContain("silver hair", run.Http.Bodies[^1]);
+        Assert.Contains("\"thoughtSignature\":\"SIG-1\"", run.Http.Bodies[^1]);
+
+        HistoryTrimmer.CompressSearchResultsBefore(run.History, run.History.Count);  // 已壓過：不重建
+        Assert.Same(tool, run.History.Single(m => m.Role == AuthorRole.Tool));
+    }
 }
