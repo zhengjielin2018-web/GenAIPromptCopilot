@@ -9,12 +9,12 @@ public class SystemPromptBuilderTests
 {
     private static readonly FacetCatalog Catalog = FacetCatalogTests.Real();
     private static SystemPromptBuilder Make(int offeredLimit = 24) =>
-        new(Catalog, new OrchestratorOptions { OfferedOptionsLimit = offeredLimit }, Path.Combine(AppContext.BaseDirectory, "Prompts", "system.md"));
+        new(Catalog, new OrchestratorOptions { OfferedOptionsLimit = offeredLimit }, Path.Combine(AppContext.BaseDirectory, "Prompts"));
 
     [Fact]
     public void No_placeholder_survives_and_version_is_12_hex()
     {
-        var (prompt, version) = Make().Build(new Session("s"), ToolNames.Always);
+        var (prompt, version) = Make().Build(new Session("s"), ToolNames.Always, TurnKind.Act);
         Assert.DoesNotContain("{{", prompt);
         Assert.Matches("^[0-9a-f]{12}$", version);
     }
@@ -22,7 +22,7 @@ public class SystemPromptBuilderTests
     [Fact]
     public void Lists_only_tools_of_this_turn()
     {
-        var (prompt, _) = Make().Build(new Session("s"), new HashSet<string> { ToolNames.FinalizePrompt, ToolNames.SearchPresets });
+        var (prompt, _) = Make().Build(new Session("s"), new HashSet<string> { ToolNames.FinalizePrompt, ToolNames.SearchPresets }, TurnKind.Act);
         Assert.Contains("FinalizePrompt", prompt);
         Assert.DoesNotContain("AskUser", prompt.Split("## 本輪可用的工具")[1].Split("##")[0]);
     }
@@ -35,7 +35,7 @@ public class SystemPromptBuilderTests
         s.FacetNotes["scene.weather"] = "使用者委託此項";
         s.AutoFill = true;
         s.RecordFinalize(new FinalPrompt("mountain", "lowres", "tips", "山上的日出"));
-        var (prompt, _) = Make().Build(s, ToolNames.Always);
+        var (prompt, _) = Make().Build(s, ToolNames.Always, TurnKind.Act);
         Assert.Contains("profile：landscape", prompt);
         Assert.Contains("scene.season", prompt); Assert.Contains("waived", prompt);
         Assert.Contains("使用者委託此項", prompt);
@@ -51,44 +51,48 @@ public class SystemPromptBuilderTests
     public void Offered_section_only_when_ledger_has_offered_entries_and_is_capped()
     {
         var s = new Session("s"); s.ApplyProfile("portrait", Catalog);
-        Assert.DoesNotContain("先前提供過的選項", Make().Build(s, ToolNames.Always).Prompt);
+        Assert.DoesNotContain("先前提供過的選項", Make().Build(s, ToolNames.Always, TurnKind.Act).Prompt);
         for (long i = 1; i <= 3; i++)
         {
             s.Ledger.Record(new LedgerEntry { Id = i, Title = $"t{i}", PromptSnippet = $"snip{i}", FacetIds = Array.Empty<string>() }, new LedgerHit("style", 0.2, true));
             s.Ledger.MarkOffered(i, new OfferedRef((int)i, "style", $"label{i}"));
         }
-        var (prompt, _) = Make(offeredLimit: 2).Build(s, ToolNames.Always);
+        var (prompt, _) = Make(offeredLimit: 2).Build(s, ToolNames.Always, TurnKind.Act);
         Assert.Contains("先前提供過的選項", prompt);
         Assert.Contains("snip3", prompt); Assert.Contains("snip2", prompt); Assert.DoesNotContain("snip1", prompt);
     }
 
     /// <summary>版本 hash 是 eval 對得上 prompt 的鑰匙。樣板的換行在別台機器上可能被 git 轉成
-    /// CRLF，組出來的 Facts 也用 Environment.NewLine——同一份 prompt 就會有兩個 hash。</summary>
+    /// CRLF，組出來的 Facts 也用 Environment.NewLine——同一份 prompt 就會有兩個 hash。三個樣板檔都要顧到。</summary>
     [Fact]
     public void Version_is_stable_across_line_ending_styles()
     {
-        var lf = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Prompts", "system.md")).Replace("\r\n", "\n");
-        var crlfPath = Path.Combine(Path.GetTempPath(), $"system-crlf-{Guid.NewGuid():N}.md");
-        File.WriteAllText(crlfPath, lf.Replace("\n", "\r\n"));
+        var src = Path.Combine(AppContext.BaseDirectory, "Prompts");
+        var crlfDir = Path.Combine(Path.GetTempPath(), $"prompts-crlf-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(crlfDir);
         try
         {
+            foreach (var f in new[] { SystemPromptBuilder.TemplateFile, SystemPromptBuilder.ProposeFlowFile, SystemPromptBuilder.ActFlowFile })
+                File.WriteAllText(Path.Combine(crlfDir, f), File.ReadAllText(Path.Combine(src, f)).Replace("\r\n", "\n").Replace("\n", "\r\n"));
             var s = new Session("s"); s.ApplyProfile("portrait", Catalog);
-            var lfBuilt = Make().Build(s, ToolNames.Always);
-            var crlfBuilt = new SystemPromptBuilder(Catalog, new OrchestratorOptions(), crlfPath).Build(s, ToolNames.Always);
-
-            Assert.Equal(lfBuilt.Version, crlfBuilt.Version);
-            Assert.DoesNotContain("\r\n", crlfBuilt.Prompt);
+            foreach (var kind in new[] { TurnKind.Propose, TurnKind.Act })
+            {
+                var lfBuilt = Make().Build(s, ToolNames.Always, kind);
+                var crlfBuilt = new SystemPromptBuilder(Catalog, new OrchestratorOptions(), crlfDir).Build(s, ToolNames.Always, kind);
+                Assert.Equal(lfBuilt.Version, crlfBuilt.Version);
+                Assert.DoesNotContain("\r\n", crlfBuilt.Prompt);
+            }
         }
-        finally { File.Delete(crlfPath); }
+        finally { Directory.Delete(crlfDir, recursive: true); }
     }
 
     [Fact]
     public void Version_changes_when_facts_change()
     {
         var b = Make(); var s = new Session("s");
-        var v1 = b.Build(s, ToolNames.Always).Version;
+        var v1 = b.Build(s, ToolNames.Always, TurnKind.Act).Version;
         s.ApplyProfile("portrait", Catalog);
-        Assert.NotEqual(v1, b.Build(s, ToolNames.Always).Version);
+        Assert.NotEqual(v1, b.Build(s, ToolNames.Always, TurnKind.Act).Version);
     }
 
     /// <summary>2026-09-25：一個維度一句複合描述撈不到單品；使用者講到的每個 facet 各一項（facetId＋原話）。</summary>
@@ -96,7 +100,7 @@ public class SystemPromptBuilderTests
     public void Flow_rule_asks_for_one_batched_SearchPresets_call_with_one_item_per_stated_facet()
     {
         var s = new Session("s");
-        var (prompt, _) = Make().Build(s, ToolNames.Always);
+        var (prompt, _) = Make().Build(s, ToolNames.Always, TurnKind.Act);
         Assert.Contains("使用者講到的每個 facet 各一項，用 `facetId` 加上他描述那一項的原話", prompt);
         Assert.DoesNotContain("分兩次呼叫", prompt);
     }
@@ -106,7 +110,7 @@ public class SystemPromptBuilderTests
     [Fact]
     public void Flow_rule_asks_for_every_missing_dimension_and_marks_covered_before_search()
     {
-        var (prompt, _) = Make().Build(new Session("s"), ToolNames.Always);
+        var (prompt, _) = Make().Build(new Session("s"), ToolNames.Always, TurnKind.Act);
         Assert.Contains("先 `SetFacetStates`", prompt);
         Assert.True(
             prompt.IndexOf("先 `SetFacetStates`", StringComparison.Ordinal) < prompt.IndexOf("用一次 `SearchPresets`", StringComparison.Ordinal),
@@ -121,7 +125,7 @@ public class SystemPromptBuilderTests
     [Fact]
     public void Flow_rule_asks_for_english_tags_on_covered_facets()
     {
-        var (prompt, _) = Make().Build(new Session("s"), ToolNames.Always);
+        var (prompt, _) = Make().Build(new Session("s"), ToolNames.Always, TurnKind.Act);
         Assert.Contains("標 `covered`，並在 `tags` 附上那一項的英文 tag（例：涼鞋 → `sandals`）", prompt);
     }
 
@@ -129,7 +133,7 @@ public class SystemPromptBuilderTests
     [Fact]
     public void Flow_rule_asks_for_english_tags_on_each_facet_item()
     {
-        var (prompt, _) = Make().Build(new Session("s"), ToolNames.Always);
+        var (prompt, _) = Make().Build(new Session("s"), ToolNames.Always, TurnKind.Act);
         Assert.Contains("`clothing.footwear`＋「拖鞋」＋`slippers`", prompt);
         Assert.Contains("`appearance.hair`＋「銀色雙馬尾」＋`silver hair, twintails`", prompt);
         Assert.Contains("寫法跟 `SetFacetStates` 的 `tags` 一樣", prompt);
@@ -142,8 +146,8 @@ public class SystemPromptBuilderTests
     [Fact]
     public void Retrieval_off_prompt_drops_search_step_and_borrow_rule()
     {
-        var on = Make().Build(new Session("s"), ToolNames.Always);
-        var off = Make().Build(new Session("s", retrievalEnabled: false), ToolsWithoutSearch);
+        var on = Make().Build(new Session("s"), ToolNames.Always, TurnKind.Act);
+        var off = Make().Build(new Session("s", retrievalEnabled: false), ToolsWithoutSearch, TurnKind.Act);
 
         Assert.Contains("用一次 `SearchPresets`", on.Prompt);
         Assert.Contains("「僅供建議」的片段任何詞都不可進提示詞", on.Prompt);
@@ -162,7 +166,7 @@ public class SystemPromptBuilderTests
     [Fact]
     public void Retrieval_off_step_one_still_flows_into_ask_rule()
     {
-        var (prompt, _) = Make().Build(new Session("s", retrievalEnabled: false), ToolsWithoutSearch);
+        var (prompt, _) = Make().Build(new Session("s", retrievalEnabled: false), ToolsWithoutSearch, TurnKind.Act);
         Assert.Contains("追問或定稿。然後：**只要還有 missing 的維度就 `AskUser`**", prompt);
     }
 
@@ -170,8 +174,8 @@ public class SystemPromptBuilderTests
     [Fact]
     public void Flow_rule_tells_the_model_how_to_handle_an_adoption_message()
     {
-        var (prompt, _) = Make().Build(new Session("s"), ToolNames.Always);
-        Assert.Contains("6. 使用者訊息以「採用〈」開頭時", prompt);
+        var (prompt, _) = Make().Build(new Session("s"), ToolNames.Always, TurnKind.Act);
+        Assert.Contains("5. 使用者訊息以「採用〈」開頭時", prompt);
         // 2026-10-05 起只有定稿卡推薦：採用一定在定稿之後，直接重新定稿（先確認再動手設計 §8）
         Assert.Contains("然後直接 `FinalizePrompt` 重新定稿", prompt);
         Assert.DoesNotContain("不要追問", prompt);
@@ -180,6 +184,59 @@ public class SystemPromptBuilderTests
         Assert.Contains("原本的 tag 全部拿掉", prompt);
         Assert.Contains("「取代原本的」後面列的", prompt);
         // off 模式也要有：規則無害，而且 off 的 session 根本不會收到採用句
-        Assert.Contains("6. 使用者訊息以「採用〈」開頭時", Make().Build(new Session("s", retrievalEnabled: false), ToolsWithoutSearch).Prompt);
+        Assert.Contains("5. 使用者訊息以「採用〈」開頭時", Make().Build(new Session("s", retrievalEnabled: false), ToolsWithoutSearch, TurnKind.Act).Prompt);
+    }
+
+    // ---- 先確認再動手（2026-10-05）----
+
+    [Fact]
+    public void Propose_prompt_tells_the_model_to_confirm_and_gives_the_umbrella_example()
+    {
+        var (prompt, _) = Make().Build(new Session("s"), ToolNames.ProposeAlways, TurnKind.Propose);
+        Assert.Contains("確認輪", prompt);
+        Assert.Contains("「換掉飲料，改拿雨傘」", prompt);
+        Assert.Contains("不要列「算了不改」", prompt);
+        Assert.Contains("他沒有按按鈕，這句不算確認", prompt);
+        Assert.DoesNotContain("先 `SetFacetStates`", prompt);              // 動手輪的流程不在確認輪出現
+        Assert.DoesNotContain("{{", prompt);
+    }
+
+    [Fact]
+    public void Propose_and_act_prompts_have_different_versions()
+    {
+        var s = new Session("s");
+        Assert.NotEqual(Make().Build(s, ToolNames.Always, TurnKind.Propose).Version, Make().Build(s, ToolNames.Always, TurnKind.Act).Version);
+    }
+
+    [Fact]
+    public void Act_prompt_starts_the_flow_with_the_confirmed_block()
+    {
+        var pending = new PendingConfirmation(1, "她兩手已經拿著相機和飲料，你想要哪一種？", new[] { "換掉相機，改拿雨傘", "換掉飲料，改拿雨傘" }, false);
+        var (prompt, _) = Make().Build(new Session("s"), ToolNames.Always, TurnKind.Act, new ConfirmedInput(pending, 1));
+        var flow = prompt[prompt.IndexOf("## 流程", StringComparison.Ordinal)..prompt.IndexOf("## Facet 四態", StringComparison.Ordinal)];
+        Assert.Contains("### 使用者已確認", flow);
+        Assert.Contains("她兩手已經拿著相機和飲料，你想要哪一種？", flow);
+        Assert.Contains("使用者選的是：換掉飲料，改拿雨傘", flow);
+        Assert.Contains("不要加入確認以外的改動", flow);
+        Assert.Contains("動手輪", flow);
+        Assert.DoesNotContain("{{", prompt);
+    }
+
+    [Fact]
+    public void Act_prompt_without_a_confirmation_has_no_confirmed_block()
+    {
+        var (prompt, _) = Make().Build(new Session("s"), ToolNames.Always, TurnKind.Act);
+        Assert.DoesNotContain("### 使用者已確認", prompt);
+        Assert.DoesNotContain("{{", prompt);
+    }
+
+    /// <summary>Review Focus 2：確認內容是模型與使用者的文字，最後才放進來，裡面的 {{…}} 不能再被展開。</summary>
+    [Fact]
+    public void Confirmed_text_is_inserted_last_and_never_expanded()
+    {
+        var pending = new PendingConfirmation(1, "我會把背景改成 {{TOOLS}} 與 {{FACETS}}", new[] { "選 {{SESSION_FACTS}}", "b" }, false);
+        var (prompt, _) = Make().Build(new Session("s"), ToolNames.Always, TurnKind.Act, new ConfirmedInput(pending, 0));
+        Assert.Contains("我會把背景改成 {{TOOLS}} 與 {{FACETS}}", prompt);
+        Assert.Contains("使用者選的是：選 {{SESSION_FACTS}}", prompt);
     }
 }

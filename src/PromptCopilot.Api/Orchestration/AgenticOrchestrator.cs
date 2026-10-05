@@ -123,7 +123,7 @@ public sealed class AgenticOrchestrator(
             if (kind == TurnKind.Act && g.WantsAutoComplete) session.AutoFill = true;
             var turn = new TurnContext(session, turnIndex, g, tools, writer, snapshot.FacetStates) { SafetyOn = input.SafetyOn };
             trace.Turn = turn;
-            (var systemPrompt, version) = prompts.Build(session, tools);
+            (var systemPrompt, version) = prompts.Build(session, tools, kind, input.Confirmed);
             EnsureSystemMessage(session.ChatHistory, systemPrompt);
             session.ChatHistory.AddUserMessage(text);
             var startIdx = session.ChatHistory.Count;

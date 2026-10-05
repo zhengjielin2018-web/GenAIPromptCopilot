@@ -62,7 +62,7 @@ public class AgenticOrchestratorTests
         {
             var llm = Microsoft.Extensions.Options.Options.Create(new LlmOptions());
             var guard = new SafetyGuard(new Denylist(Deny), new SafetyClassifier(GuardChat, llm));
-            var prompts = new SystemPromptBuilder(Catalog, Options, Path.Combine(AppContext.BaseDirectory, "Prompts", "system.md"));
+            var prompts = new SystemPromptBuilder(Catalog, Options, Path.Combine(AppContext.BaseDirectory, "Prompts"));
             IChatCompletionService chat = ChatOverride ?? (Resilient
                 ? new ResilientChatCompletion(Chat, llm, (_, _) => Task.CompletedTask)
                 : Chat);
@@ -1230,5 +1230,36 @@ public class AgenticOrchestratorTests
               });
         await h.RunAsync("寫實跟動漫差在哪");
         Assert.Equal(2, h.Chat.Calls.Count);
+    }
+
+    /// <summary>設計 §5.2：動手輪的 system prompt 帶使用者確認的內容與選的解讀。</summary>
+    [Fact]
+    public async Task Confirmed_turn_prompt_carries_what_the_user_confirmed()
+    {
+        var h = new Harness();
+        MakeFinalized(h.Session);
+        h.Chat.ThenAsync(async (hist, k) =>
+        {
+            var sys = hist[0].Content!;
+            Assert.Contains("### 使用者已確認", sys);
+            Assert.Contains("使用者選的是：換掉飲料，改拿雨傘", sys);
+            return new[] { await Invoke(hist, k!, "Dialog", "FinalizePrompt", FinalizeArgs()) };
+        });
+        var events = await h.ActAsync("她兩手已經拿著相機和飲料，你想要哪一種？", new[] { "換掉相機，改拿雨傘", "換掉飲料，改拿雨傘" }, choice: 1);
+        Assert.Equal("finalized", Assert.Single(events.OfType<FinalEvent>()).Kind);
+    }
+
+    [Fact]
+    public async Task Text_turn_prompt_is_the_propose_flow()
+    {
+        var h = new Harness();
+        h.Chat.ThenAsync(async (hist, k) =>
+        {
+            Assert.Contains("確認輪", hist[0].Content!);
+            Assert.DoesNotContain("### 使用者已確認", hist[0].Content!);
+            return new[] { await Invoke(hist, k!, "Dialog", "Confirm", new { message = "我理解的畫面：一個女生。" }) };
+        });
+        var events = await h.RunAsync("一個女生");
+        Assert.Equal("confirm", Assert.Single(events.OfType<FinalEvent>()).Kind);
     }
 }

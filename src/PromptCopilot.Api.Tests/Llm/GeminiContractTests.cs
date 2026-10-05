@@ -35,7 +35,7 @@ public class GeminiContractTests
         var kernel = Kernel.CreateBuilder().Build();
         AgentKernelFactory.AddFiltered(kernel, "Session", new SessionPlugin(turn, catalog), tools);
         AgentKernelFactory.AddFiltered(kernel, "Dialog", new DialogPlugin(turn, catalog, new OrchestratorOptions()), tools);
-        var (prompt, _) = new SystemPromptBuilder(catalog, new OrchestratorOptions(), Path.Combine(AppContext.BaseDirectory, "Prompts", "system.md")).Build(session, tools);
+        var (prompt, _) = new SystemPromptBuilder(catalog, new OrchestratorOptions(), Path.Combine(AppContext.BaseDirectory, "Prompts")).Build(session, tools, TurnKind.Propose);
         var history = new ChatHistory(prompt);
         history.AddUserMessage(userText);
         return (kernel, turn, history);
@@ -51,7 +51,7 @@ public class GeminiContractTests
     [IntegrationFact]
     public async Task First_turn_produces_a_function_call_not_prose()
     {
-        var tools = ToolNames.Always.Union(new[] { ToolNames.AskUser, ToolNames.Discuss }).ToHashSet();
+        var tools = ToolNames.ProposeAlways.Union(new[] { ToolNames.Discuss }).ToHashSet();          // 使用者第一句是確認輪
         var (kernel, _, history) = Agent(tools, "一個銀髮少女站在雨夜的霓虹街頭");
         var settings = new GeminiPromptExecutionSettings { FunctionChoiceBehavior = FunctionChoiceBehavior.Auto(autoInvoke: false) };
         var msg = (await Chat().GetChatMessageContentsAsync(history, settings, kernel))[0];
@@ -63,7 +63,7 @@ public class GeminiContractTests
     [IntegrationFact]
     public async Task Auto_invoke_survives_sending_a_tool_result_back()
     {
-        var tools = ToolNames.Always.Union(new[] { ToolNames.AskUser, ToolNames.Discuss }).ToHashSet();
+        var tools = ToolNames.ProposeAlways.Union(new[] { ToolNames.Discuss }).ToHashSet();          // 使用者第一句是確認輪
         var (kernel, turn, history) = Agent(tools, "一個銀髮少女站在雨夜的霓虹街頭");
         var settings = new GeminiPromptExecutionSettings { FunctionChoiceBehavior = FunctionChoiceBehavior.Auto() };
         var returned = await Chat().GetChatMessageContentsAsync(history, settings, kernel);

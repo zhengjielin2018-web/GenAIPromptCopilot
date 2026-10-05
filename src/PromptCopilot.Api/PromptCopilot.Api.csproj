@@ -18,7 +18,7 @@
 
   <ItemGroup>
     <None Update="Configuration\facets.yaml" CopyToOutputDirectory="PreserveNewest" />
-    <None Update="Prompts\system.md" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="Prompts\*.md" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>
