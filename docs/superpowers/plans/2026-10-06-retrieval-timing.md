@@ -1845,3 +1845,191 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 - [ ] **Step 8: 回報使用者**
 
 把 §5 的對照表與結論貼給使用者。有沒過的指標時**停下來討論**，不要自行加做退路（設計 §6.4）。全部通過才進 finishing-a-development-branch。
+
+---
+
+## 第二輪（2026-10-06，使用者在看完 Task 10 結果後決定「改一輪」）
+
+Task 10 的結果：動手輪檢索率 34/39（5 個沒查的有 4 個沿用前一個確認輪的檢索結果）；要寫出使用者沒講內容的確認輪 6/12（單項委託夾在追問回答裡、模糊要求兩種 0/3）；確認輪協定違規 1 → 4 次、1 輪失敗。這一輪只改確認輪的檢索段落與量測，再重跑一次。
+
+### Task 11: 確認輪段落補例子與收尾規則；量測認「沿用確認輪的檢索」
+
+**Files:**
+- Modify: `src/PromptCopilot.Api/Orchestration/SystemPromptBuilder.cs`（`RetrievalProposeOn`）
+- Modify: `scripts/adoption_report.py`（`build_retrieval_section`）
+- Modify: `manual-tests/replay.py`（`judge`）
+- Modify: `docs/superpowers/specs/2026-10-06-retrieval-timing-design.md`（加 §10）、`manual-tests/README.md`（判定值說明）
+- Test: `src/PromptCopilot.Api.Tests/Orchestration/SystemPromptBuilderTests.cs`、`scripts/tests/test_adoption_report.py`、`manual-tests/test_replay.py`
+
+**Interfaces:**
+- Consumes: Task 7 的 `RetrievalProposeOn`；Task 4 的 `build_retrieval_section`；Task 5 的 `judge`、`TurnResult`。
+- Produces:
+  - 報表多一行 `- 動手輪檢索率（含沿用前一個確認輪的檢索）：x/y`，排在原本「動手輪檢索率（不含採用）」那行之後：動手輪本身有查，或同一個 session 裡它前一筆 `Turn_Completed`（依 turn_index）是有查的確認輪，就算有查。原本那行不動。
+  - `judge` 多一個結果 `CARRY`：要求動手輪檢索、動手輪沒查、但同一步的確認輪有查時，回 `CARRY`（算有查，內容沿用確認輪的檢索）。其餘規則不變。
+
+- [ ] **Step 1: 寫失敗的測試**
+
+`SystemPromptBuilderTests.cs`：既有的 `Propose_prompt_asks_to_search_when_the_card_must_invent_content` 裡
+
+```csharp
+        Assert.Contains("（「衣服你幫我設計」）", prompt);
+```
+
+改成
+
+```csharp
+        Assert.Contains("（「衣服你幫我設計」；跟追問的回答寫在同一句裡也算，只查交給你的那一項）", prompt);
+```
+
+並在「檢索時機」區塊加：
+
+```csharp
+    /// <summary>第二輪（2026-10-06 實驗 §5）：單項委託夾在追問回答裡、模糊要求兩種情況確認輪 0/3，補明確例子。</summary>
+    [Fact]
+    public void Propose_retrieval_rule_names_mixed_delegation_and_vague_requests()
+    {
+        var s = new Session("s"); s.ApplyProfile("portrait", Catalog);
+        var (prompt, _) = Make().Build(s, ToolNames.ProposeAlways, TurnKind.Propose);
+        Assert.Contains("跟追問的回答寫在同一句裡也算，只查交給你的那一項", prompt);
+        Assert.Contains("要求太模糊要給 2–4 個解讀（「更有氣質」「換個感覺」：從片段挑不同方向當 `choices`）", prompt);
+    }
+
+    /// <summary>第二輪：確認輪查完之後常直接叫動手輪才有的工具（協定違規 1 → 4 次）。</summary>
+    [Fact]
+    public void Propose_retrieval_rule_says_searching_does_not_unlock_act_tools()
+    {
+        var s = new Session("s"); s.ApplyProfile("portrait", Catalog);
+        var (prompt, _) = Make().Build(s, ToolNames.ProposeAlways, TurnKind.Propose);
+        Assert.Contains("查完之後這一輪照樣以本輪工具清單裡的 `Confirm` 結束（清單裡有 `Discuss` 才能用 `Discuss`）", prompt);
+        Assert.Contains("`SetFacetStates`、`FinalizePrompt` 要等使用者按下確認卡的下一輪才有，這一輪不能叫", prompt);
+    }
+```
+
+`scripts/tests/test_adoption_report.py` 檔尾加：
+
+```python
+def test_act_rate_counting_a_preceding_searched_propose_turn():
+    turns = [
+        done("a", 1, "propose", "ConfirmOutcome", searches=1),
+        done("a", 2, "act", "FinalizedOutcome"),                  # 沿用確認輪的檢索
+        done("a", 3, "propose", "ConfirmOutcome"),
+        done("a", 4, "act", "FinalizedOutcome"),                  # 兩輪都沒查
+        done("a", 5, "propose", "ConfirmOutcome"),
+        done("a", 6, "act", "FinalizedOutcome", searches=1),
+        done("b", 1, "propose", "ConfirmOutcome", searches=1),
+        done("c", 1, "act", "AskOutcome"),                        # 不同 session，不能沿用 b 的
+    ]
+    text = "\n".join(build_retrieval_section(turns))
+    assert "動手輪檢索率（不含採用）：1/4（25.0%）" in text
+    assert "動手輪檢索率（含沿用前一個確認輪的檢索）：2/4（50.0%）" in text
+```
+
+`manual-tests/test_replay.py` 的 `test_judge` 換成：
+
+```python
+def test_judge():
+    searched, idle = TurnResult("propose", searched=True), TurnResult("act")
+    assert judge("act", idle, TurnResult("act", searched=True)) == "OK"
+    assert judge("act", searched, idle) == "CARRY"                       # 動手輪沒查，沿用確認輪的檢索
+    assert judge("act", idle, idle) == "MISS"
+    assert judge("act", TurnResult("propose", outcome="message", searched=True), None) == "NO-TURN"
+    assert judge("both", searched, TurnResult("act", searched=True)) == "OK"
+    assert judge("both", searched, idle) == "CARRY"
+    assert judge("both", idle, TurnResult("act", searched=True)) == "MISS"
+    assert judge("propose", searched, None) == "OK"
+    assert judge("none", idle, None) == "OK"
+```
+
+- [ ] **Step 2: 跑測試確認失敗**
+
+Run: `dotnet test src/PromptCopilot.Api.Tests -c Release --filter "FullyQualifiedName~SystemPromptBuilderTests"` → 3 個 FAIL。
+Run（`scripts/` 底下）：`./.venv/Scripts/python.exe -m pytest tests/test_adoption_report.py -q` → 新測試 FAIL。
+Run（repo 根目錄）：`scripts/.venv/Scripts/python.exe -m pytest manual-tests/test_replay.py -q` → `test_judge` FAIL。
+
+- [ ] **Step 3: 實作**
+
+`SystemPromptBuilder.RetrievalProposeOn` 換成：
+
+```csharp
+    internal const string RetrievalProposeOn =
+        "**檢索**：卡片或回答要寫出使用者沒講的具體內容時，先用一次 `SearchPresets`，再從結果挑：說隨便／你決定（每個 missing 維度要列出補什麼）、把單一項目交給你（「衣服你幫我設計」；跟追問的回答寫在同一句裡也算，只查交給你的那一項）、要求太模糊要給 2–4 個解讀（「更有氣質」「換個感覺」：從片段挑不同方向當 `choices`）、問你推薦或還有什麼方向（`Discuss` 的參考方向）。查詢配合目前的畫面寫具體方向（例：「雨夜街頭的外套」「寫實攝影」）：整個維度用 `dimension` 項目，單一 facet 用 `facetId` 項目。卡片正文用中文描述你挑的片段內容，不寫英文 tag；`Discuss` 的參考方向帶片段的 presetId。查完之後這一輪照樣以本輪工具清單裡的 `Confirm` 結束（清單裡有 `Discuss` 才能用 `Discuss`）；`SetFacetStates`、`FinalizePrompt` 要等使用者按下確認卡的下一輪才有，這一輪不能叫。使用者自己講清楚要改什麼時，這一輪不查，動手輪會查。本輪工具清單裡沒有 `SearchPresets` 時（還沒判定題材）就不查，照常確認。";
+```
+
+`adoption_report.build_retrieval_section`：在 `act = [...]` 之後加
+
+```python
+    # 第二輪（2026-10-06）：動手輪沒查、但同一個 session 的前一筆是有查的確認輪，內容沿用那次檢索，也算有查
+    prev: dict[tuple[str, int], Turn] = {}
+    last: dict[str, Turn] = {}
+    for t in sorted(new, key=lambda x: (x.session_id, x.turn_index)):
+        if t.session_id in last:
+            prev[(t.session_id, t.turn_index)] = last[t.session_id]
+        last[t.session_id] = t
+
+    def covered(t: Turn) -> bool:
+        p = prev.get((t.session_id, t.turn_index))
+        return searched(t) or (p is not None and p.payload["kind"] == "propose" and searched(p))
+```
+
+並在 `lines.append(f"- 動手輪檢索率（不含採用）：{rate(act)}")` 之後加
+
+```python
+    lines.append(f"- 動手輪檢索率（含沿用前一個確認輪的檢索）：{_pct(sum(covered(t) for t in act), len(act))}")
+```
+
+`replay.judge` 換成：
+
+```python
+def judge(expect: str, propose: TurnResult | None, act: TurnResult | None) -> str:
+    """expect：propose／act／both／none。要求的那一輪沒發生記 NO-TURN；發生了但沒檢索記 MISS。
+    要求動手輪檢索、動手輪沒查但同一步的確認輪有查時記 CARRY：內容沿用確認輪的檢索，流程說明允許（算有查）。"""
+    need = {"propose": ["propose"], "act": ["act"], "both": ["propose", "act"], "none": []}[expect]
+    got = {"propose": propose, "act": act}
+    carried = False
+    for k in need:
+        if got[k] is None:
+            return "NO-TURN"
+        if not got[k].searched:
+            if k == "act" and propose is not None and propose.searched:
+                carried = True
+                continue
+            return "MISS"
+    return "CARRY" if carried else "OK"
+```
+
+`manual-tests/README.md` 2.5 節判定值那句改成：「（`OK`／`CARRY` 動手輪沿用確認輪的檢索，算有查／`MISS` 沒查／`NO-TURN` 預期要查的那一輪沒發生／`SKIP` 沒有追問卡可選）」。
+
+設計檔檔尾加：
+
+```markdown
+## 10. 第二輪修正（2026-10-06）
+
+第一輪實驗（實驗紀錄 §4–§5）之後，使用者決定再改一輪：
+
+- **確認輪段落**（§3.2）補兩個例子：單項委託跟追問的回答寫在同一句裡也算，只查交給模型的那一項；模糊要求（「更有氣質」「換個感覺」）從片段挑不同方向當 `choices`。再補收尾規則：查完照樣以 `Confirm` 結束（清單裡有 `Discuss` 才能用），`SetFacetStates`、`FinalizePrompt` 要等下一輪才有。第一輪確認輪協定違規 1 → 4 次，都是查完就想直接動手或叫清單裡沒有的 `Discuss`。
+- **量測**（§5.3、§6.3）：動手輪檢索率多算一個「含沿用前一個確認輪的檢索」版本。§3.1 第 4 條本來就允許動手輪直接用確認輪挑好的片段；第一輪 5 個沒查的動手輪有 4 個是這種情況。通過標準的「動手輪檢索率 ≥ 90%」改看這個版本，原本的照列。重播腳本的判定多一個 `CARRY`。
+```
+
+- [ ] **Step 4: 跑測試確認通過**
+
+Run: `dotnet test src/PromptCopilot.Api.Tests -c Release`
+Run（`scripts/` 底下）：`./.venv/Scripts/python.exe -m pytest tests/test_adoption_report.py -q`
+Run（repo 根目錄）：`scripts/.venv/Scripts/python.exe -m pytest manual-tests/test_replay.py -q`
+Expected: 全部 PASS。
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/PromptCopilot.Api src/PromptCopilot.Api.Tests scripts/adoption_report.py scripts/tests/test_adoption_report.py manual-tests docs/superpowers/specs/2026-10-06-retrieval-timing-design.md
+git commit -m "feat(prompt): propose-turn retrieval examples and closing rule; count act turns carried by a searched propose turn
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+```
+
+### Task 12: 跑第二輪實驗、收尾文件（主 session 跑）
+
+同 Task 10 的 Step 1–8，差別：
+
+- 結果寫在實驗紀錄 §6「第二輪」：§6.1 報表（含新的一行）、§6.2 每步判定（多一欄 CARRY）、§6.3 檢索耗時、§6.4 Q1 最後定稿、§6.5 協定違規、§6.6 對照（基準／第一輪／第二輪三欄）與結論。
+- 「動手輪檢索率」以「含沿用前一個確認輪的檢索」那行判定（設計 §10）。
+- 全部通過：known-issues #14 移到已修正，進最終整枝審查與 finishing-a-development-branch。仍有沒過的：停下來跟使用者討論。
