@@ -360,9 +360,29 @@ public class SystemPromptBuilderTests
         var s = new Session("s"); s.ApplyProfile("portrait", Catalog);
         var (prompt, _) = Make().Build(s, ToolNames.ProposeAlways, TurnKind.Propose);
         Assert.Contains("**檢索**：卡片或回答要寫出使用者沒講的具體內容時，先用一次 `SearchPresets`", prompt);
-        Assert.Contains("（「衣服你幫我設計」）", prompt);
+        Assert.Contains("（「衣服你幫我設計」；跟追問的回答寫在同一句裡也算，只查交給你的那一項）", prompt);
         Assert.Contains("使用者自己講清楚要改什麼時，這一輪不查，動手輪會查", prompt);
         Assert.DoesNotContain("第 2–4 條要寫入新內容前", prompt);
+    }
+
+    /// <summary>第二輪（2026-10-06 實驗 §5）：單項委託夾在追問回答裡、模糊要求兩種情況確認輪 0/3，補明確例子。</summary>
+    [Fact]
+    public void Propose_retrieval_rule_names_mixed_delegation_and_vague_requests()
+    {
+        var s = new Session("s"); s.ApplyProfile("portrait", Catalog);
+        var (prompt, _) = Make().Build(s, ToolNames.ProposeAlways, TurnKind.Propose);
+        Assert.Contains("跟追問的回答寫在同一句裡也算，只查交給你的那一項", prompt);
+        Assert.Contains("要求太模糊要給 2–4 個解讀（「更有氣質」「換個感覺」：從片段挑不同方向當 `choices`）", prompt);
+    }
+
+    /// <summary>第二輪：確認輪查完之後常直接叫動手輪才有的工具（協定違規 1 → 4 次）。</summary>
+    [Fact]
+    public void Propose_retrieval_rule_says_searching_does_not_unlock_act_tools()
+    {
+        var s = new Session("s"); s.ApplyProfile("portrait", Catalog);
+        var (prompt, _) = Make().Build(s, ToolNames.ProposeAlways, TurnKind.Propose);
+        Assert.Contains("查完之後這一輪照樣以本輪工具清單裡的 `Confirm` 結束（清單裡有 `Discuss` 才能用 `Discuss`）", prompt);
+        Assert.Contains("`SetFacetStates`、`FinalizePrompt` 要等使用者按下確認卡的下一輪才有，這一輪不能叫", prompt);
     }
 
     /// <summary>Review Focus 1：還沒題材的確認輪沒有檢索工具；照著叫就是 known-issues #13。</summary>

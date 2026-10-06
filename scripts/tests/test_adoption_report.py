@@ -248,3 +248,19 @@ def test_parse_sessions():
     assert parse_sessions(None) is None
     assert parse_sessions("") is None
     assert parse_sessions("a, b,,") == ["a", "b"]
+
+
+def test_act_rate_counting_a_preceding_searched_propose_turn():
+    turns = [
+        done("a", 1, "propose", "ConfirmOutcome", searches=1),
+        done("a", 2, "act", "FinalizedOutcome"),                  # 沿用確認輪的檢索
+        done("a", 3, "propose", "ConfirmOutcome"),
+        done("a", 4, "act", "FinalizedOutcome"),                  # 兩輪都沒查
+        done("a", 5, "propose", "ConfirmOutcome"),
+        done("a", 6, "act", "FinalizedOutcome", searches=1),
+        done("b", 1, "propose", "ConfirmOutcome", searches=1),
+        done("c", 1, "act", "AskOutcome"),                        # 不同 session，不能沿用 b 的
+    ]
+    text = "\n".join(build_retrieval_section(turns))
+    assert "動手輪檢索率（不含採用）：1/4（25.0%）" in text
+    assert "動手輪檢索率（含沿用前一個確認輪的檢索）：2/4（50.0%）" in text

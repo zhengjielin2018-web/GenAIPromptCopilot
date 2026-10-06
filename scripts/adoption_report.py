@@ -183,12 +183,26 @@ def build_retrieval_section(completed: list[Turn]) -> list[str]:
         return _pct(sum(searched(t) for t in ts), len(ts))
 
     act = [t for t in new if t.payload["kind"] == "act"]
+
+    # 第二輪（2026-10-06）：動手輪沒查、但同一個 session 的前一筆是有查的確認輪，內容沿用那次檢索，也算有查
+    prev: dict[tuple[str, int], Turn] = {}
+    last: dict[str, Turn] = {}
+    for t in sorted(new, key=lambda x: (x.session_id, x.turn_index)):
+        if t.session_id in last:
+            prev[(t.session_id, t.turn_index)] = last[t.session_id]
+        last[t.session_id] = t
+
+    def covered(t: Turn) -> bool:
+        p = prev.get((t.session_id, t.turn_index))
+        return searched(t) or (p is not None and p.payload["kind"] == "propose" and searched(p))
+
     auto = [t for t in new if t.payload["kind"] == "propose" and t.payload.get("autoComplete")]
     discuss = [t for t in new if t.payload.get("outcome") == "MessageOutcome"
                and (t.payload.get("options") or {}).get("total", 0) > 0]
     opts = [t.payload["options"] for t in new if isinstance(t.payload.get("options"), dict)]
     with_preset = sum(o.get("withPreset", 0) for o in opts)
     lines.append(f"- 動手輪檢索率（不含採用）：{rate(act)}")
+    lines.append(f"- 動手輪檢索率（含沿用前一個確認輪的檢索）：{_pct(sum(covered(t) for t in act), len(act))}")
     lines.append(f"- 「隨便」確認輪檢索率：{rate(auto)}")
     lines.append(f"- 帶參考方向的 Discuss 輪檢索率：{rate(discuss)}")
     lines.append(f"- 選項帶 presetId：{_pct(with_preset, sum(o.get('total', 0) for o in opts))}")

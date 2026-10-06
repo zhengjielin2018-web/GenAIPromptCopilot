@@ -46,15 +46,20 @@ def compose_pick(asks: list[dict], dim_labels: dict[str, str], extra: str | None
 
 
 def judge(expect: str, propose: TurnResult | None, act: TurnResult | None) -> str:
-    """expect：propose／act／both／none。要求的那一輪沒發生記 NO-TURN；發生了但沒檢索記 MISS。"""
+    """expect：propose／act／both／none。要求的那一輪沒發生記 NO-TURN；發生了但沒檢索記 MISS。
+    要求動手輪檢索、動手輪沒查但同一步的確認輪有查時記 CARRY：內容沿用確認輪的檢索，流程說明允許（算有查）。"""
     need = {"propose": ["propose"], "act": ["act"], "both": ["propose", "act"], "none": []}[expect]
     got = {"propose": propose, "act": act}
+    carried = False
     for k in need:
         if got[k] is None:
             return "NO-TURN"
         if not got[k].searched:
+            if k == "act" and propose is not None and propose.searched:
+                carried = True
+                continue
             return "MISS"
-    return "OK"
+    return "CARRY" if carried else "OK"
 
 
 def run_turn(base: str, sid: str, body: dict, kind: str) -> TurnResult:

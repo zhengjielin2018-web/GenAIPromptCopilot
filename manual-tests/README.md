@@ -74,7 +74,7 @@ python manual-tests/replay.py --scenario all --runs 3     # Q1～Q3 各跑 3 次
 ```
 
 每跑一次印一張表：每一步的確認輪、動手輪結局，有叫 `SearchPresets` 的標「（查）」，最後一欄是對照劇本預期的判定
-（`OK`／`MISS` 沒查／`NO-TURN` 預期要查的那一輪沒發生／`SKIP` 沒有追問卡可選）。最後一行是 session id，
+（`OK`／`CARRY` 動手輪沿用確認輪的檢索，算有查／`MISS` 沒查／`NO-TURN` 預期要查的那一輪沒發生／`SKIP` 沒有追問卡可選）。最後一行是 session id，
 交給報表：`cd scripts && ./.venv/Scripts/python.exe adoption_report.py --sessions <那一行>`。
 劇本與預期見 `docs/eval-cases.md` 的「2026-10-06 檢索時機」。
 

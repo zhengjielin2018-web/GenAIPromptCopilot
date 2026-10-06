@@ -25,9 +25,11 @@ def test_compose_pick_without_asks_sends_only_extra_or_skips():
 def test_judge():
     searched, idle = TurnResult("propose", searched=True), TurnResult("act")
     assert judge("act", idle, TurnResult("act", searched=True)) == "OK"
-    assert judge("act", searched, idle) == "MISS"
+    assert judge("act", searched, idle) == "CARRY"                       # 動手輪沒查，沿用確認輪的檢索
+    assert judge("act", idle, idle) == "MISS"
     assert judge("act", TurnResult("propose", outcome="message", searched=True), None) == "NO-TURN"
     assert judge("both", searched, TurnResult("act", searched=True)) == "OK"
+    assert judge("both", searched, idle) == "CARRY"
     assert judge("both", idle, TurnResult("act", searched=True)) == "MISS"
     assert judge("propose", searched, None) == "OK"
     assert judge("none", idle, None) == "OK"

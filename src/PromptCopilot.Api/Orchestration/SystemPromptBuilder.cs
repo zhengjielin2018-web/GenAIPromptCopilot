@@ -30,7 +30,7 @@ public sealed class SystemPromptBuilder(FacetCatalog catalog, OrchestratorOption
     /// <summary>檢索時機設計 §3.2：確認輪要寫出使用者沒講的具體內容時先檢索。flow-propose.md 清單之後的獨立段落。
     /// 還沒題材的確認輪沒有檢索工具（ToolSetBuilder），段落要明說那時不查，否則就是 known-issues #13 的觸發條件。</summary>
     internal const string RetrievalProposeOn =
-        "**檢索**：卡片或回答要寫出使用者沒講的具體內容時，先用一次 `SearchPresets`，再從結果挑：說隨便／你決定（每個 missing 維度要列出補什麼）、把單一項目交給你（「衣服你幫我設計」）、要求太模糊要給 2–4 個解讀、問你推薦或還有什麼方向（`Discuss` 的參考方向）。查詢配合目前的畫面寫具體方向（例：「雨夜街頭的外套」「寫實攝影」）：整個維度用 `dimension` 項目，單一 facet 用 `facetId` 項目。卡片正文用中文描述你挑的片段內容，不寫英文 tag；`Discuss` 的參考方向帶片段的 presetId。使用者自己講清楚要改什麼時，這一輪不查，動手輪會查。本輪工具清單裡沒有 `SearchPresets` 時（還沒判定題材）就不查，照常確認。";
+        "**檢索**：卡片或回答要寫出使用者沒講的具體內容時，先用一次 `SearchPresets`，再從結果挑：說隨便／你決定（每個 missing 維度要列出補什麼）、把單一項目交給你（「衣服你幫我設計」；跟追問的回答寫在同一句裡也算，只查交給你的那一項）、要求太模糊要給 2–4 個解讀（「更有氣質」「換個感覺」：從片段挑不同方向當 `choices`）、問你推薦或還有什麼方向（`Discuss` 的參考方向）。查詢配合目前的畫面寫具體方向（例：「雨夜街頭的外套」「寫實攝影」）：整個維度用 `dimension` 項目，單一 facet 用 `facetId` 項目。卡片正文用中文描述你挑的片段內容，不寫英文 tag；`Discuss` 的參考方向帶片段的 presetId。查完之後這一輪照樣以本輪工具清單裡的 `Confirm` 結束（清單裡有 `Discuss` 才能用 `Discuss`）；`SetFacetStates`、`FinalizePrompt` 要等使用者按下確認卡的下一輪才有，這一輪不能叫。使用者自己講清楚要改什麼時，這一輪不查，動手輪會查。本輪工具清單裡沒有 `SearchPresets` 時（還沒判定題材）就不查，照常確認。";
     internal const string RetrievalProposeOff = "";
 
     private readonly string _template = File.ReadAllText(Path.Combine(promptsDir, TemplateFile));
