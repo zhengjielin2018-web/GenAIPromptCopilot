@@ -162,3 +162,89 @@ session：`e05df4402b4e4d0e844544cac58e3c3c`、`3e5c09a82a914f20b822fcfa4caffbad
   - 確認輪的兩種情況，可以在流程說明的確認輪段落補寫判斷例子。
   - 協定違規可以在同一段補一句「查完照常用 Confirm」。
   - 這兩項都要再跑一次實驗才知道有沒有效，交給使用者決定。
+
+## 6. 第二輪（分支 `feat/retrieval-timing` 的 commit `6952f57`，2026-10-06）
+
+確認輪段落補兩個例子（單項委託夾在追問回答裡、模糊要求）與收尾規則（查完照樣用 Confirm）；報表多「含沿用前一個確認輪的檢索」一行、重播判定多 `CARRY`（設計 §10）。動手輪的流程說明沒動。
+
+session：`398c7539182f4b70abe62fa39093cd7f`、`70700bbd3aa247c3bad4405c13416c03`、`c79b893f739f47ce9552c9602ee51e6f`、`ff876cd973444d02ae02c8958747e0c0`、`de4cb9565ed148bab1858a20714c63ea`、`43c34cfc8ea84c6f99d1b69a6de8d77a`、`9c0f84cf05714052ac30e65313b3a355`、`729b633042d04034a9df0794773feae6`、`a7c07a3b9ad8441c9fe3c480251848fb`
+
+### 6.1 報表
+
+```
+- 動手輪檢索率（不含採用）：31/40（77.5%）
+- 動手輪檢索率（含沿用前一個確認輪的檢索）：35/40（87.5%）
+- 「隨便」確認輪檢索率：4/5（80.0%）
+- 帶參考方向的 Discuss 輪檢索率：2/2（100.0%）
+- 選項帶 presetId：18/124（14.5%）
+- 每次定稿平均（25 次）：借來 4.4、碰巧對上 9.8、llm 5.6、base 3.0、adopted 0.0
+- rag（借來＋碰巧對上）佔非基礎詞：355/495（71.7%）
+- 延遲中位數：確認輪 有檢索 5689 ms（8 輪）／沒檢索 3088 ms（34 輪）；動手輪 有檢索 8219 ms（31 輪）／沒檢索 6166 ms（9 輪）
+```
+
+兩種輪不分有無檢索的延遲中位數：確認輪 3148 ms（42 輪），動手輪 7886 ms（40 輪）。
+
+### 6.2 每步檢索判定（3 次合計）
+
+| 劇本步 | 預期 | OK | CARRY | MISS | 備註 |
+| :--- | :--- | ---: | ---: | ---: | :--- |
+| Q1-1 | act | 3 | 0 | 0 | |
+| Q1-2 | act | 3 | 0 | 0 | |
+| Q1-3 追問＋「衣服你幫我設計」 | both | 0 | 0 | 3 | 動手輪 3/3 有查；確認輪仍 0/3 |
+| Q1-4 家居感的衣褲 | act | 1 | 0 | 2 | |
+| Q1-5 推薦一些場景設計 | propose | 3 | 0 | 0 | 2 次 `Discuss`；1 次被輸入分類器判成隨便，出確認卡並重新定稿 |
+| Q1-6 深夜咖啡廳前 | act | 2 | 0 | 1 | |
+| Q1-7 改成黑長直髮的上班族女士 | act | 2 | 0 | 1 | |
+| Q1-8 家居服＋齊劉海＋年輕上班族 | act | 2 | 0 | 1 | |
+| Q2-1 | act | 3 | 0 | 0 | |
+| Q2-2 其他隨便，你決定 | both | 0 | 3 | 0 | |
+| Q3-1 | act | 3 | 0 | 0 | |
+| Q3-2 | act | 3 | 0 | 0 | |
+| Q3-3 | act | 3 | 0 | 0 | |
+| Q3-4 讓她更有氣質 | both | 2 | 0 | 1 | 確認輪 2/3 有查（第一輪 0/3） |
+
+Q1 的 MISS 集中在第 1 次：第 4、6、7、8 步的動手輪都沒查。另外兩次只有第 2 次的第 4 步漏。
+
+### 6.3 檢索耗時
+
+`SearchPresets` 工具呼叫 39 次，中位數 587 ms，最大 10375 ms（單次；其餘都在 1.5 秒內）。
+
+### 6.4 Q1 最後定稿
+
+1. `masterpiece, best quality, highly detailed, photorealistic, cinematic lighting, realistic urban palette, upper body, eye level, young office lady, professional woman, young adult woman, blunt bangs, straight hair, long hair, calm expression, calms and serene expression, street, raindrops on lens, midnight café storefront, warm glowing lights, glowing storefront sign, wooden exterior, cozy atmosphere, neon lights, rain, standing on street, holding umbrella, looking away, comfortable lounge wear upper, soft knit sweater, comfortable lounge pants, relaxed trousers, soft fabric, cozy homewear style`
+2. `masterpiece, best quality, highly detailed, photorealistic, cinematic lighting, full body, eye level, young office worker woman, blunt bangs, long black hair, straight hair, smiling, comfortable loungewear top, loungewear pants, sneakers, weatherproof fabric, wristwatch, standing, holding umbrella, cafe storefront, warm cafe lighting, glowing signboard, warm lighting, rain, rainy night`
+3. `masterpiece, best quality, highly detailed, photorealistic, cinematic lighting, cafe exterior, late night cafe, rain, warm lighting, glowing cafe sign, blurred city skyline, glowing neon signs in background, close-up, upper body, young office worker woman, young woman, long hair, blunt bangs, smiling, leaning against wall, comfortable loungewear top, knit wear, loungewear pants, soft sweatpants, soft knit fabric`
+
+穿著與咖啡廳的 16 個寫法，知識庫 0 筆。第 2、3 次的動手輪其實有查。以第 3 次為例，「家居服上衣」「家居褲」的命中多是「低」分級，而且內容混雜：`cozy oversized sweater, holding a steaming cup`、`flower print pajama pants, cotton pajama long sleeve top`、`black tank top, gray sweatpants, clothes`、`wearing loose off-shoulder top, pajama pants`。模型照「只借相符的詞」沒有借，自己寫了 `comfortable loungewear top`、`loungewear pants`、`soft sweatpants`。這是檢索品質（家居服這個概念在片段裡排序靠後、混在其他衣物裡），不是檢索時機。
+
+### 6.5 協定違規
+
+1 次 `Protocol_Violation`（「推薦一些場景設計」被判成隨便、這一輪沒有 `Discuss`，模型仍叫 `Dialog_Discuss`，重試後成功），0 次失敗。第一輪是 4 次、1 次失敗；基準 1 次。
+
+### 6.6 對照與結論
+
+| 指標 | 基準 | 第一輪 | 第二輪 | 目標 | 第二輪判定 |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| 動手輪檢索率（含沿用確認輪的檢索） | 9/40 | 38/39（97%） | 35/40（87.5%） | ≥ 90% | 未達 |
+| 動手輪檢索率（不含沿用，原定義） | 9/40（22.5%） | 34/39（87.2%） | 31/40（77.5%） | — | — |
+| 交給模型決定／推薦的確認輪檢索率 | 0/12 | 6/12 | 8/12（67%） | ≥ 80% | 未達 |
+| 每次定稿「借來」的 tag | 1.3 | 6.3 | 4.4 | ≥ 2 | 達成 |
+| rag 佔非基礎詞 | 25.1% | 80.5% | 71.7% | ≥ 50% | 達成 |
+| 每次定稿模型自己寫的 tag | 13.9 | 3.7 | 5.6 | — | — |
+| 確認輪延遲中位數增加 | — | −0.1 秒 | +0.3 秒 | ≤ 3 秒 | 達成 |
+| 動手輪延遲中位數增加 | — | +1.0 秒 | +1.8 秒 | ≤ 3 秒 | 達成 |
+| 確認輪協定違規／失敗 | 1／0 | 4／1 | 1／0 | — | 回到基準 |
+
+「交給模型決定／推薦的確認輪」：Q1-3 0/3、Q1-5 3/3、Q2-2 3/3、Q3-4 2/3。
+
+**結論**：
+
+- **協定違規修好了**：4 → 1 次，沒有失敗輪。
+- **模糊要求有改善**（0/3 → 2/3）。**單項委託夾在追問回答裡仍是 0/3**，兩輪共 0/6。這種情況動手輪 6/6 都有查，所以定稿仍有機會借用，只是確認卡上的寫法是模型自己想的。
+- **動手輪檢索率兩輪差很多**（97% → 87.5%）。這一輪沒改動手輪的流程說明，差距幾乎都來自 Q1 第 1 次連續 4 個動手輪沒查，看起來是同一份流程說明下的變異。也就是說，只靠流程說明，動手輪大約 85–95% 會查，有變異。
+- **結果指標兩輪都遠高於基準**：rag 佔非基礎詞 25% → 72–81%，模型自己寫的 tag 13.9 → 3.7–5.6。
+- **有查卻沒借的情況出現了**：「家居服」這個概念在知識庫裡排序靠後、混在其他衣物裡，模型依規則不借。這屬於檢索品質，要另外處理。
+- **退路判斷**（設計 §6.4）：
+  - 動手輪檢索率未達 → 對應做法 2（程式把關）。只靠流程說明已經改了兩輪，動手輪卻出現變異，再改文字的效益有限。
+  - 確認輪的單項委託只能靠流程說明或接受現狀，程式無法判斷一句話裡有沒有委託。
+  - 檢索品質（家居服）另開一案。
