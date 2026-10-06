@@ -105,6 +105,8 @@ public sealed class DialogPlugin(TurnContext turn, FacetCatalog catalog, Orchest
         S.RecordFinalize(new FinalPrompt(positive, negative, tips.Trim(), intentSummary.Trim(),
             TagAttribution.Attribute(positive, S.Ledger, negative: false, S.Adoptions), TagAttribution.Attribute(negative, S.Ledger, negative: true),
             Reviewed: turn.SafetyOn));
+        // 只在定稿裡寫的 tag 也要算模型寫的，之後的定稿才不會把它當成借來；TryAdd 保留先前的片段紀錄，這次的分類不變（檢索時機設計 §5.1）
+        S.Ledger.Timeline.SeeModel(positive);
         turn.Outcome = new FinalizedOutcome(S.LastFinal!);
         return "ok";
     }

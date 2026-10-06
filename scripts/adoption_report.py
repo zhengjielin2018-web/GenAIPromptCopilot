@@ -172,7 +172,7 @@ def build_slate_section(completed: list[Turn], nexts: list[Turn]) -> list[str]:
 def build_retrieval_section(completed: list[Turn]) -> list[str]:
     """檢索時機（設計 §5.3）。只算帶 kind 的新資料；舊資料只列筆數。採用輪（kind=adopt）不算動手輪，但算進定稿平均。"""
     lines = ["", "## 檢索時機", ""]
-    new = [t for t in completed if "kind" in t.payload]
+    new = [t for t in completed if "kind" in t.payload and t.payload.get("retrieval") != "off"]
     if not new:
         return lines + ["尚無檢索時機資料（2026-10-06 之後的紀錄才有）。"]
 
@@ -231,9 +231,12 @@ def build_retrieval_section(completed: list[Turn]) -> list[str]:
 
     lines.append(f"- 延遲中位數：確認輪 有檢索 {med('propose', True)}／沒檢索 {med('propose', False)}；"
                  f"動手輪 有檢索 {med('act', True)}／沒檢索 {med('act', False)}")
-    old = len(completed) - len(new)
+    old = sum(1 for t in completed if "kind" not in t.payload)
     if old:
         lines.append(f"- 沒有 kind 欄位的舊資料：{old} 輪，不計入上面各項")
+    off = sum(1 for t in completed if t.payload.get("retrieval") == "off")
+    if off:
+        lines.append(f"- 知識庫關閉（retrieval: off）的輪：{off} 輪，不計入上面各項")
     return lines
 
 

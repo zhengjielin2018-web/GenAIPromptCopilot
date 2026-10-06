@@ -287,6 +287,17 @@ public class DialogPluginTests
         Assert.Same(s.LastFinal.NegativeSources, ev.NegativeSources);
     }
 
+    /// <summary>檢索時機設計 §5.1：定稿的 positive 也記成模型寫的；已先以片段出現的 tag 維持 Snippet。</summary>
+    [Fact]
+    public void FinalizePrompt_records_its_positive_tags_as_model_written_without_overriding_snippets()
+    {
+        var (p, _, s) = Make();
+        s.Ledger.Timeline.SeeSnippet("sweater");
+        Assert.Equal("ok", p.FinalizePrompt("1girl, sweater, grey sweatpants", "lowres", "t", "一個女生", Array.Empty<FacetStateEntry>()));
+        Assert.Equal(TagTimeline.Source.Model, s.Ledger.Timeline.FirstSeen("grey sweatpants"));
+        Assert.Equal(TagTimeline.Source.Snippet, s.Ledger.Timeline.FirstSeen("sweater"));
+    }
+
     /// <summary>定稿閘門（主規格 §4.6）：AskUser 還在清單上＝追問額度沒用完，有缺就不准定稿。
     /// system.md 寫了「還有 missing 就 AskUser」，模型不遵守（2026-09-25 實測 20/31 facet 缺仍定稿），改由程式擋。</summary>
     [Fact]

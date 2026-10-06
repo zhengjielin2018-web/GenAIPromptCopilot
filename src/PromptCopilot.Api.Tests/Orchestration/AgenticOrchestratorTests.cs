@@ -1380,8 +1380,10 @@ public class AgenticOrchestratorTests
         var h = new Harness();
         h.Session.ApplyProfile("portrait", Catalog);
         const string search = """{"results":[{"dimension":"clothing","facetId":"clothing.upper","query":"家居服","grounded":false,"poolSize":70,"hits":[{"id":9726,"title":"粉紅睡衣","positive":"pink pajamas"}]}]}""";
-        static bool HasSnippet(ChatHistory hist) =>
-            hist.Any(m => m.Items.OfType<FunctionResultContent>().Any(r => r.Result?.ToString()?.Contains("pink pajamas") == true));
+        static bool Has(ChatHistory hist, string text) =>
+            hist.Any(m => m.Items.OfType<FunctionResultContent>().Any(r => r.Result?.ToString()?.Contains(text) == true));
+        static bool HasSnippet(ChatHistory hist) => Has(hist, "pink pajamas");
+        const string actSearch = """{"results":[{"dimension":"clothing","facetId":"clothing.lower","query":"褲子","grounded":false,"poolSize":50,"hits":[{"id":1,"title":"灰色運動褲","positive":"grey sweatpants"}]}]}""";
         h.Chat.ThenAsync(async (hist, k) =>
         {
             // 模擬 connector 已跑完一次 SearchPresets（harness 沒掛 KnowledgePlugin）
@@ -1399,11 +1401,16 @@ public class AgenticOrchestratorTests
         h.Chat.ThenAsync(async (hist, k) =>
         {
             sawSnippetInAct = HasSnippet(hist);                                       // 動手輪看得到
+            var actCall = new FunctionCallContent(ToolNames.SearchPresets, "Knowledge", "c-act-search");   // 動手輪自己查的結果
+            var actCallMsg = new ChatMessageContent(AuthorRole.Assistant, content: null); actCallMsg.Items.Add(actCall); hist.Add(actCallMsg);
+            var actToolMsg = new ChatMessageContent(AuthorRole.Tool, content: null); actToolMsg.Items.Add(new FunctionResultContent(actCall, actSearch)); hist.Add(actToolMsg);
             return new[] { await Invoke(hist, k!, "Dialog", "AskUser", AskArgs()) };
         });
         var actEvents = await h.RunAsync(new TurnInput(ConfirmValidator.AcceptText, Confirmed: new ConfirmedInput(h.Session.PendingConfirmation!, null)));
         Assert.Empty(actEvents.OfType<ErrorEvent>());
         Assert.True(sawSnippetInAct);
         Assert.False(HasSnippet(h.Session.ChatHistory));                              // 動手輪收尾壓掉
+        Assert.True(Has(h.Session.ChatHistory, "灰色運動褲"));                         // 動手輪自己的結果也壓（留標題）、不是整個丟掉
+        Assert.False(Has(h.Session.ChatHistory, "grey sweatpants"));                  // 但片段本文不留：keepSearchResults 只給確認輪
     }
 }

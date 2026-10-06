@@ -172,6 +172,25 @@ public class HistoryTrimmerTests
     }
 
     [Fact]
+    public void Keep_search_results_still_strips_AskUser_ask_option_tags()
+    {
+        var h = new ChatHistory();
+        h.Add(ToolResult("SearchPresets", FullSearch));
+        h.Add(Call("AskUser", new
+        {
+            preamble = "p",
+            asks = new[] { new { dimension = "clothing", question = "穿什麼？", options = new[] { new { label = "睡衣", tags = "pink pajamas", presetId = 9726 } } } },
+        }));
+
+        HistoryTrimmer.CompressTurn(h, 0, keepSearchResults: true);
+
+        Assert.Contains("pink pajamas", h[0].Items.OfType<FunctionResultContent>().Single().Result!.ToString());
+        var asks = h[1].Items.OfType<FunctionCallContent>().Single().Arguments!["asks"]!.ToString()!;
+        Assert.Contains("\"label\":\"睡衣\"", asks);
+        Assert.DoesNotContain("pink pajamas", asks);
+    }
+
+    [Fact]
     public void Compress_search_results_before_only_touches_earlier_search_results()
     {
         var h = new ChatHistory();

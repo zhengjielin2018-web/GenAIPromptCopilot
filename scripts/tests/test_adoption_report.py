@@ -250,6 +250,20 @@ def test_parse_sessions():
     assert parse_sessions("a, b,,") == ["a", "b"]
 
 
+def test_knowledge_base_off_rows_are_excluded_and_counted():
+    turns = [
+        done("a", 1, "act", "AskOutcome", searches=1, retrieval="on"),
+        done("b", 1, "act", "AskOutcome", retrieval="off"),
+        done("b", 2, "act", "FinalizedOutcome", retrieval="off",
+             tagOrigins={"rag": 0, "adopted": 0, "llm": 5, "base": 3},
+             ragSplit={"borrowed": ["x", "y"], "echo": ["z"]}),
+    ]
+    text = "\n".join(build_retrieval_section(turns))
+    assert "動手輪檢索率（不含採用）：1/1（100.0%）" in text
+    assert "- 尚無定稿" in text
+    assert "知識庫關閉（retrieval: off）的輪：2 輪，不計入上面各項" in text
+
+
 def test_act_rate_counting_a_preceding_searched_propose_turn():
     turns = [
         done("a", 1, "propose", "ConfirmOutcome", searches=1),
