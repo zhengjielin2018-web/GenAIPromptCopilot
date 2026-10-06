@@ -52,4 +52,18 @@ public class SessionPluginTests
         p.SetFacetStates(new[] { new FacetStateEntry("clothing.footwear", "missing") });
         Assert.Empty(s.FacetTags);
     }
+
+    /// <summary>檢索時機設計 §5.1：facet 狀態帶的 tags 是模型寫的；狀態解析不了的整筆略過。</summary>
+    [Fact]
+    public void Apply_records_tags_as_written_by_the_model()
+    {
+        var (p, s, _) = Make();
+        p.SetFacetStates(new[]
+        {
+            new FacetStateEntry("appearance.hair", "covered", Tags: "long black hair, hime cut"),
+            new FacetStateEntry("pose.gaze", "bogus", Tags: "looking away"),
+        });
+        Assert.Equal(TagTimeline.Source.Model, s.Ledger.Timeline.FirstSeen("hime cut"));
+        Assert.Null(s.Ledger.Timeline.FirstSeen("looking away"));
+    }
 }

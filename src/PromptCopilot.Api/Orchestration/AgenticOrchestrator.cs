@@ -180,7 +180,9 @@ public sealed class AgenticOrchestrator(
             // 事件先算好再修剪：宣告出去的那一刻起，這一輪不能再被任何失敗回滾
             var final = ToFinal(turn.Outcome);
             var dimensions = turn.DimensionsSnapshot();
-            HistoryTrimmer.CompressTurn(session.ChatHistory, startIdx);
+            HistoryTrimmer.CompressTurn(session.ChatHistory, startIdx, keepSearchResults: kind == TurnKind.Propose);
+            // 檢索時機設計 §4：上一個確認輪留下的檢索結果，到這一輪收尾才壓。這裡之後不會再回滾，改到前面的訊息不會跟快照衝突
+            HistoryTrimmer.CompressSearchResultsBefore(session.ChatHistory, startIdx);
             HistoryTrimmer.Truncate(session.ChatHistory, options.HistoryTurns);
             writer.TryWrite(final);
             writer.TryWrite(dimensions);
@@ -198,6 +200,12 @@ public sealed class AgenticOrchestrator(
                     ("askedFacetIds", turn.Outcome is AskOutcome ask ? ask.Asks.SelectMany(a => a.MissingFacetIds).Distinct().ToArray() : null),
                     ("waivedFacetIds", session.FacetStates.Where(kv => kv.Value == FacetState.Waived).Select(kv => kv.Key).ToArray()),
                     ("tagOrigins", turn.Outcome is FinalizedOutcome fin ? TagOrigins(fin.Final.PositiveSources) : null),
+                    // 檢索時機設計 §5.2：輪別與檢索計數；報表靠它們算檢索率與延遲
+                    ("kind", input.Adoption is not null ? "adopt" : kind == TurnKind.Act ? "act" : "propose"),
+                    ("searches", turn.Searches), ("searchItems", turn.SearchItems), ("searchItemErrors", turn.SearchItemErrors),
+                    ("autoComplete", kind == TurnKind.Propose && g.WantsAutoComplete ? true : null),
+                    ("options", turn.Outcome is AskOutcome or MessageOutcome ? (object)new { total = turn.OptionsTotal, withPreset = turn.OptionsWithPreset } : null),
+                    ("ragSplit", turn.Outcome is FinalizedOutcome split ? (object)RagSplitPayload(RagSplit.Classify(split.Final.PositiveSources, session.Ledger.Timeline)) : null),
                     ("recommendations", recommended is null ? null : (object)new
                     {
                         dimensions = recommended.Dimensions.Select(d => Fields(
@@ -294,6 +302,9 @@ public sealed class AgenticOrchestrator(
             @base = s.Count(x => x.Origin == TagAttribution.Base),
         };
     }
+
+    /// <summary>檢索時機設計 §5.1：rag 的借來／碰巧對上，tag 原文；只進 audit，不改來源分類。</summary>
+    private static object RagSplitPayload(RagSplitResult r) => new { borrowed = r.Borrowed, echo = r.Echo };
 
     /// <summary>只有重試層包出來的兩種例外知道自己打了幾次。</summary>
     private static object? AttemptsOf(Exception e) => e switch

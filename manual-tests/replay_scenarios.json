@@ -1,0 +1,22 @@
+{
+  "Q1": [
+    {"say": "一位金色短髮的中年女士站在雨夜的霓虹街頭", "expect": "act"},
+    {"pick": true, "expect": "act"},
+    {"pick": true, "extra": "衣服你幫我設計", "expect": "both"},
+    {"say": "家居感的衣褲", "expect": "act"},
+    {"say": "你推薦一些場景設計讓我參考", "expect": "propose"},
+    {"say": "深夜咖啡廳前（帶溫暖燈光與招牌）", "expect": "act"},
+    {"say": "改成黑長直髮的上班族女士", "expect": "act"},
+    {"say": "穿回家居服，頭髮要齊劉海，年齡是年輕上班族", "expect": "act"}
+  ],
+  "Q2": [
+    {"say": "一隻在森林裡的狐狸", "expect": "act"},
+    {"say": "其他隨便，你決定", "expect": "both"}
+  ],
+  "Q3": [
+    {"say": "穿和服的少女在神社前", "expect": "act"},
+    {"pick": true, "expect": "act"},
+    {"pick": true, "expect": "act"},
+    {"say": "讓她更有氣質", "expect": "both"}
+  ]
+}

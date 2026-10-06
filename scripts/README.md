@@ -73,6 +73,8 @@ clean／structure／embed／load 全部五個階段，`--max-records` 預設不�
 對不到的另列「未對到推薦輪的採用」，說明兩邊的落差。2026-10-05 起只有定稿卡推薦、採用只在定稿後，
 新資料的「追問輪」那一列一律是 0；欄位保留，舊資料照樣讀得到。
 
+`--sessions a,b` 只看指定的 session（逗號分隔的 session id，`manual-tests/replay.py` 最後一行會印），檢索時機驗收時用它排除其他資料。報告多一節「檢索時機」：動手輪／「隨便」確認輪／Discuss 輪的檢索率、選項帶 presetId 比例、定稿的 tag 來源平均、有無檢索的延遲中位數；知識庫關閉（`retrieval: off`）與沒有 `kind` 的舊資料只列筆數，不計入。
+
 ## 一次性補充語料：Kisegaeningyou 服裝集
 
 補 clothing 維度的候選池缺口用的一次性匯入，**不是** `seed_data.py` 的階段之一

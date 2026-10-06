@@ -28,6 +28,13 @@ public sealed class TurnContext(Session session, int turnIndex, GuardResult guar
     public int ToolCalls { get; set; }
     /// <summary>清洗被拒的理由與其他值得記的事，最後寫進 audit。</summary>
     public List<string> Rejections { get; } = new();
+    /// <summary>檢索時機設計 §5.2：本輪 SearchPresets 呼叫次數（整次被擋也算）、送出的項目數、逐項回錯誤的項目數。</summary>
+    public int Searches { get; set; }
+    public int SearchItems { get; set; }
+    public int SearchItemErrors { get; set; }
+    /// <summary>本輪 AskUser／Discuss 清洗後攤出去的選項數，與其中帶 presetId 的。</summary>
+    public int OptionsTotal { get; set; }
+    public int OptionsWithPreset { get; set; }
 
     public void Emit(AgentEvent e) => events.TryWrite(e);
 

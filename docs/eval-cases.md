@@ -221,3 +221,15 @@ API 層是用 SSE 直接打分支 `feat/set-recommendations` 的 API（本機 50
 - **一輪動手輪逾時。** `9bbb5888…` 第 2 輪（「其他你決定，直接給我」按下後）：`SetProfile`、`SetFacetStates`、`SearchPresets` 之後 13 秒出現 `Protocol_Violation` attempt 1，之後 120 秒內共呼叫 Gemini 47 次，工具呼叫仍只有 3 次，最後 `Turn_Failed`（`Timeout`，`upstream.calls=47`）。log 看不出這 44 次呼叫回了什麼。同一句在其他三個對話都正常。回滾正確：事後 `GET` 是第 1 輪、profile null；用 curl 對同一個 session 再送 `{"confirm":{"turnIndex":1,"choice":null}}`，待確認還在，這次定稿成功（同樣沒補：`1girl, standing, city street, holding camera, holding drink`）。
 
   修正輪查到原因（在 Gemini 回應 log 暫時印出 functionCall 名稱，查完已拿掉）：模型呼叫工具時有時只寫 `Confirm`／`Discuss`，宣告的名稱是 `Dialog_Confirm`。SK 回「Error: Function call request for a function that wasn't defined.」，模型就重送同一個呼叫，一直到 120 秒逾時。一輪呼叫 Gemini 80–100 次，tools=0，4 個並行的確認輪合計 182 次裸名 `Confirm`。發生率跟 prompt 是否與先前逐字相同很有關：沒改過的 prompt 12/12 正常；只加一個空格是 4/6；修正輪的規則文字 3/20 到 0/12；兩個流程段寫明完整名稱之後 12/12 正常，修正輪 1 最後的 build 20 輪、修正輪 2 又改過文字的 build 20 輪，都沒有逾時。上面 `9bbb5888…` 那輪應該也是同一個原因，沒證實。程式端還沒有防護：SK 遇到沒宣告的工具會一直重試，不會提早結束這一輪。這要另外處理。（同日已補：`GeminiToolNameHandler` 把裸名改回全名，拿掉流程段的完整名稱提示重測 16 輪，8 輪寫裸名、全部成功，見 known-issues 已修正 #13。）
+
+## 2026-10-06 檢索時機（Q1–Q3）
+
+設計見 [檢索時機設計](superpowers/specs/2026-10-06-retrieval-timing-design.md) §6。用 `manual-tests/replay.py` 照劇本跑（`manual-tests/replay_scenarios.json`），改前、改後各 3 次；看每步的「檢索判定」與 `scripts/adoption_report.py --sessions …` 的「檢索時機」一節。
+
+| 編號 | 劇本 | 預期 |
+| :--- | :--- | :--- |
+| Q1 | 2026-10-05 session `ddaf2115` 的原話：第一句描述 → 追問選第一個 → 追問選第一個＋「衣服你幫我設計」→「家居感的衣褲」→「你推薦一些場景設計讓我參考」→「深夜咖啡廳前（帶溫暖燈光與招牌）」→「改成黑長直髮的上班族女士」→「穿回家居服，頭髮要齊劉海，年齡是年輕上班族」 | 每個動手輪都檢索；「衣服你幫我設計」與「推薦」的確認輪也檢索；定稿不再出現 `comfortable lounge wear top` 這類知識庫沒有、不像 SD tag 的寫法 |
+| Q2 | 「一隻在森林裡的狐狸」→「其他隨便，你決定」 | 「隨便」的確認輪先檢索，卡上列的內容來自片段；動手輪檢索並補齊 |
+| Q3 | 「穿和服的少女在神社前」→ 追問選第一個 ×2 →「讓她更有氣質」 | 模糊要求的確認輪先檢索再給解讀；動手輪檢索 |
+
+結果：基準見 [實驗紀錄](experiments/2026-10-06-retrieval-timing.md) §3，改後見 §4（2026-10-06）。Q1：動手輪幾乎都查（只有第 3 次的「家居感的衣褲」漏），「推薦」3/3 有查，「衣服你幫我設計」的確認輪 0/3。Q2：「隨便」的確認輪 3/3 有查，動手輪沿用確認輪的結果沒再查。Q3：動手輪都查，「讓她更有氣質」的確認輪 0/3；有 1 輪確認輪協定違規失敗。第二輪見實驗紀錄 §6：Q1 第 1 次連續 4 個動手輪沒查，「衣服你幫我設計」的確認輪仍 0/3；Q2 動手輪記 CARRY；Q3「讓她更有氣質」的確認輪 2/3。

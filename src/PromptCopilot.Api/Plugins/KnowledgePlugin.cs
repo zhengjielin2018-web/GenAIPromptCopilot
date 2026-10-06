@@ -32,6 +32,15 @@ public sealed class KnowledgePlugin(TurnContext turn, FacetCatalog catalog, IEmb
     /// <summary>facet 項目的查詢句（設計 §5.2）：「原話（英文 tag）」。實驗：只用中文 73、帶英文 81（滿分 85）；帶著原話是為了翻譯偏掉時還有東西撐著。</summary>
     public static string QueryText(string query, string? tags) => tags is null ? query : $"{query}（{tags}）";
 
+    /// <summary>維度代號（不分大小寫）、通用名稱、題材專屬名稱（object 的 appearance 叫「主體外觀」）。只看整段相等，「寫實風格」不算。</summary>
+    private bool IsBareDimensionName(string query, string dimension, string profile)
+    {
+        var q = query.Trim();
+        return string.Equals(q, dimension, StringComparison.OrdinalIgnoreCase)
+            || q == catalog.DimensionLabels.GetValueOrDefault(dimension)
+            || q == catalog.DimensionLabel(dimension, profile);
+    }
+
     /// <summary>模型填的 tags 去頭尾空白；只有空白或逗號的當沒給。</summary>
     public static string? CleanTags(string? tags)
     {
@@ -43,7 +52,7 @@ public sealed class KnowledgePlugin(TurnContext turn, FacetCatalog catalog, IEmb
     /// <summary>使用者講到的每個 facet 各一項，加上沒講的維度各兩項。</summary>
     public const int MaxQueries = 24;
 
-    private const string ItemsHelp = "每項：query（該項專屬的繁中查詢語句）加上 facetId（單一 facet，例如 clothing.footwear）或 dimension（整個維度，style | scene | camera | appearance | pose | clothing）。使用者講到的每個 facet 各一項用 facetId 與他的原話，並附 tags（該描述翻成的英文 SD tag，逗號分隔，寫法同 SetFacetStates 的 tags）；使用者沒講的維度用 dimension 給兩個對比方向。最多 24 項。";
+    private const string ItemsHelp = "每項：query（該項專屬的繁中查詢語句）加上 facetId（單一 facet，例如 clothing.footwear）或 dimension（整個維度，style | scene | camera | appearance | pose | clothing）。使用者講到的每個 facet 各一項用 facetId 與他的原話，並附 tags（該描述翻成的英文 SD tag，逗號分隔，寫法同 SetFacetStates 的 tags）；使用者沒講的維度用 dimension 給兩個對比方向，query 寫具體方向（例：寫實攝影、日系動漫插畫），不可只寫維度名稱。最多 24 項。";
 
     [KernelFunction(ToolNames.SearchPresets)]
     [Description("檢索知識庫片段。一次呼叫帶上本輪所有要查的項目，不要一個項目一次呼叫。" + ItemsHelp + "每個項目各自回傳候選池大小、每筆的相似度分級、可否借入提示詞、每個 facet 對本次使用者是 covered/missing。")]
@@ -52,9 +61,11 @@ public sealed class KnowledgePlugin(TurnContext turn, FacetCatalog catalog, IEmb
         CancellationToken ct)
     {
         var s = turn.Session;
+        turn.Searches++;                                                // 檢索時機設計 §5.2：整次被擋也算，模型有照流程去查
         if (s.Profile is null) return "錯誤：請先呼叫 SetProfile";
         if (queries is null || queries.Length == 0) return "錯誤：queries 不可為空，請一次帶上本輪所有要查的項目";
         if (queries.Length > MaxQueries) return $"錯誤：queries 最多 {MaxQueries} 個項目（使用者講到的每個 facet 各一項，加上沒講的維度各兩項），收到 {queries.Length} 個";
+        turn.SearchItems += queries.Length;
 
         var grounded = s.GroundedDimensions(catalog);
         var profileFacets = catalog.IdsForProfile(s.Profile);
@@ -83,8 +94,15 @@ public sealed class KnowledgePlugin(TurnContext turn, FacetCatalog catalog, IEmb
             }
             else { errors[i] = "每個項目要有 dimension 或 facetId"; continue; }
             if (string.IsNullOrWhiteSpace(q.Query)) { errors[i] = facetId is null ? $"維度 {dimension} 的 query 空白" : $"facet {facetId} 的 query 空白"; continue; }
+            // 檢索時機設計 §3.5：維度項目只寫維度名稱（「風格」），撈回的是全維度最近的隨機片段，沒有用
+            if (facetId is null && IsBareDimensionName(q.Query, dimension, s.Profile))
+            { errors[i] = $"維度 {dimension} 的 query 只寫了維度名稱，請寫具體方向（例：寫實攝影、日系動漫插畫）"; continue; }
             valid.Add((i, dimension, facetId, q.Query, facetId is null ? null : CleanTags(q.Tags), facetIds));
+            // 模型送進來的翻譯，在看到任何命中之前記（檢索時機設計 §5.1）；維度項目沒有 tags
+            s.Ledger.Timeline.SeeModel(valid[^1].tags);
         }
+
+        turn.SearchItemErrors += errors.Count;
 
         var vectors = valid.Count == 0
             ? Array.Empty<float[]>()

@@ -287,6 +287,17 @@ public class DialogPluginTests
         Assert.Same(s.LastFinal.NegativeSources, ev.NegativeSources);
     }
 
+    /// <summary>檢索時機設計 §5.1：定稿的 positive 也記成模型寫的；已先以片段出現的 tag 維持 Snippet。</summary>
+    [Fact]
+    public void FinalizePrompt_records_its_positive_tags_as_model_written_without_overriding_snippets()
+    {
+        var (p, _, s) = Make();
+        s.Ledger.Timeline.SeeSnippet("sweater");
+        Assert.Equal("ok", p.FinalizePrompt("1girl, sweater, grey sweatpants", "lowres", "t", "一個女生", Array.Empty<FacetStateEntry>()));
+        Assert.Equal(TagTimeline.Source.Model, s.Ledger.Timeline.FirstSeen("grey sweatpants"));
+        Assert.Equal(TagTimeline.Source.Snippet, s.Ledger.Timeline.FirstSeen("sweater"));
+    }
+
     /// <summary>定稿閘門（主規格 §4.6）：AskUser 還在清單上＝追問額度沒用完，有缺就不准定稿。
     /// system.md 寫了「還有 missing 就 AskUser」，模型不遵守（2026-09-25 實測 20/31 facet 缺仍定稿），改由程式擋。</summary>
     [Fact]
@@ -389,5 +400,32 @@ public class DialogPluginTests
         Assert.Equal(FacetState.Missing, s.FacetStates["pose.gaze"]);
         Assert.Equal(FacetState.Waived, s.FacetStates["pose.main"]);
         Assert.Contains(turn.Rejections, r => r.Contains("bogus"));
+    }
+
+    // ---- 檢索時機（2026-10-06）----
+
+    /// <summary>設計 §5：選項數與帶 presetId 的進本輪計數；沒帶 presetId 的 tags 是模型寫的，帶的不記（片段那邊記過）。</summary>
+    [Fact]
+    public void AskUser_counts_options_and_records_tags_of_options_without_a_preset()
+    {
+        var (p, turn, s) = Make();
+        var ask = new AskItem("style", "q?", new[] { "style.genre" },
+            new[] { new OptionItem("寫實", "photorealistic", 5), new OptionItem("動漫", "anime style", null) });
+        Assert.Equal("ok", p.AskUser("hi", new[] { ask }, Array.Empty<FacetStateEntry>()));
+        Assert.Equal(2, turn.OptionsTotal);
+        Assert.Equal(1, turn.OptionsWithPreset);
+        Assert.Equal(TagTimeline.Source.Model, s.Ledger.Timeline.FirstSeen("anime style"));
+        Assert.Null(s.Ledger.Timeline.FirstSeen("photorealistic"));
+    }
+
+    [Fact]
+    public void Discuss_counts_options_too()
+    {
+        var (p, turn, _) = Make();
+        var r = p.Discuss("可以參考這些方向", Array.Empty<FacetStateEntry>(),
+            new[] { new OptionItem("雨夜咖啡廳", "night, cafe", 5), new OptionItem("書店", "bookstore", null) });
+        Assert.Equal("ok", r);
+        Assert.Equal(2, turn.OptionsTotal);
+        Assert.Equal(1, turn.OptionsWithPreset);
     }
 }

@@ -16,3 +16,5 @@
    - 選項寫成陳述句、20 字以內、彼此互斥；做得到的「全都要」也列出來，註明代價；不要列「算了不改」——不想改的話他不按就好。
 4. **使用者打「好」「對」「OK」**：他沒有按按鈕，這句不算確認。再用 `Confirm` 確認一次同樣的內容，正文開頭說「要套用的話請按下面的按鈕」。
 5. **每一輪都必須以本輪工具清單裡的 `Confirm`、`Discuss` 或 `RequestSaveConsent` 之一結束。**不要只回純文字。呼叫時用工具宣告裡的完整名稱（`Dialog_Confirm`、`Dialog_Discuss`、`Dialog_RequestSaveConsent`），不要只寫 `Confirm`。
+
+{{RETRIEVAL_PROPOSE}}

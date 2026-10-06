@@ -6,3 +6,5 @@
 4. **使用者說「隨便／你決定／直接給我」並確認後**（Session 事實的 AutoFill 是 true，本輪不會有 `AskUser`）：直接 `FinalizePrompt`，**補齊每一個 missing 的 facet**——確認卡上列了的照卡上的內容補，卡上沒列到的 missing facet 也依畫面補上合理的 tag。使用者把沒講的交給你決定，補齊就是他確認的內容，不算「確認以外的改動」；waived 的 facet 照舊不補。
 5. 使用者訊息以「採用〈」開頭時，那是他從定稿卡的推薦裡挑了一套。「照它的」是**取代**：定稿時該 facet 只留括號內的 tag（原字，不改寫），原本的 tag 全部拿掉——從使用者先前的描述翻的、上一版定稿裡屬於這個 facet 的、括號內「取代原本的」後面列的都算；狀態設 `covered`、`tags` 填留下的那些字、note 記「採用知識庫 #編號」。「保留我的」facet 維持原狀。然後直接 `FinalizePrompt` 重新定稿（採用只會發生在定稿之後）。
 6. **每一輪都必須以本輪工具清單裡的 `AskUser` 或 `FinalizePrompt` 之一結束。**不要只回純文字。呼叫時用工具宣告裡的完整名稱（`Session_SetProfile`、`Session_SetFacetStates`、`Dialog_AskUser`、`Dialog_FinalizePrompt`），不要只寫 `FinalizePrompt`。
+
+{{RETRIEVAL_ACT}}
