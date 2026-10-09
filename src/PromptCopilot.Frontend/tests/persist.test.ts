@@ -25,6 +25,13 @@ describe('persist', () => {
     expect(loadPersisted(s)).toEqual({ v: 1, sessionId: 'abc', transcript: [], savedTurns: [3], draft: 'x' })
   })
 
+  // 重新整理後要接回還在生的預覽（預覽設計 §8）
+  it('round-trips the preview ids of each final card', () => {
+    const s = memStorage()
+    savePersisted({ sessionId: 'abc', transcript: [], renders: { '4': 'r1' } }, s)
+    expect(loadPersisted(s)?.renders).toEqual({ '4': 'r1' })
+  })
+
   it('still loads an entry stored before savedTurns and draft existed', () => {
     const s = memStorage()
     s.setItem('pc.session', JSON.stringify({ v: 1, sessionId: 'abc', transcript: [{ kind: 'user', text: '嗨' }] }))

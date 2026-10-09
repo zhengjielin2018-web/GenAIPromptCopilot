@@ -1,7 +1,8 @@
 import type { Entry } from './reducer'
 
-/** savedTurns：已存進共享庫的定稿輪次；draft：輪次進行中送出的原文。兩者是後加的，舊資料沒有，讀的一方當成 [] 與 ''。 */
-export interface Persisted { v: 1; sessionId: string; transcript: Entry[]; savedTurns?: number[]; draft?: string }
+/** savedTurns：已存進共享庫的定稿輪次；draft：輪次進行中送出的原文；renders：每張定稿卡最新一次預覽的 renderId（key 是 turnIndex，2026-10-09）。
+ *  三者是後加的，舊資料沒有，讀的一方當成 []、'' 與 {}。 */
+export interface Persisted { v: 1; sessionId: string; transcript: Entry[]; savedTurns?: number[]; draft?: string; renders?: Record<string, string> }
 export interface StorageLike { getItem(k: string): string | null; setItem(k: string, v: string): void; removeItem(k: string): void }
 
 const KEY = 'pc.session'
