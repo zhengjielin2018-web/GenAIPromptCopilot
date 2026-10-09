@@ -40,9 +40,11 @@ export function initialState(): ChatState {
  *  送出當下會先存一次對話流，所以輪次中重載時它停在一個沒有下文的 user 條目：那一輪後端不是回滾了、就是已經定稿（由下面補的卡涵蓋），
  *  原文經 draft 回到輸入框，這裡把它拿掉。後端有 LastFinal、對話流卻沒有任何定稿卡時補一張，卡片才畫得出來、也才存得了。 */
 export function hydrate(state: ChatState, dto: SessionSnapshotDto, transcript: Entry[]): ChatState {
-  const lastFinal: FinalizedData | null = dto.lastFinal ? { kind: 'finalized', ...dto.lastFinal } : null
+  // lastFinal.turnIndex（2026-10-09）：線上欄位，不進卡片資料；補卡時用定稿那輪，舊後端沒有就退回目前輪次
+  let lastFinal: FinalizedData | null = null
+  if (dto.lastFinal) { const { turnIndex: _t, ...rest } = dto.lastFinal; lastFinal = { kind: 'finalized', ...rest } }
   const entries = transcript.at(-1)?.kind === 'user' ? transcript.slice(0, -1) : [...transcript]
-  if (lastFinal && latestFinalizedTurn(entries) === null) entries.push({ kind: 'final', turnIndex: dto.turnIndex, data: { ...lastFinal } })
+  if (lastFinal && latestFinalizedTurn(entries) === null) entries.push({ kind: 'final', turnIndex: dto.lastFinal?.turnIndex ?? dto.turnIndex, data: { ...lastFinal } })
   return {
     ...state,
     sessionId: dto.sessionId, status: dto.status, profile: dto.profile, turnIndex: dto.turnIndex,
