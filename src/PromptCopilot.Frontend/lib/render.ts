@@ -17,7 +17,7 @@ export function isRealistic(facetTags: Record<string, string>, positive: string)
 export function statusText(v: RenderView): string {
   switch (v.status) {
     case 'queued': return v.position ? `排第 ${v.position} 位` : '排隊中'
-    case 'generating': return '生圖中（閒置後第一張可能要半分鐘）'
+    case 'generating': return '生圖中（閒置後第一張可能要一兩分鐘）'
     case 'reviewing': return '審查圖片中'
     case 'self_checking': return '自評中'
     case 'done': return ''

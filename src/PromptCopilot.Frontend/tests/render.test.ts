@@ -21,7 +21,7 @@ describe('render status', () => {
   it('has its own words for every stage', () => {
     expect(statusText(view({ status: 'queued', position: 2 }))).toBe('排第 2 位')
     expect(statusText(view({ status: 'queued', position: null }))).toBe('排隊中')
-    expect(statusText(view({ status: 'generating' }))).toBe('生圖中（閒置後第一張可能要半分鐘）')
+    expect(statusText(view({ status: 'generating' }))).toBe('生圖中（閒置後第一張可能要一兩分鐘）')
     expect(statusText(view({ status: 'reviewing' }))).toBe('審查圖片中')
     expect(statusText(view({ status: 'self_checking' }))).toBe('自評中')
     expect(statusText(view({ status: 'done' }))).toBe('')

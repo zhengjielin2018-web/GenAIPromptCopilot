@@ -76,8 +76,9 @@ public sealed class RenderOptions
     public int DailyLimit { get; set; } = 200;
     /// <summary>預估等待超過就不收（可行性 §11 第 3 項）。</summary>
     public int MaxEstimatedWaitSeconds { get; set; } = 60;
-    /// <summary>從送出 RunPod 起算；冷啟動實測 36.8 秒（可行性 §9.2）再留餘裕。</summary>
-    public int JobTimeoutSeconds { get; set; } = 90;
+    /// <summary>從送出 RunPod 起算。閒置很久後的冷啟動實測 91 秒（排隊 74.5＋執行 16.8，可行性 §9.4），原本的 90 秒擋不住，
+    /// 2026-10-10 調成 180 秒（使用者同意）。</summary>
+    public int JobTimeoutSeconds { get; set; } = 180;
     public int PollIntervalMs { get; set; } = 1000;
     /// <summary>還沒有實測資料時，預估等待用的每張秒數。</summary>
     public int DefaultImageSeconds { get; set; } = 10;

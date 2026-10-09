@@ -29,7 +29,7 @@ public class RenderConfigTests
     public void Defaults_match_the_spec()
     {
         var o = new RenderOptions();
-        Assert.Equal((10, 200, 60, 90, 1000, 10), (o.PerSessionLimit, o.DailyLimit, o.MaxEstimatedWaitSeconds, o.JobTimeoutSeconds, o.PollIntervalMs, o.DefaultImageSeconds));
+        Assert.Equal((10, 200, 60, 180, 1000, 10), (o.PerSessionLimit, o.DailyLimit, o.MaxEstimatedWaitSeconds, o.JobTimeoutSeconds, o.PollIntervalMs, o.DefaultImageSeconds));
         Assert.False(o.Enabled);
     }
 }

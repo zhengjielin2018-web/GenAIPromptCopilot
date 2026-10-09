@@ -78,7 +78,7 @@ Gemini 的模型用 `Llm:Model`（跟 `SafetyClassifier` 同一個），走同�
 | `PerSessionLimit` | 10 | 每個 session 送去 Runpod 的張數上限 |
 | `DailyLimit` | 200 | 全站每天的張數上限，台灣時間午夜歸零 |
 | `MaxEstimatedWaitSeconds` | 60 | 預估等待超過就不收（可行性 §11 第 3 項） |
-| `JobTimeoutSeconds` | 90 | 從送出 Runpod 起算；冷啟動實測 36.8 秒（可行性 §9.2）再留餘裕 |
+| `JobTimeoutSeconds` | 180 | 從送出 Runpod 起算。原本 90 秒（冷啟動實測 36.8 秒，可行性 §9.2）；實作後量到閒置很久的冷啟動 91 秒（可行性 §9.4），2026-10-10 調成 180 秒 |
 | `PollIntervalMs` | 1000 | 後端輪詢 Runpod 的間隔 |
 | `DefaultImageSeconds` | 10 | 還沒有實測資料時，預估等待用的每張秒數 |
 
@@ -205,7 +205,7 @@ body：`{"turnIndex": n, "safety": "on" | "off"}`，`safety` 可省略（預設 
   - 這個 session 有一張預覽還沒結束（排隊、生圖、審查或自評中，不管在哪張卡上）：停用，旁邊寫「上一張還在生成」；那張到了 `done`／`failed`／`blocked` 就自動恢復。
   - 後端仍照 §5.1 回 `409`：兩個分頁或前端狀態過期時，訊息照常顯示在按鈕下方。
 - **送出**：body 用 [`lib/safety.ts`](../../../src/PromptCopilot.Frontend/lib/safety.ts) 的 `messageBody` 同樣的規則帶 `safety: off`（後端開放而且使用者關掉了才帶）。`409`／`429`／`503` 的訊息直接顯示在按鈕下方。
-- **狀態**：每 1.5 秒輪詢，每個階段各有自己的字：`queued`「排第 k 位」、`generating`「生圖中（閒置後第一張可能要半分鐘）」、`reviewing`「審查圖片中」、`self_checking`「自評中」。拿到 `done`／`failed`／`blocked` 就停；元件卸下時也停。
+- **狀態**：每 1.5 秒輪詢，每個階段各有自己的字：`queued`「排第 k 位」、`generating`「生圖中（閒置後第一張可能要一兩分鐘）」、`reviewing`「審查圖片中」、`self_checking`「自評中」。拿到 `done`／`failed`／`blocked` 就停；元件卸下時也停。
 - **自評中就顯示圖**：一進 `self_checking` 就載入圖片顯示，自評清單的位置先顯示「自評中…」，`done` 時換成清單。
 - **完成**：顯示圖與自評清單（✓ 有畫出來／✗ 沒有／？看不出來，加理由）；`selfCheck.status = unavailable` 時顯示「這張的自評無法進行」。審查關著時圖上方標「審查已關閉（測試用）」。
 - **在畫面外完成的提示**：預覽到了 `done`／`blocked`／`failed` 時，那張定稿卡若不在畫面內（`IntersectionObserver`），畫面底部出現一個小提示「預覽好了」（被擋或失敗時寫「預覽沒有完成」），點了捲到那張卡；幾秒後自動消失，卡在畫面內時不出現。
