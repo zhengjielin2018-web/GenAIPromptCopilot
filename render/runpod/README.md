@@ -2,6 +2,8 @@
 
 生圖後端的試用（spike）：官方 [worker-comfyui](https://github.com/runpod-workers/worker-comfyui) 加一個動漫 SDXL checkpoint，部署成 RunPod Serverless endpoint，再用 [`scripts/render_spike.py`](../../scripts/render_spike.py) 量延遲與費用。為什麼選 RunPod、要量什麼，見 [ComfyUI 整合可行性](../../docs/ComfyUI整合可行性.md) §2、§9。
 
+正式的 API（[定稿後生成預覽](../../docs/superpowers/specs/2026-10-09-render-preview-design.md)）用做法 B 的 endpoint；金鑰除了 spike 腳本，也由 api 容器從 `.env` 的 `RUNPOD_API_KEY`、`RUNPOD_ENDPOINT_ID` 讀（docker compose 映射成 `Render__ApiKey`、`Render__EndpointId`）。
+
 | 檔案 | 內容 |
 | :--- | :--- |
 | [`Dockerfile`](Dockerfile) | 做法 B 用：`runpod/worker-comfyui:5.10.0-base` 加 NoobAI-XL 1.1（epsilon 版，Danbooru tag，授權 FAIPL-1.0-SD） |

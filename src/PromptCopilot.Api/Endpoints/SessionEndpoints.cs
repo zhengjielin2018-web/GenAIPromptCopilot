@@ -20,7 +20,7 @@ public sealed record SessionCreated(string SessionId, string Retrieval);
 public sealed record SavedToShared(Guid Id);
 public sealed record ErrorBody(string Error);
 public sealed record FinalDto(string Positive, string Negative, string Tips, string IntentSummary,
-    IReadOnlyList<TagSource> PositiveSources, IReadOnlyList<TagSource> NegativeSources);
+    IReadOnlyList<TagSource> PositiveSources, IReadOnlyList<TagSource> NegativeSources, int TurnIndex);
 public sealed record SessionSnapshotDto(string SessionId, string Status, string? Profile, int TurnIndex, int AskCount, int AskLimit,
     IReadOnlyDictionary<string, string> FacetStates, FinalDto? LastFinal, string Retrieval, IReadOnlyDictionary<string, string> FacetTags);
 /// <summary>換一批（2026-09-30 推薦組法設計 §4.5）。TurnIndex：前端那張定稿卡的輪次，必須是最新一張。</summary>
@@ -57,14 +57,14 @@ public static class SessionEndpoints
             if (s is null) return Results.NotFound(new ErrorBody("session 不存在或已過期"));
             // 不拿 session 鎖：重載時連線已隨頁面斷掉、那一輪已回滾；兩個分頁共用同一個 id 時讀到半途狀態是可接受的最壞情況。
             var final = s.LastFinal is { } f
-                ? new FinalDto(f.Positive, f.Negative, f.Tips, f.IntentSummary, f.PositiveSources ?? Array.Empty<TagSource>(), f.NegativeSources ?? Array.Empty<TagSource>())
+                ? new FinalDto(f.Positive, f.Negative, f.Tips, f.IntentSummary, f.PositiveSources ?? Array.Empty<TagSource>(), f.NegativeSources ?? Array.Empty<TagSource>(), f.TurnIndex)
                 : null;
             return Results.Ok(new SessionSnapshotDto(s.Id, s.Status.ToString(), s.Profile, s.TurnIndex, s.AskCount, options.MaxAskCount,
                 s.FacetStates.ToDictionary(kv => kv.Key, kv => FacetStateParser.ToWire(kv.Value)), final, s.RetrievalMode, new Dictionary<string, string>(s.FacetTags)));
         })
         .WithSummary("讀 session 目前的狀態")
         .WithDescription("""
-            給前端整頁重載後重建畫面用：狀態（`Collecting`／`Finalized`）、題材、每個 facet 的狀態、追問已用幾次（`askCount`／`askLimit`）、最後一次定稿（未定稿為 `null`；欄位同 `final` 事件的 `finalized`，含 tag 來源）、這段對話是否使用知識庫（`retrieval`）、模型給每個已涵蓋 facet 的英文 tag（`facetTags`）。
+            給前端整頁重載後重建畫面用：狀態（`Collecting`／`Finalized`）、題材、每個 facet 的狀態、追問已用幾次（`askCount`／`askLimit`）、最後一次定稿（未定稿為 `null`；欄位同 `final` 事件的 `finalized`，含 tag 來源；`turnIndex` 是哪一輪定的稿，生成預覽要帶它）、這段對話是否使用知識庫（`retrieval`）、模型給每個已涵蓋 facet 的英文 tag（`facetTags`）。
 
             不含對話紀錄：對話流由前端自己保存。唯讀，除了重置閒置過期的計時之外不改任何狀態。
 

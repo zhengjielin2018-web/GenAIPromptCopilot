@@ -6,9 +6,10 @@
       <button type="button" class="mt-3 rounded-md bg-ink px-4 py-1.5 text-sm font-medium text-paper hover:bg-ink/85" @click="s.boot()">重試</button>
     </div>
     <div v-else class="relative grid min-h-0 flex-1 grid-cols-1 md:grid-cols-[minmax(0,1fr)_19rem]">
-      <section class="flex min-h-0 flex-col">
+      <section class="relative flex min-h-0 flex-col">
         <ChatStream class="min-h-0 flex-1" />
         <Composer />
+        <RenderToast />
       </section>
       <Dashboard class="hidden border-l border-rule md:flex" />
       <PresetDrawer />

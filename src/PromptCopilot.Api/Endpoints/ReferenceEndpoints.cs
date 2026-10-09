@@ -40,6 +40,13 @@ public static class ReferenceEndpoints
                 """)
             .Produces(StatusCodes.Status200OK);
 
+        app.MapGet("/api/config/render", (IOptions<RenderOptions> o) => Results.Ok(new { enabled = o.Value.Enabled })).WithTags("Reference")
+            .WithSummary("定稿後生成預覽是否開啟")
+            .WithDescription("""
+                `{"enabled": true | false}`：`Render:EndpointId` 與 `Render:ApiKey`（docker compose 用 `.env` 的 `RUNPOD_ENDPOINT_ID`、`RUNPOD_API_KEY`）都有值時為 `true`，前端才在定稿卡顯示「生成預覽」。見 `docs/superpowers/specs/2026-10-09-render-preview-design.md`。
+                """)
+            .Produces(StatusCodes.Status200OK);
+
         app.MapGet("/api/presets/{id:long}", async (long id, PresetRepository presets, CancellationToken ct) =>
             await presets.GetAsync(id, ct) is { } d ? Results.Ok(d) : Results.NotFound()).WithTags("Reference")
             .WithSummary("查知識庫的一筆 preset")

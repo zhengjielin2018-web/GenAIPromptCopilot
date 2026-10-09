@@ -72,6 +72,7 @@ docker compose up
 不想灌種子、要自己跑管線：`.env` 加一行 `SEED_URL=`（空字串），再照 [scripts/README.md](scripts/README.md)。
 
 - 沒填 `GEMINI_API_KEY`：整套照樣起來，但每一輪對話都會失敗（`docker compose logs api` 開頭有一行警告）。填好後 `docker compose up -d api` 重建 api 容器即可。
+- 生成預覽圖（選配）：定稿卡上的「生成預覽」用 RunPod Serverless＋ComfyUI 生一張動漫風的圖，附看圖審查與自評。先照 [render/runpod/README.md](render/runpod/README.md) 部署 endpoint，再在 `.env` 填 `RUNPOD_API_KEY`、`RUNPOD_ENDPOINT_ID`，`docker compose up -d --build api`；沒填就不顯示按鈕。每張約 US$0.0034（RunPod 預付制，餘額就是花費上限）；每個對話最多 10 張、全站每天 200 張（`Render` 設定節可調）。預覽圖只存在後端記憶體的對話裡，跟對話一起過期，不轉存、不進知識庫。設計見 [定稿後生成預覽](docs/superpowers/specs/2026-10-09-render-preview-design.md)。
 - 重置知識庫：`docker compose down -v` 刪掉資料庫 volume，下次 `up` 重新建表並灌種子。
 - 看一輪發生什麼事：`docker compose logs -f api`，每輪結束有一行 `Turn <session>#<turn> <事件> …`，每次呼叫 Gemini 有一行 `Gemini <狀態碼> …`。完整紀錄在資料庫的 `audit_logs`（查法見 [manual-tests/README.md](manual-tests/README.md) 第 5 節）。
 
@@ -95,7 +96,7 @@ docker compose up
 ## 文件
 
 - [主規格](docs/superpowers/specs/2026-09-21-genai-prompt-copilot-design.md)：目標、架構、編排、facet 體系、安全、資料模型、API 協定、測試策略
-- 子專案設計：[語料擴增](docs/superpowers/specs/2026-09-22-corpus-expansion-design.md)、[分維度檢索](docs/superpowers/specs/2026-09-22-dimension-scoped-retrieval-design.md)、[多輪對話](docs/superpowers/specs/2026-09-22-multi-turn-dialogue-design.md)、[批次 SearchPresets](docs/superpowers/specs/2026-09-24-batch-search-presets-design.md)、[前端與 SSE](docs/superpowers/specs/2026-09-24-frontend-sse-design.md)、[收尾與展示](docs/superpowers/specs/2026-09-24-subproject-4-packaging-design.md)、[知識庫開關與檢索細節](docs/superpowers/specs/2026-09-25-retrieval-switch-and-trace-design.md)、[整套組合推薦](docs/superpowers/specs/2026-09-25-set-recommendations-design.md)、[facet 層級向量](docs/superpowers/specs/2026-09-29-facet-vector-retrieval-design.md)、[推薦組法](docs/superpowers/specs/2026-09-30-recommendation-slate-design.md)、[先確認再動手](docs/superpowers/specs/2026-10-05-confirm-before-act-design.md)
+- 子專案設計：[語料擴增](docs/superpowers/specs/2026-09-22-corpus-expansion-design.md)、[分維度檢索](docs/superpowers/specs/2026-09-22-dimension-scoped-retrieval-design.md)、[多輪對話](docs/superpowers/specs/2026-09-22-multi-turn-dialogue-design.md)、[批次 SearchPresets](docs/superpowers/specs/2026-09-24-batch-search-presets-design.md)、[前端與 SSE](docs/superpowers/specs/2026-09-24-frontend-sse-design.md)、[收尾與展示](docs/superpowers/specs/2026-09-24-subproject-4-packaging-design.md)、[知識庫開關與檢索細節](docs/superpowers/specs/2026-09-25-retrieval-switch-and-trace-design.md)、[整套組合推薦](docs/superpowers/specs/2026-09-25-set-recommendations-design.md)、[facet 層級向量](docs/superpowers/specs/2026-09-29-facet-vector-retrieval-design.md)、[推薦組法](docs/superpowers/specs/2026-09-30-recommendation-slate-design.md)、[先確認再動手](docs/superpowers/specs/2026-10-05-confirm-before-act-design.md)、[檢索時機](docs/superpowers/specs/2026-10-06-retrieval-timing-design.md)、[定稿後生成預覽](docs/superpowers/specs/2026-10-09-render-preview-design.md)
 - [SK 架構說明](docs/SK架構說明.md)：哪些是我們寫的、哪些是 Semantic Kernel 與 Google connector 的，一輪在 SK 裡怎麼跑，connector 的怪癖與補丁
 - [單輪流程說明](docs/單輪流程說明.md)、[eval 案例](docs/eval-cases.md)、[資料來源](docs/資料來源.md)、[初步想法](docs/初步想法.md)
 - [已知問題與待修清單](docs/known-issues.md)

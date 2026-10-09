@@ -64,3 +64,23 @@ public sealed class DatabaseOptions
     public const string Section = "Database";
     public string ConnectionString { get; set; } = "Host=localhost;Port=5432;Database=prompt_copilot;Username=postgres;Password=postgres";
 }
+
+/// <summary>定稿後生成預覽（預覽設計 §4.1）。EndpointId 或 ApiKey 有一個是空的就當沒開：/api/config/render 回 false、POST /renders 回 404。</summary>
+public sealed class RenderOptions
+{
+    public const string Section = "Render";
+    public string EndpointId { get; set; } = "";
+    /// <summary>只從環境變數 Render__ApiKey 讀（docker compose 由 .env 的 RUNPOD_API_KEY 帶入），不寫進任何設定檔：repo 是公開的。</summary>
+    public string ApiKey { get; set; } = "";
+    public int PerSessionLimit { get; set; } = 10;
+    public int DailyLimit { get; set; } = 200;
+    /// <summary>預估等待超過就不收（可行性 §11 第 3 項）。</summary>
+    public int MaxEstimatedWaitSeconds { get; set; } = 60;
+    /// <summary>從送出 RunPod 起算。閒置很久後的冷啟動實測 91 秒（排隊 74.5＋執行 16.8，可行性 §9.4），原本的 90 秒擋不住，
+    /// 2026-10-10 調成 180 秒（使用者同意）。</summary>
+    public int JobTimeoutSeconds { get; set; } = 180;
+    public int PollIntervalMs { get; set; } = 1000;
+    /// <summary>還沒有實測資料時，預估等待用的每張秒數。</summary>
+    public int DefaultImageSeconds { get; set; } = 10;
+    public bool Enabled => !string.IsNullOrWhiteSpace(EndpointId) && !string.IsNullOrWhiteSpace(ApiKey);
+}

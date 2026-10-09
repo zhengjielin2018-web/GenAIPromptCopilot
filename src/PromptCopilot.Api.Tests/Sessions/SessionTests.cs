@@ -196,4 +196,28 @@ public class SessionTests
         Assert.Equal(2, s.LatestSlateTurn);                       // 推薦在一輪成立後才產生，被攔截的輪走不到這裡（設計 §4.4）
         Assert.Equal(1, s.SeenFor("style")["k"]);
     }
+
+    [Fact]
+    public void RecordFinalize_stamps_the_current_turn_and_rollback_restores_it()
+    {
+        var s = New();
+        s.TurnIndex = 5;
+        s.RecordFinalize(new FinalPrompt("1girl", "lowres", "", ""));
+        Assert.Equal(5, s.LastFinal!.TurnIndex);
+
+        var snap = s.Snapshot();
+        s.TurnIndex = 7;
+        s.RecordFinalize(new FinalPrompt("1boy", "lowres", "", ""));
+        Assert.Equal(7, s.LastFinal!.TurnIndex);
+        s.Restore(snap);
+        Assert.Equal(5, s.LastFinal!.TurnIndex);
+    }
+
+    [Fact]
+    public void Render_seed_is_fixed_for_the_session()
+    {
+        var s = New();
+        Assert.True(s.RenderSeed > 0);
+        Assert.Equal(s.RenderSeed, s.RenderSeed);
+    }
 }

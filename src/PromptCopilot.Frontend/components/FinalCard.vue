@@ -1,5 +1,5 @@
 <template>
-  <div data-card="final" class="rounded-md border-2 border-ink bg-surface px-5 py-4">
+  <div ref="card" data-card="final" :data-final-turn="turnIndex" class="rounded-md border-2 border-ink bg-surface px-5 py-4">
     <header class="flex items-baseline justify-between">
       <h3 class="text-base font-bold">定稿</h3>
       <span class="text-[11px] tabular-nums text-muted">第 {{ turnIndex }} 輪</span>
@@ -26,6 +26,8 @@
       </ul>
       <p v-else class="mt-1.5 text-xs text-muted">這次定稿沒有借用知識庫片段。</p>
     </section>
+
+    <RenderPreview :data="data" :turn-index="turnIndex" />
 
     <RecommendationStrip v-if="recommendations && s.latestFinalizedTurn === turnIndex" :recs="recommendations" :turn-index="turnIndex" />
 
@@ -68,4 +70,13 @@ const superseded = computed(() => s.latestFinalizedTurn !== props.turnIndex && s
 /** 舊的定稿卡沒有 sources，畫出 0 會誤導；空陣列是真的資料（沒借用），照樣顯示。 */
 const hasSources = computed(() => !!(props.data.positiveSources || props.data.negativeSources))
 const trace = computed(() => contributions(props.data.positiveSources ?? [], props.data.negativeSources ?? []))
+/** 在不在畫面內：預覽在畫面外完成時才跳提示（預覽設計 §8） */
+const card = ref<HTMLElement | null>(null)
+let observer: IntersectionObserver | null = null
+onMounted(() => {
+  if (!card.value || typeof IntersectionObserver === 'undefined') return
+  observer = new IntersectionObserver(([e]) => s.setCardVisible(props.turnIndex, !!e?.isIntersecting))
+  observer.observe(card.value)
+})
+onBeforeUnmount(() => { observer?.disconnect(); s.setCardVisible(props.turnIndex, false) })
 </script>

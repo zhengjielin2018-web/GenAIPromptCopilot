@@ -229,6 +229,13 @@ describe('hydrate', () => {
   const fin = (turnIndex: number): Entry => ({ kind: 'final', turnIndex, data: { kind: 'finalized', ...LAST } })
   const msg = (turnIndex: number): Entry => ({ kind: 'final', turnIndex, data: { kind: 'message', message: 'm' } })
 
+  // 對話流裡沒有定稿卡時補一張：輪次要用定稿那輪，不是目前輪次，否則生成預覽會被 409（預覽設計 §5.1）
+  it('puts the restored final card on the turn it was finalized', () => {
+    const s = hydrate(initialState(), dto({ ...LAST, turnIndex: 2 }), [])
+    expect(s.transcript).toEqual([{ kind: 'final', turnIndex: 2, data: { kind: 'finalized', ...LAST } }])
+    expect(s.lastFinal).toEqual({ kind: 'finalized', ...LAST })
+  })
+
   it('takes authoritative fields from the dto and the transcript from storage', () => {
     const s = hydrate(initialState(), dto(), [user('x'), fin(4)])
     expect(s).toMatchObject({ sessionId: 's1', status: 'Finalized', profile: 'landscape', turnIndex: 4, askCount: 2, askLimit: 2 })

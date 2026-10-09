@@ -5,6 +5,8 @@ WORKDIR /src
 COPY src/PromptCopilot.Api/PromptCopilot.Api.csproj PromptCopilot.Api/
 RUN dotnet restore PromptCopilot.Api/PromptCopilot.Api.csproj
 COPY src/PromptCopilot.Api/ PromptCopilot.Api/
+# 生成預覽的 workflow 範本在 repo 根目錄（csproj 用 ..\..\render 連結；/src/PromptCopilot.Api 往上兩層是 /）
+COPY render/workflows/ /render/workflows/
 RUN dotnet publish PromptCopilot.Api/PromptCopilot.Api.csproj -c Release -o /app --no-restore
 
 FROM mcr.microsoft.com/dotnet/aspnet:10.0

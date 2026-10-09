@@ -90,7 +90,8 @@ export interface SessionSnapshotDto {
   askCount: number
   askLimit: number
   facetStates: Record<string, FacetState>
-  lastFinal: Omit<FinalizedData, 'kind'> | null
+  /** turnIndex：哪一輪定的稿（2026-10-09，生成預覽要帶它）；舊後端沒有 */
+  lastFinal: (Omit<FinalizedData, 'kind'> & { turnIndex?: number }) | null
   /** 舊後端沒有這個欄位，讀的一方當成 on */
   retrieval?: RetrievalMode
   /** 模型給每個已涵蓋 facet 的英文 tag（2026-09-25）；舊後端沒有 */
@@ -122,3 +123,13 @@ export interface PresetDetail {
 
 /** 終止型 tool 與純狀態 tool 不發 tool_result；卡片在輪次結束時收尾。終止型的內容由 final 條目呈現，不另畫卡片。 */
 export const TERMINAL_TOOLS: ReadonlySet<string> = new Set(['AskUser', 'Discuss', 'FinalizePrompt', 'RequestSaveConsent', 'Confirm'])
+
+/** 定稿後生成預覽（2026-10-09，預覽設計 §5.2） */
+export type RenderStatus = 'queued' | 'generating' | 'reviewing' | 'self_checking' | 'done' | 'failed' | 'blocked'
+export type SelfCheckVerdictKind = 'present' | 'absent' | 'unclear'
+export interface SelfCheckItemView { facetId: string; label: string; tag: string; verdict: SelfCheckVerdictKind; reason: string }
+export interface RenderView {
+  renderId: string; turnIndex: number; status: RenderStatus; position: number | null; safety: 'on' | 'off'; message: string | null
+  selfCheck: { status: 'pending' | 'ok' | 'unavailable'; items: SelfCheckItemView[] }
+  timings: { queueMs: number | null; delayMs: number | null; executionMs: number | null; reviewMs: number | null; selfCheckMs: number | null }
+}

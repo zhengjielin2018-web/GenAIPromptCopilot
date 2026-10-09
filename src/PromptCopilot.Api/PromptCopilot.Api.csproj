@@ -12,12 +12,16 @@
     <PackageReference Include="Microsoft.SemanticKernel.Connectors.Google" Version="1.80.1-alpha" />
     <PackageReference Include="Npgsql" Version="10.0.3" />
     <PackageReference Include="Pgvector" Version="0.3.2" />
+    <PackageReference Include="SkiaSharp" Version="4.153.1" />
+    <PackageReference Include="SkiaSharp.NativeAssets.Linux.NoDependencies" Version="4.153.1" />
     <PackageReference Include="Swashbuckle.AspNetCore" Version="10.2.3" />
     <PackageReference Include="YamlDotNet" Version="18.1.0" />
   </ItemGroup>
 
   <ItemGroup>
     <None Update="Configuration\facets.yaml" CopyToOutputDirectory="PreserveNewest" />
+    <!-- 生成預覽的 workflow 範本（預覽設計 §4）：跟 spike 腳本共用 repo 根目錄 render/workflows 的同一份 -->
+    <None Include="..\..\render\workflows\txt2img-sdxl.json" Link="Rendering\txt2img-sdxl.json" CopyToOutputDirectory="PreserveNewest" />
     <None Update="Prompts\*.md" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 

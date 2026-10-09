@@ -1,9 +1,11 @@
-import type { AdoptRequest, ConfirmRequest, FacetCatalog, PresetDetail, RecommendedDimension, RetrievalMode, SessionCreated, SessionSnapshotDto } from '../types/api'
+import type { AdoptRequest, ConfirmRequest, FacetCatalog, PresetDetail, RecommendedDimension, RenderView, RetrievalMode, SessionCreated, SessionSnapshotDto } from '../types/api'
 
 export type TurnBody = { text: string } | { adopt: AdoptRequest } | { confirm: ConfirmRequest }
 
 export type SaveResult = { ok: true; id: string } | { ok: false; status: number; error: string }
 export type NextResult = { ok: true; row: RecommendedDimension } | { ok: false; status: number; error: string }
+export type RenderRequestResult = { ok: true; renderId: string } | { ok: false; status: number; error: string }
+export type RenderGetResult = { ok: true; view: RenderView } | { ok: false; status: number }
 
 export function useApi() {
   const base = useRuntimeConfig().public.apiBase as string
@@ -68,6 +70,34 @@ export function useApi() {
     return { ok: false, status: r.status, error }
   }
 
+  /** 生圖沒開（沒設 RunPod）或舊後端：一律當沒開，不擋開頁。 */
+  async function getRenderConfig(): Promise<boolean> {
+    try {
+      const r = await fetch(`${base}/api/config/render`)
+      return r.ok && (await r.json()).enabled === true
+    } catch { return false }
+  }
+
+  /** 生成預覽（預覽設計 §5.1）。失敗回狀態碼與後端的理由，由 store 決定怎麼顯示。 */
+  async function requestRender(id: string, body: { turnIndex: number; safety?: 'off' }): Promise<RenderRequestResult> {
+    const r = await fetch(`${base}/api/sessions/${encodeURIComponent(id)}/renders`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+    })
+    if (r.ok) return { ok: true, renderId: (await r.json()).renderId }
+    let error = `HTTP ${r.status}`
+    try { error = (await r.json()).error ?? error } catch { /* 沒 body 就用狀態碼 */ }
+    return { ok: false, status: r.status, error }
+  }
+
+  async function getRender(id: string, renderId: string): Promise<RenderGetResult> {
+    const r = await fetch(`${base}/api/sessions/${encodeURIComponent(id)}/renders/${encodeURIComponent(renderId)}`)
+    return r.ok ? { ok: true, view: await r.json() } : { ok: false, status: r.status }
+  }
+
+  function renderImageUrl(id: string, renderId: string): string {
+    return `${base}/api/sessions/${encodeURIComponent(id)}/renders/${encodeURIComponent(renderId)}/image`
+  }
+
   /** 不檢查 status：404／409／400／403 的處理在 store。body 是一般訊息、採用或按確認（設計 §6.1），可能帶 safety: off（lib/safety）。 */
   function openStream(id: string, body: TurnBody, signal: AbortSignal): Promise<Response> {
     return fetch(`${base}/api/sessions/${encodeURIComponent(id)}/messages`, {
@@ -76,5 +106,6 @@ export function useApi() {
     })
   }
 
-  return { createSession, getSession, getFacets, getSafetyConfig, getPreset, saveToShared, nextRecommendations, openStream }
+  return { createSession, getSession, getFacets, getSafetyConfig, getPreset, saveToShared, nextRecommendations, openStream,
+    getRenderConfig, requestRender, getRender, renderImageUrl }
 }
