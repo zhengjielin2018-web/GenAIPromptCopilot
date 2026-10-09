@@ -6,12 +6,13 @@ export function isFinished(status: RenderStatus): boolean { return FINISHED.has(
 /** 審查開著時，self_checking 表示審查已經過了，圖可以拿（預覽設計 §5.2）。 */
 export function showsImage(status: RenderStatus): boolean { return status === 'self_checking' || status === 'done' }
 
-const REALISTIC = ['photorealistic', 'realistic', 'photo', 'photograph', 'raw photo']
+/** 「raw photo」不另列：整詞比對下 photo 已經抓得到。 */
+const REALISTIC = ['photorealistic', 'realistic', 'photo', 'photograph']
 
 /** 寫實風（預覽設計 §4.3）：style.genre 有 tag 就看它，沒有就看正向詞；整詞比對、不分大小寫。判錯只是多或少一行提醒。 */
 export function isRealistic(facetTags: Record<string, string>, positive: string): boolean {
   const text = (facetTags['style.genre'] ?? positive).toLowerCase()
-  return REALISTIC.some(w => new RegExp(`(^|[^a-z])${w.replace(' ', '\s+')}($|[^a-z])`).test(text))
+  return REALISTIC.some(w => new RegExp(`(^|[^a-z])${w}($|[^a-z])`).test(text))
 }
 
 export function statusText(v: RenderView): string {

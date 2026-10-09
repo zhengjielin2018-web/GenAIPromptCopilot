@@ -12,12 +12,12 @@ const flush = () => new Promise(r => setTimeout(r, 0))
 function harness(results: (RenderGetResult | Error)[], over: Partial<PollDeps> = {}) {
   const timers: (() => void)[] = []
   const seen: string[] = []
-  const calls = { gone: 0, giveUp: 0, gets: 0 }
+  const calls = { gone: 0, giveUp: 0, gets: 0, reasons: [] as string[] }
   const deps: PollDeps = {
     get: async () => { calls.gets++; const r = results.shift()!; if (r instanceof Error) throw r; return r },
     onView: v => { seen.push(v.status) },
     onGone: () => { calls.gone++ },
-    onGiveUp: () => { calls.giveUp++ },
+    onGiveUp: reason => { calls.giveUp++; calls.reasons.push(reason) },
     isCurrent: () => true,
     setTimer: fn => { timers.push(fn) },
     maxFailures: 3,
@@ -49,6 +49,20 @@ describe('pollRender', () => {
     for (let i = 0; i < 4; i++) await h.step()
     expect(h.seen).toEqual(['generating'])
     expect(h.calls.giveUp).toBe(1)
+    expect(h.calls.reasons).toEqual(['failures'])
+    expect(h.timers).toHaveLength(0)
+  })
+
+  it('gives up when it has been running too long without finishing', async () => {
+    let t = 0
+    const h = harness([{ ok: true, view: view('generating') }, { ok: true, view: view('reviewing') }, { ok: true, view: view('reviewing') }],
+      { now: () => t, maxDurationMs: 1000 })
+    pollRender(h.deps); await flush()
+    t = 600; await h.step()
+    expect(h.calls.giveUp).toBe(0)
+    t = 1000; await h.step()
+    expect(h.seen).toEqual(['generating', 'reviewing', 'reviewing'])
+    expect(h.calls.reasons).toEqual(['too_long'])
     expect(h.timers).toHaveLength(0)
   })
 
