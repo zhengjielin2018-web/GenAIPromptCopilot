@@ -125,7 +125,8 @@ public sealed class RenderRecord(string id, RenderRequest request, DateOnly quot
         {
             if (_end is not null || Status == RenderStatus.Done) return;
             _end = RenderStatus.Blocked; _message = message; BlockStage = stage; Detail = detail; ReviewMs = reviewMs ?? ReviewMs;
-            _image = null; _selfCheck = Array.Empty<SelfCheckVerdict>();
+            // 自評結果跟著圖一起丟：狀態不能還寫 ok（或停在 pending），否則 view 與 audit 看起來像「自評好了但沒有項目」
+            _image = null; _selfCheck = Array.Empty<SelfCheckVerdict>(); _selfCheckState = SelfCheckStatus.Unavailable;
         }
     }
 

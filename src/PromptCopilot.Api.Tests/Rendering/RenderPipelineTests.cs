@@ -37,14 +37,16 @@ public class RenderPipelineTests
         public TaskCompletionSource<ImageVerdict> Gate { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public int Calls;
         public GeminiImage? LastImage;
-        public Task<ImageVerdict> ReviewAsync(GeminiImage image, CancellationToken ct) { Interlocked.Increment(ref Calls); LastImage = image; return Gate.Task; }
+        public Task<ImageVerdict> ReviewAsync(GeminiImage image, CancellationToken ct) { Interlocked.Increment(ref Calls); LastImage = image; return Gate.Task.WaitAsync(ct); }
     }
 
     public sealed class GatedChecker : ISelfChecker
     {
         public TaskCompletionSource<IReadOnlyList<SelfCheckVerdict>> Gate { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public GeminiImage? LastImage;
-        public Task<IReadOnlyList<SelfCheckVerdict>> CheckAsync(GeminiImage image, IReadOnlyList<SelfCheckItem> items, CancellationToken ct) { LastImage = image; return Gate.Task; }
+        public CancellationToken LastToken;
+        public Task<IReadOnlyList<SelfCheckVerdict>> CheckAsync(GeminiImage image, IReadOnlyList<SelfCheckItem> items, CancellationToken ct)
+        { LastImage = image; LastToken = ct; return Gate.Task.WaitAsync(ct); }
     }
 
     private static readonly ImageVerdict Clean = new(false, false, null, "風景");
@@ -56,8 +58,8 @@ public class RenderPipelineTests
     private readonly RecordingAudit _audit = new();
     private readonly RenderQueue _queue = new(TimeProvider.System);
 
-    private RenderPipeline Pipeline() => new(_runpod, RenderWorkflow.Load(Path.Combine(AppContext.BaseDirectory, "Rendering", RenderWorkflow.FileName)),
-        _reviewer, _checker, _queue, _audit, Options.Create(new RenderOptions()), NullLogger<RenderPipeline>.Instance, TimeProvider.System);
+    private RenderPipeline Pipeline(RenderOptions? o = null) => new(_runpod, RenderWorkflow.Load(Path.Combine(AppContext.BaseDirectory, "Rendering", RenderWorkflow.FileName)),
+        _reviewer, _checker, _queue, _audit, Options.Create(o ?? new RenderOptions()), NullLogger<RenderPipeline>.Instance, TimeProvider.System);
 
     /// <summary>從佇列拿出來，跟背景服務一樣。</summary>
     private async Task<RenderRecord> Dequeued(bool safetyOn = true)
@@ -153,6 +155,56 @@ public class RenderPipelineTests
         Assert.Contains("裸露", e.PayloadJson);
     }
 
+    /// <summary>審圖擋下時自評還沒好：取消它，不等它跑完才收尾、放下一張。</summary>
+    [Fact]
+    public async Task Blocking_cancels_the_self_check_still_running()
+    {
+        var r = await Dequeued();
+        var run = Pipeline().ProcessAsync(r, default);
+        await Eventually(() => r.Status == RenderStatus.Reviewing);
+        _reviewer.Gate.SetResult(new ImageVerdict(true, false, null, "裸露"));
+        await run.WaitAsync(TimeSpan.FromSeconds(5));   // 自評的 Gate 從頭到尾沒放
+        Assert.True(_checker.LastToken.IsCancellationRequested);
+        Assert.Equal((RenderStatus.Blocked, SelfCheckStatus.Unavailable), (r.Status, r.SelfCheckState));
+        Assert.Contains("\"status\":\"unavailable\"", Assert.Single(_audit.Entries).PayloadJson);
+    }
+
+    [Fact]
+    public async Task Review_that_times_out_does_not_show_the_image()
+    {
+        _checker.Gate.SetResult(new[] { Hair });
+        var r = await Dequeued();
+        await Pipeline(new RenderOptions { GeminiTimeoutSeconds = 1 }).ProcessAsync(r, default).WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal((RenderStatus.Blocked, RenderMessages.ReviewFailed), (r.Status, r.Message));
+        Assert.Contains("逾時", r.Detail);
+        Assert.Null(r.Image);
+    }
+
+    [Fact]
+    public async Task Self_check_that_times_out_is_unavailable_and_the_image_is_shown()
+    {
+        _reviewer.Gate.SetResult(Clean);
+        var r = await Dequeued();
+        await Pipeline(new RenderOptions { GeminiTimeoutSeconds = 1 }).ProcessAsync(r, default).WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal((RenderStatus.Done, SelfCheckStatus.Unavailable), (r.Status, r.SelfCheckState));
+        Assert.Equal(Png, r.Image);
+    }
+
+    /// <summary>下一張要等這張審圖、自評都結束才輪到：預估等待不能只算生圖（這裡生圖是 0 秒）。</summary>
+    [Fact]
+    public async Task Estimated_wait_counts_review_and_self_check()
+    {
+        var r = await Dequeued();
+        var run = Pipeline().ProcessAsync(r, default);
+        await Eventually(() => r.Status == RenderStatus.Reviewing);
+        await Task.Delay(300);
+        _reviewer.Gate.SetResult(Clean);
+        _checker.Gate.SetResult(new[] { Hair });
+        await run;
+        _queue.Enqueue(Plain("next", "s2", _queue.TakeDaily()));
+        Assert.True(_queue.EstimatedWaitSeconds(10) >= 0.3);
+    }
+
     [Fact]
     public async Task Review_that_cannot_decide_or_is_refused_does_not_show_the_image()
     {
@@ -215,7 +267,7 @@ public class RenderPipelineTests
         _runpod.Result = () => ++calls == 1 ? throw new InvalidOperationException("boom") : FakeRunPod.Completed();
         _reviewer.Gate.SetResult(Clean);
         _checker.Gate.SetResult(new[] { Hair });
-        var worker = new RenderWorker(_queue, new Lazy<RenderPipeline>(Pipeline), _audit, NullLogger<RenderWorker>.Instance);
+        var worker = new RenderWorker(_queue, new Lazy<RenderPipeline>(() => Pipeline()), _audit, NullLogger<RenderWorker>.Instance);
         await worker.StartAsync(default);
         var a = Plain("a", "s1", _queue.TakeDaily());
         var b = Plain("b", "s2", _queue.TakeDaily());
@@ -253,7 +305,7 @@ public class RenderPipelineTests
     public async Task Stopping_the_worker_fails_the_current_and_the_waiting_ones()
     {
         _runpod.WaitFor = TimeSpan.FromMinutes(5);
-        var worker = new RenderWorker(_queue, new Lazy<RenderPipeline>(Pipeline), _audit, NullLogger<RenderWorker>.Instance);
+        var worker = new RenderWorker(_queue, new Lazy<RenderPipeline>(() => Pipeline()), _audit, NullLogger<RenderWorker>.Instance);
         await worker.StartAsync(default);
         var a = Plain("a", "s1", _queue.TakeDaily());
         var b = Plain("b", "s2", _queue.TakeDaily());

@@ -60,7 +60,7 @@
 | `RunPodClient` | `Rendering/RunPodClient.cs`，typed `HttpClient` | `SubmitAsync(workflow) → jobId`、`WaitAsync(jobId) → job`、`CancelAsync(jobId)`。行為照 [`scripts/render_spike.py`](../../../scripts/render_spike.py)：送出失敗不重送；沒等到終止狀態就離開（逾時、查狀態出錯、取消）一律先送 cancel（盡力而為）再丟出去 |
 | `RenderWorkflow` | `Rendering/RenderWorkflow.cs` | 讀 [`render/workflows/txt2img-sdxl.json`](../../../render/workflows/txt2img-sdxl.json)（csproj 連結進輸出目錄），複製後填正向詞（節點 6）、負向詞（節點 7）、seed（節點 3）；節點的 `class_type` 對不上就丟例外。負向詞＝定稿的負向詞＋固定的 `nsfw` 等詞（同 spike 腳本的 `NEGATIVE`，去重） |
 | `RenderService` | `Rendering/RenderService.cs` | **收件與建立工作的唯一入口**：輸入是中性的 `RenderRequest`（正向詞、負向詞、自評項目、seed、`safety`、定稿當時是否審過、來源 `turnIndex`），做 §5.1 裡跟 session 狀態無關的檢查（上一張還沒好、張數上限、預估等待）、必要時補審提示詞（§6）、建 `RenderRecord`、排進佇列。**不讀 `LastFinal`、不拿 session 鎖**：那些是呼叫端的事（§5.1），之後自主閉環的工具從一輪對話裡呼叫它時，那一輪已經拿著鎖（§12） |
-| `RenderQueue` | `Rendering/RenderQueue.cs` | `Channel<RenderJob>`、排第幾、最近 10 張的平均耗時、每日計數 |
+| `RenderQueue` | `Rendering/RenderQueue.cs` | `Channel<RenderJob>`、排第幾、最近 10 張佔住佇列的平均秒數、每日計數 |
 | `RenderWorker` | `Rendering/RenderWorker.cs`，`BackgroundService` | 單一消費者（對應 Runpod Max Workers 1）：組 workflow → 送出 → 等 → 取圖 → 審圖與自評平行跑（審圖過了就先放出圖，自評繼續跑）→ 收尾。**收尾集中在一個方法**（寫最終狀態、更新平均耗時、寫 audit），`done`／`failed`／`blocked` 都走它；自主閉環要在圖好了時觸發下一輪，就在這裡多一步（§12）。服務停止時取消手上的工作 |
 | `ImageReviewer` | `Safety/ImageReviewer.cs` | 看圖審查：nsfw、真實人物，回 JSON（`ResponseSchema`、`Temperature = 0`），寫法照 `SafetyClassifier`；圖片放在 user 訊息的 `ImageContent`。缺 `reason` 視為解析失敗。2026-10-10 起送的是 `ImageForGemini` 縮過的圖：長邊 768 的 JPEG（品質 85），審圖與自評共用一張，使用者看到的仍是原圖；實測原圖 PNG 審圖要 12–17 秒（可行性 §9.4） |
 | `SelfChecker` | `Rendering/SelfChecker.cs` | 自評：列出要檢查的項目（§4.2），請 Gemini 逐項回 `present`／`absent`／`unclear` 與一句理由 |
@@ -80,6 +80,7 @@ Gemini 的模型用 `Llm:Model`（跟 `SafetyClassifier` 同一個），走同�
 | `MaxEstimatedWaitSeconds` | 60 | 預估等待超過就不收（可行性 §11 第 3 項） |
 | `JobTimeoutSeconds` | 180 | 從送出 Runpod 起算。原本 90 秒（冷啟動實測 36.8 秒，可行性 §9.2）；實作後量到閒置很久的冷啟動 91 秒（可行性 §9.4），2026-10-10 調成 180 秒 |
 | `PollIntervalMs` | 1000 | 後端輪詢 Runpod 的間隔 |
+| `GeminiTimeoutSeconds` | 60 | 審圖、自評各自的上限（含重試）。縮圖後實測審圖中位數 1.9 秒、自評 3.1 秒（可行性 §9.4），這只防 Gemini 卡住時佔著佇列 |
 | `DefaultImageSeconds` | 10 | 還沒有實測資料時，預估等待用的每張秒數 |
 
 `EndpointId` 或 `ApiKey` 有一個是空的，`GET /api/config/render` 回 `{"enabled": false}`，`POST /renders` 回 `404`，背景服務照常啟動但不會收到工作。
@@ -92,7 +93,7 @@ Gemini 的模型用 `Llm:Model`（跟 `SafetyClassifier` 同一個），走同�
 
 ### 4.3 寫實風的判斷
 
-`FacetTags["style.genre"]` 有值就看它，沒有就看定稿的正向詞；含 `photorealistic`、`realistic`、`photo`、`photograph`、`raw photo` 其中一個（不分大小寫、整詞比對）就算寫實。判斷在前端做，後端在 `GET /api/sessions/{id}` 已經回 `facetTags` 與定稿；判錯的代價只是多一行或少一行提醒。
+`FacetTags["style.genre"]` 有值就看它，沒有就看定稿的正向詞；含 `photorealistic`、`realistic`、`photo`、`photograph` 其中一個（不分大小寫、整詞比對；`raw photo` 由 `photo` 抓到）就算寫實。判斷在前端做，後端在 `GET /api/sessions/{id}` 已經回 `facetTags` 與定稿；判錯的代價只是多一行或少一行提醒。
 
 ## 5. 端點與資料流
 
@@ -126,7 +127,7 @@ body：`{"turnIndex": n, "safety": "on" | "off"}`，`safety` 可省略（預設 
 | 全站今天已送 Runpod 達 `DailyLimit` | `429` |
 | 預估等待 > `MaxEstimatedWaitSeconds` | `503`「目前人多，稍後再試」 |
 
-預估等待＝（佇列裡排在前面的張數＋處理中的 1 張）× 最近 10 張的平均耗時（從送出 Runpod 到取回圖；還沒有資料時用 `DefaultImageSeconds`）。
+預估等待＝（佇列裡排在前面的張數＋處理中的 1 張）× 最近 10 張佔住佇列的平均秒數（從出佇列到審圖、自評都結束——下一張要等到這時才輪到；沒取到圖的不進平均；還沒有資料時用 `DefaultImageSeconds`）。
 
 **誰檢查哪幾列**：前四列與「有一輪在跑」「還沒定稿／不是最新」由端點做——端點拿 session 鎖、讀 `LastFinal` 與 facet 狀態、組成 `RenderRequest`、放鎖，再交給 `RenderService`。後四列（上一張還沒好、兩種張數上限、預估等待）由 `RenderService` 做；「檢查上一張」到「建立紀錄」在 `RenderService` 自己的鎖裡一次做完，兩個請求同時到也只有一個過得去。
 
@@ -168,11 +169,12 @@ body：`{"turnIndex": n, "safety": "on" | "off"}`，`safety` 可省略（預設 
 | 定稿當時 | 這次 `safety` | 生圖前 | 生圖後 |
 | :--- | :--- | :--- | :--- |
 | 審過 | `on` | 不再審 | 看圖審查；沒過就 `blocked` |
-| 沒審過 | `on` | **補審正向詞**：`SafetyClassifier.ClassifyOutputAsync`，跟 `OutputSafetyFilter` 同一套（輸出側只用分類器，denylist 只在輸入端）；沒過或分類器出錯就 `blocked`，不送 Runpod | 同上 |
+| 沒審過 | `on` | **補審正向詞**：`SafetyClassifier.ClassifyOutputAsync`，跟 `OutputSafetyFilter` 同一套（輸出側只用分類器，denylist 只在輸入端）；沒過或分類器出錯就 `blocked`，不送 Runpod。通過的正向詞記在 session（`PreReviewedPositive`），同一份定稿再生不重審 | 同上 |
 | 任一 | `off` | 不審 | **不跑看圖審查**；圖直接給，前端標「審查已關閉（測試用）」 |
 
 - 看圖審查判 nsfw 或真實人物：圖丟掉不存，`message` 是「預覽圖被判定為不當內容，沒有顯示」，判定理由只進 audit（同 `SafetyGuard` 的 `BlockDetail` 原則）。
-- 看圖審查本身失敗（Gemini 連不上、回非 JSON、缺 `reason`）或 Gemini 拒收圖片：**不給看圖**，狀態 `blocked`，`message`「預覽圖沒有通過審查，沒有顯示」。跟 `SafetyClassifier` 判不出來就不放行一致。
+- 看圖審查本身失敗（Gemini 連不上、回非 JSON、缺 `reason`、超過 `GeminiTimeoutSeconds`）或 Gemini 拒收圖片：**不給看圖**，狀態 `blocked`，`message`「預覽圖沒有通過審查，沒有顯示」。跟 `SafetyClassifier` 判不出來就不放行一致。
+- 看圖審查擋下時自評還在跑：取消它（結果反正丟掉），`selfCheck.status` 標 `unavailable`，不留 `ok`。
 - 自評不是審查，開關不影響它。審查關著時自評若被 Gemini 拒收，只把自評標 `unavailable`，圖照給。
 - 補審被擋的訊息沿用輸出審查的寫法。
 
@@ -184,7 +186,8 @@ body：`{"turnIndex": n, "safety": "on" | "off"}`，`safety` 可省略（預設 
 | 查狀態出錯 | 先 cancel 再 `failed` |
 | 超過 `JobTimeoutSeconds` | 先 cancel 再 `failed`，`message`「生成逾時，可以再按一次」 |
 | Runpod 回 `FAILED`／`CANCELLED`／`TIMED_OUT`，或 `COMPLETED` 但沒有圖、不是 base64 | `failed` |
-| 自評失敗或被拒收 | 不影響狀態；`selfCheck.status = unavailable` |
+| 自評失敗、被拒收或超過 `GeminiTimeoutSeconds` | 不影響狀態；`selfCheck.status = unavailable` |
+| 補審時請求被取消（使用者關掉頁面） | `failed`、退額度、寫 `Render_Failed`（`error: cancelled`） |
 | 背景服務停止 | cancel 手上的工作；佇列裡的標 `failed` |
 | 單張處理丟出未預期的例外 | 那張 `failed`，背景服務繼續處理下一張 |
 
@@ -204,8 +207,8 @@ body：`{"turnIndex": n, "safety": "on" | "off"}`，`safety` 可省略（預設 
   - 對話輪正在跑（串流中）：停用，不另外寫字；那一輪結束就恢復。
   - 這個 session 有一張預覽還沒結束（排隊、生圖、審查或自評中，不管在哪張卡上）：停用，旁邊寫「上一張還在生成」；那張到了 `done`／`failed`／`blocked` 就自動恢復。
   - 後端仍照 §5.1 回 `409`：兩個分頁或前端狀態過期時，訊息照常顯示在按鈕下方。
-- **送出**：body 用 [`lib/safety.ts`](../../../src/PromptCopilot.Frontend/lib/safety.ts) 的 `messageBody` 同樣的規則帶 `safety: off`（後端開放而且使用者關掉了才帶）。`409`／`429`／`503` 的訊息直接顯示在按鈕下方。
-- **狀態**：每 1.5 秒輪詢，每個階段各有自己的字：`queued`「排第 k 位」、`generating`「生圖中（閒置後第一張可能要一兩分鐘）」、`reviewing`「審查圖片中」、`self_checking`「自評中」。拿到 `done`／`failed`／`blocked` 就停；元件卸下時也停。
+- **送出**：body 用 [`lib/safety.ts`](../../../src/PromptCopilot.Frontend/lib/safety.ts) 的 `messageBody` 同樣的規則帶 `safety: off`（後端開放而且使用者關掉了才帶）。`409`／`429`／`503` 的訊息直接顯示在按鈕下方。`404` 有兩種：再打一次 `/api/config/render`，生圖關了就藏按鈕，還開著就是 session 過期，開新對話並提示（不比對訊息文字）。
+- **狀態**：每 1.5 秒輪詢，每個階段各有自己的字：`queued`「排第 k 位」、`generating`「生圖中（閒置後第一張可能要一兩分鐘）」、`reviewing`「審查圖片中」、`self_checking`「自評中」。拿到 `done`／`failed`／`blocked` 就停；元件卸下時也停。連續失敗 5 次，或輪詢超過 10 分鐘還沒結束（後端最壞約 5 分鐘），也停，寫一行請使用者重新整理。
 - **自評中就顯示圖**：一進 `self_checking` 就載入圖片顯示，自評清單的位置先顯示「自評中…」，`done` 時換成清單。
 - **完成**：顯示圖與自評清單（✓ 有畫出來／✗ 沒有／？看不出來，加理由）；`selfCheck.status = unavailable` 時顯示「這張的自評無法進行」。審查關著時圖上方標「審查已關閉（測試用）」。
 - **在畫面外完成的提示**：預覽到了 `done`／`blocked`／`failed` 時，那張定稿卡若不在畫面內（`IntersectionObserver`），畫面底部出現一個小提示「預覽好了」（被擋或失敗時寫「預覽沒有完成」），點了捲到那張卡；幾秒後自動消失，卡在畫面內時不出現。

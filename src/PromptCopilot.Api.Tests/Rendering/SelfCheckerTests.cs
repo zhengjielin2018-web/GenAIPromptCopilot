@@ -42,6 +42,7 @@ public class SelfCheckerTests
             """{"items":[{"facetId":"appearance.hair","verdict":"PRESENT","reason":"有"},{"facetId":"appearance.hair","verdict":"absent","reason":"重複"},{"facetId":"scene.weather","verdict":"present","reason":"沒問"},{"facetId":"camera.focal","verdict":"maybe","reason":"亂寫"}]}"""));
         var result = await Checker(chat).CheckAsync(Jpeg, new[] { Hair, Lens }, default);
         Assert.Equal(new[] { ("appearance.hair", "present"), ("camera.focal", "unclear") }, result.Select(r => (r.FacetId, r.Verdict)));
+        Assert.Equal("模型回的判定看不懂", result[1].Reason);   // 有回、只是判定亂寫：不能說成「沒有回」
     }
 
     [Fact]

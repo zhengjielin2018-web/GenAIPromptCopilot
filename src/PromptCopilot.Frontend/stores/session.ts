@@ -266,7 +266,8 @@ export const useSessionStore = defineStore('session', () => {
         if (toast) renderToast.value = { turnIndex, text: toastText(v.status) }
       },
       onGone: () => setRender(turnIndex, { ...renders.value[turnIndex]!, expired: true }),
-      onGiveUp: () => setRender(turnIndex, gaveUp(renders.value[turnIndex]!, '查不到預覽的狀態，重新整理頁面再看看')),
+      onGiveUp: reason => setRender(turnIndex, gaveUp(renders.value[turnIndex]!,
+        reason === 'too_long' ? '預覽等太久還沒有結果，重新整理頁面再看看' : '查不到預覽的狀態，重新整理頁面再看看')),
       isCurrent: () => state.value.sessionId === id && renders.value[turnIndex]?.renderId === renderId,
       setTimer: (fn, ms) => setTimeout(fn, ms),
     }))
@@ -283,9 +284,13 @@ export const useSessionStore = defineStore('session', () => {
       // 等待期間換了 session：舊對話的回應不能接到新對話
       if (state.value.sessionId !== id) return
       if (!r.ok) {
-        // 404 有兩種：生圖被關掉了（藏按鈕），或 session 過期（跟換一批一樣開新對話、提示）
-        if (r.status === 404 && r.error !== '生圖沒有開啟') { await newSession(); notice.value = '上次的對話已過期，已開新對話。'; return }
-        if (r.status === 404) renderEnabled.value = false
+        // 404 有兩種：生圖被關掉了（藏按鈕），或 session 過期（跟換一批一樣開新對話、提示）。
+        // 不比對訊息文字（後端改個字就壞）：再問一次生圖有沒有開
+        if (r.status === 404) {
+          renderEnabled.value = await api.getRenderConfig()
+          if (state.value.sessionId !== id) return
+          if (renderEnabled.value) { await newSession(); notice.value = '上次的對話已過期，已開新對話。'; return }
+        }
         setRender(turnIndex, requestFailed(renders.value[turnIndex]!, r.error))
         return
       }
