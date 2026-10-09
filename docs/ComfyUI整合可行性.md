@@ -85,6 +85,8 @@ Comfy Cloud 的好處是第一列跟專屬部署、本機**共用同一套 v2 �
 
 試用的東西都在 repo 裡：[`render/runpod/`](../render/runpod/)（Dockerfile 與部署步驟）、[`render/workflows/txt2img-sdxl.json`](../render/workflows/txt2img-sdxl.json)、[`scripts/render_spike.py`](../scripts/render_spike.py)。
 
+2026-10-09 已部署：透過 Runpod 的 MCP connector，模型放在 US-IL-1 的網路磁碟上，endpoint 用官方 base 映像檔（README 的做法 A），不必經過 GitHub 建置。實測見 §9.1。
+
 ---
 
 ## 3. Comfy API v2 重點
@@ -322,6 +324,24 @@ NovelAI（§2.1）是同步 API，請求結束就代表圖生完了，一個 `Se
 4. 同一批圖跑看圖審查，看有沒有誤判或漏判。
 
 原本規劃在 Comfy Cloud 上做的版本（開 Standard 方案、打 v2 端點、記 `queue_ms`／`execution_ms` 與 credits）保留為換回 Comfy Cloud 時的做法。
+
+### 9.1 第一輪實測（2026-10-09）
+
+Runpod endpoint（4090、US-IL-1、模型在網路磁碟上），用 `render/workflows/txt2img-sdxl.json`（832×1216、28 步）跑 `render_spike.py` 的四個提示詞，各一張。透過 MCP 送出，輸出另外縮成 64×96 只為了讓回傳的 base64 夠小，生成本身照常是全尺寸。
+
+| 提示詞 | 情況 | delayTime | executionTime |
+| :--- | :--- | ---: | ---: |
+| rain-neon | 第一張（endpoint 剛建好，冷啟動） | 8.8 秒 | 24.9 秒（含第一次從磁碟載入模型） |
+| sakura | 隔約兩分鐘再送，FlashBoot 復原 | 0.5 秒 | 5.0 秒 |
+| cafe | 跟上一張一起送，排在後面 | 6.1 秒 | 4.8 秒 |
+| lake-sunset | 同上，排第三 | 10.7 秒 | 5.0 秒 |
+
+- **暖機時每張約 5 秒**，冷啟動加上第一次載入模型，第一張約 34 秒，落在第三方估計的 20–60 秒內。比暖機時慢約 7 倍，所以使用者開始對話時先暖機（§6.4）值得做。
+- **同時數 1 的排隊效應看得到**：三張一起送，第三張等了 10.7 秒，就是前兩張的執行時間，跟 §6.5 的「排第 k 位等 k × 單張時間」一致。
+- **單張費用**：4090 每小時 US$1.10，暖機時每張約 5 秒執行加 5 秒 idle timeout，約 US$0.003；每月 500 張約 US$1.5（約 NT$50），加網路磁碟 US$1.05，遠低於每月 NT$1,000 的預算。帳單在實測當下還沒入帳，這裡是依價目表與實測秒數估算。
+- **四張縮圖都對得上提示詞的主體**（銀髮雨衣霓虹雨夜、櫻花、咖啡廳、湖景夕陽）。縮圖太小，判斷不了細節，自評一致率要等全尺寸的圖。
+
+還沒做的：`--runs 4` 共 20 張的 P50／P95、閒置 30 分鐘以上的冷啟動、全尺寸圖的人工判讀與 Gemini 自評、看圖審查（§9 的第 2–4 步）。
 
 **判斷門檻**（建議值，可以調）：
 

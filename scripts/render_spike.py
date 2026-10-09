@@ -258,8 +258,9 @@ def main(argv: list[str] | None = None) -> int:
     template = load_workflow()
     ckpt, baked = workflow_checkpoint(template), dockerfile_checkpoints()
     if ckpt not in baked:
-        print(f"workflow 用的 checkpoint {ckpt} 不在 Dockerfile 下載的清單 {baked} 裡", file=sys.stderr)
-        return 2
+        # 只是提醒：模型放在網路磁碟上的部署（render/runpod/README.md 做法 A）不看 Dockerfile
+        print(f"注意：workflow 用的 checkpoint {ckpt} 不在 Dockerfile 下載的清單 {baked} 裡；"
+              "endpoint 用網路磁碟的話，確認磁碟上有這個檔", file=sys.stderr)
 
     out = args.out or DATA_DIR / "render_spike" / datetime.now().strftime("%Y%m%d-%H%M%S")
     out.mkdir(parents=True, exist_ok=True)
