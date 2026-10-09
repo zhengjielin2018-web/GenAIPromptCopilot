@@ -1,7 +1,7 @@
 # GenAI Prompt Copilot — 設計規格
 
 日期：2026-09-21
-狀態：已定案。子專案 1（資料地基）已實作並通過 §14 驗收（2026-09-22）；子專案 2（SK Agent 核心）已實作，以 `manual-tests/chat.py` 手動跑完對話迴圈（2026-09-24），降級檢查點結論見 §4.10；子專案 3（Nuxt 3 前端 + SSE）已實作並通過 §14 驗收（2026-09-24，瀏覽器，結果見 `docs/eval-cases.md`）；子專案 4（收尾與展示）打包驗收通過（2026-09-24：fresh clone 一鍵啟動、種子自 Release 匯入、CI 四個 job 綠，結果見 `docs/eval-cases.md`），瀏覽器展示驗收（P3）與截圖（P7）原本等 `docs/known-issues.md` 第 1、2 項，兩項已修正（2026-09-24），尚未補跑；設計見 [2026-09-24-subproject-4-packaging-design.md](2026-09-24-subproject-4-packaging-design.md)。2026-10-05「先確認再動手」（會改畫面的要求先出確認卡、使用者按下才動手；推薦只在定稿卡）已實作並通過瀏覽器驗收，設計見 [2026-10-05-confirm-before-act-design.md](2026-10-05-confirm-before-act-design.md)，本文件各節已改成現況
+狀態：已定案。子專案 1（資料地基）已實作並通過 §14 驗收（2026-09-22）；子專案 2（SK Agent 核心）已實作，以 `manual-tests/chat.py` 手動跑完對話迴圈（2026-09-24），降級檢查點結論見 §4.10；子專案 3（Nuxt 3 前端 + SSE）已實作並通過 §14 驗收（2026-09-24，瀏覽器，結果見 `docs/eval-cases.md`）；子專案 4（收尾與展示）打包驗收通過（2026-09-24：fresh clone 一鍵啟動、種子自 Release 匯入、CI 四個 job 綠，結果見 `docs/eval-cases.md`），瀏覽器展示驗收（P3）與截圖（P7）原本等 `docs/known-issues.md` 第 1、2 項，兩項已修正（2026-09-24），尚未補跑；設計見 [2026-09-24-subproject-4-packaging-design.md](2026-09-24-subproject-4-packaging-design.md)。2026-10-05「先確認再動手」（會改畫面的要求先出確認卡、使用者按下才動手；推薦只在定稿卡）已實作並通過瀏覽器驗收，設計見 [2026-10-05-confirm-before-act-design.md](2026-10-05-confirm-before-act-design.md)，本文件各節已改成現況。2026-10-09 定稿後生成預覽（RunPod Serverless＋ComfyUI；看圖審查跟著審查開關、自評只顯示）已實作，設計見 [2026-10-09-render-preview-design.md](2026-10-09-render-preview-design.md)
 前身文件：[docs/初步想法.md](../../初步想法.md)（本文件取代其中的架構與流程章節；技術棧與階段藍圖以本文件為準）
 
 ---
@@ -39,7 +39,7 @@
 - 使用者帳號與認證
 - Session 持久化（重啟即清空）
 - i18n（UI 固定繁體中文）
-- 實際生成圖片（只產 prompt）
+- 實際生成圖片：只做定稿後按鈕生成預覽（RunPod＋ComfyUI，見 [定稿後生成預覽設計](2026-10-09-render-preview-design.md)）；模型自己生圖、看圖、修正的自主閉環仍不做
 - 多模態圖片反推（`image_url` 欄位保留但不實作）
 - 對話歷史列表與管理
 - Prompt 版本比較
