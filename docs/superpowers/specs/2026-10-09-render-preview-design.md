@@ -60,7 +60,7 @@
 | `RunPodClient` | `Rendering/RunPodClient.cs`，typed `HttpClient` | `SubmitAsync(workflow) → jobId`、`WaitAsync(jobId) → job`、`CancelAsync(jobId)`。行為照 [`scripts/render_spike.py`](../../../scripts/render_spike.py)：送出失敗不重送；沒等到終止狀態就離開（逾時、查狀態出錯、取消）一律先送 cancel（盡力而為）再丟出去 |
 | `RenderWorkflow` | `Rendering/RenderWorkflow.cs` | 讀 [`render/workflows/txt2img-sdxl.json`](../../../render/workflows/txt2img-sdxl.json)（csproj 連結進輸出目錄），複製後填正向詞（節點 6）、負向詞（節點 7）、seed（節點 3）；節點的 `class_type` 對不上就丟例外。負向詞＝定稿的負向詞＋固定的 `nsfw` 等詞（同 spike 腳本的 `NEGATIVE`，去重） |
 | `RenderQueue` | `Rendering/RenderQueue.cs` | 收件檢查（§5.1）、`Channel<RenderJob>`、排第幾、最近 10 張的平均耗時、每日計數 |
-| `RenderWorker` | `Rendering/RenderWorker.cs`，`BackgroundService` | 單一消費者（對應 Runpod Max Workers 1）：組 workflow → 送出 → 等 → 取圖 → 審圖與自評平行跑 → 寫回 `RenderRecord` → audit。服務停止時取消手上的工作 |
+| `RenderWorker` | `Rendering/RenderWorker.cs`，`BackgroundService` | 單一消費者（對應 Runpod Max Workers 1）：組 workflow → 送出 → 等 → 取圖 → 審圖與自評平行跑（審圖過了就先放出圖，自評繼續跑）→ 寫回 `RenderRecord` → audit。服務停止時取消手上的工作 |
 | `ImageReviewer` | `Safety/ImageReviewer.cs` | 看圖審查：nsfw、真實人物，回 JSON（`ResponseSchema`、`Temperature = 0`），寫法照 `SafetyClassifier`；圖片放在 user 訊息的 `ImageContent`（PNG bytes）。缺 `reason` 視為解析失敗 |
 | `SelfChecker` | `Rendering/SelfChecker.cs` | 自評：列出要檢查的項目（§4.2），請 Gemini 逐項回 `present`／`absent`／`unclear` 與一句理由 |
 | `RenderRecord` | `Rendering/RenderRecord.cs` | 一張圖的狀態、圖片 bytes、審圖與自評結果、耗時、`safety` |
@@ -100,7 +100,8 @@ Gemini 的模型用 `Llm:Model`（跟 `SafetyClassifier` 同一個），走同�
   → POST /api/sessions/{id}/renders  {turnIndex, safety?}
       收件檢查（§5.1）→ 必要時補審提示詞（§6）→ 排進佇列 → 202 {renderId}
   → 背景服務：組 workflow → 送 Runpod → 輪詢 → 取圖
-              → 審圖 ∥ 自評（審查關著時只跑自評）→ 寫回 RenderRecord → audit
+              → 審圖 ∥ 自評（審查關著時只跑自評）
+              → 審圖過了：狀態 self_checking、圖可以拿 → 自評好了：done → audit
   ← 前端每 1.5 秒 GET /api/sessions/{id}/renders/{renderId}
   ← 完成後 GET /api/sessions/{id}/renders/{renderId}/image
 ```
@@ -119,7 +120,7 @@ body：`{"turnIndex": n, "safety": "on" | "off"}`，`safety` 可省略（預設 
 | `safety: off` 但後端沒開 `Safety:AllowDisable` | `403`（訊息同 `messages`） |
 | 這個 session 有一輪在跑 | `409`：收件要讀定稿與 facet 狀態，照存進共享庫的做法 `Lock.WaitAsync(0)` 拿不到就回；拿到後做快照（正向詞、負向詞、`Reviewed`、`turnIndex`、自評項目、seed）立刻放鎖 |
 | 還沒定稿，或 `turnIndex` 不是最後一次定稿的那輪 | `409` |
-| 這個 session 已經有一張在排隊、生成或審查中 | `409`「上一張還在生」 |
+| 這個 session 已經有一張還沒結束（`queued`／`generating`／`reviewing`／`self_checking`） | `409`「上一張還在生」 |
 | 這個 session 已送 Runpod 達 `PerSessionLimit` | `429` |
 | 全站今天已送 Runpod 達 `DailyLimit` | `429` |
 | 預估等待 > `MaxEstimatedWaitSeconds` | `503`「目前人多，稍後再試」 |
@@ -134,7 +135,7 @@ body：`{"turnIndex": n, "safety": "on" | "off"}`，`safety` 可省略（預設 
 
 ```json
 {
-  "renderId": "…", "turnIndex": 7, "status": "queued | generating | checking | done | failed | blocked",
+  "renderId": "…", "turnIndex": 7, "status": "queued | generating | reviewing | self_checking | done | failed | blocked",
   "position": 2, "safety": "on", "message": null,
   "selfCheck": { "status": "pending | ok | unavailable",
                  "items": [ { "facetId": "appearance.hair", "label": "髮型", "tag": "long silver hair",
@@ -144,13 +145,16 @@ body：`{"turnIndex": n, "safety": "on" | "off"}`，`safety` 可省略（預設 
 ```
 
 - `position` 只在 `queued` 時有值（1 表示下一張就是它）。
-- `generating`：已送 Runpod（Runpod 那邊可能還在冷啟動）。`checking`：圖已取回，審圖與自評在跑。
+- `generating`：已送 Runpod（Runpod 那邊可能還在冷啟動）。
+- `reviewing`：圖已取回，看圖審查還沒過（審查關著時跳過這個狀態）；圖還拿不到。
+- `self_checking`：看圖審查過了（或審查關著），**圖已經拿得到**，自評還在跑。審圖與自評平行跑，自評比審圖先好時，審圖一過就直接到 `done`。
+- `done`：圖與自評都好了（自評可能是 `unavailable`）。
 - `message`：`failed`／`blocked` 時給使用者看的一句話（§6、§7）；細節只進 audit。
 - `404`：session 或 `renderId` 不存在。
 
 ### 5.3 `GET /api/sessions/{id}/renders/{renderId}/image`
 
-`status` 是 `done` 才回 `image/png`，其他狀態回 `404`。審查開著時，`done` 一定表示看圖審查過了；被擋的圖不存，根本拿不到。
+`status` 是 `self_checking` 或 `done` 才回 `image/png`，其他狀態回 `404`。審查開著時，這兩個狀態一定表示看圖審查過了；`reviewing` 時圖還不給，被擋的圖不存，根本拿不到。
 
 ### 5.4 `GET /api/config/render`
 
@@ -195,10 +199,11 @@ body：`{"turnIndex": n, "safety": "on" | "off"}`，`safety` 可省略（預設 
 - **按鈕**：`/api/config/render` 回 `enabled: true` 時，只有最新那張定稿卡（`FinalCard.vue`）顯示「生成預覽」。寫實風（§4.3）在按鈕旁提醒「預覽會是動漫風」。
 - **按鈕停用**（使用者按了也只會撞到 `409` 的情況，前端先擋）：
   - 對話輪正在跑（串流中）：停用，不另外寫字；那一輪結束就恢復。
-  - 這個 session 有一張預覽還在排隊、生成或審查中（不管在哪張卡上）：停用，旁邊寫「上一張還在生成」；那張到了 `done`／`failed`／`blocked` 就自動恢復。
+  - 這個 session 有一張預覽還沒結束（排隊、生圖、審查或自評中，不管在哪張卡上）：停用，旁邊寫「上一張還在生成」；那張到了 `done`／`failed`／`blocked` 就自動恢復。
   - 後端仍照 §5.1 回 `409`：兩個分頁或前端狀態過期時，訊息照常顯示在按鈕下方。
 - **送出**：body 用 [`lib/safety.ts`](../../../src/PromptCopilot.Frontend/lib/safety.ts) 的 `messageBody` 同樣的規則帶 `safety: off`（後端開放而且使用者關掉了才帶）。`409`／`429`／`503` 的訊息直接顯示在按鈕下方。
-- **狀態**：每 1.5 秒輪詢；`queued` 顯示「排第 k 位」、`generating` 顯示「生成中（閒置後第一張可能要半分鐘）」、`checking` 顯示「審查中」。拿到 `done`／`failed`／`blocked` 就停；元件卸下時也停。
+- **狀態**：每 1.5 秒輪詢，每個階段各有自己的字：`queued`「排第 k 位」、`generating`「生圖中（閒置後第一張可能要半分鐘）」、`reviewing`「審查圖片中」、`self_checking`「自評中」。拿到 `done`／`failed`／`blocked` 就停；元件卸下時也停。
+- **自評中就顯示圖**：一進 `self_checking` 就載入圖片顯示，自評清單的位置先顯示「自評中…」，`done` 時換成清單。
 - **完成**：顯示圖與自評清單（✓ 有畫出來／✗ 沒有／？看不出來，加理由）；`selfCheck.status = unavailable` 時顯示「這張的自評無法進行」。審查關著時圖上方標「審查已關閉（測試用）」。
 - **在畫面外完成的提示**：預覽到了 `done`／`blocked`／`failed` 時，那張定稿卡若不在畫面內（`IntersectionObserver`），畫面底部出現一個小提示「預覽好了」（被擋或失敗時寫「預覽沒有完成」），點了捲到那張卡；幾秒後自動消失，卡在畫面內時不出現。
 - **一張卡可以生好幾次**：每次按都是新的 `renderId`，卡上只顯示最新一張。
@@ -245,13 +250,14 @@ audit 寫失敗只記 log，不改變回應（同推薦的做法）。
   - `off` 時審查分類器（文字與看圖）一次都沒被呼叫。
   - 看圖審查判 nsfw → `blocked`、圖不存；看圖審查回非 JSON 或缺 `reason` → `blocked`。
 - **自評**：項目從 covered＋有 tag 的 facet 產生、用快照；Gemini 出錯 → `unavailable`、圖照給；審查擋下時自評結果不回。
+- **狀態順序**（可控制完成順序的假審圖、假自評）：審圖沒好 → `reviewing`、圖拿不到；審圖過了、自評沒好 → `self_checking`、圖拿得到；自評先好、審圖後過 → 直接 `done`；審查關著 → 取圖後直接 `self_checking`。
 - **`RenderWorker`**：單張丟出未預期的例外後繼續處理下一張；停止時 cancel 手上的工作。
 - **契約**（`GeminiContractTests`）：審圖與自評送出的請求裡，圖片是 `inlineData`、`mimeType` 是 `image/png`。
 
 ### 11.2 端點（`EndpointTests`）
 
 - `POST /renders`：`202`、`400`、`403`、`404`（沒開、session 不存在）、`409`（有一輪在跑、`turnIndex` 不是最新、上一張還沒好）、`429`、`503`。
-- `GET /renders/{id}` 的 JSON 形狀；`GET /image` 只在 `done` 時回圖，`blocked` 拿不到。
+- `GET /renders/{id}` 的 JSON 形狀；`GET /image` 在 `self_checking`、`done` 時回圖，`reviewing`、`blocked` 拿不到。
 - `GET /api/config/render`：有沒有設定 `EndpointId`／`ApiKey` 時各回什麼。
 
 ### 11.3 前端（Vitest）
@@ -259,7 +265,8 @@ audit 寫失敗只記 log，不改變回應（同推薦的做法）。
 - 只有最新的定稿卡有按鈕；`enabled: false` 時沒有按鈕；寫實風有提醒。
 - 按鈕停用：對話輪串流中停用、結束恢復；有一張預覽未完成時停用並顯示「上一張還在生成」，那張完成後恢復（包含那張在舊卡上的情況）。
 - 畫面外完成的提示：卡不在畫面內才出現、點了捲到那張卡、卡在畫面內時不出現。
-- 輪詢的狀態順序與停止條件（`done`／`failed`／`blocked`、元件卸下）。
+- 輪詢的狀態順序與停止條件（`done`／`failed`／`blocked`、元件卸下）；每個狀態顯示的字。
+- `self_checking` 時圖已顯示、自評位置顯示「自評中…」；`done` 時換成清單。
 - 審查開關關著（而且後端開放）時 body 帶 `safety: off`。
 - 重新載入時有 `renderId` 的卡會接回；`404` 顯示已過期。
 
@@ -267,7 +274,7 @@ audit 寫失敗只記 log，不改變回應（同推薦的做法）。
 
 寫進 `docs/eval-cases.md`：
 
-1. 動漫風定稿 → 按生成預覽 → 看到排隊／生成中／審查中 → 圖與自評清單。
+1. 動漫風定稿 → 按生成預覽 → 依序看到排隊／生圖中／審查圖片中 → 自評中時圖已經出現 → 自評清單補上。
 2. 按下後按鈕立刻停用並顯示「上一張還在生成」；對話輪跑的時候按鈕也是停用的。另開一個分頁對同一個 session 再按：後端回 `409`，訊息顯示在按鈕下方。
 2a. 按下後繼續聊天到定稿卡捲出畫面：預覽完成時底部出現「預覽好了」，點了捲回那張卡。
 3. 寫實風定稿：按鈕旁有提醒，生出來是動漫風。
