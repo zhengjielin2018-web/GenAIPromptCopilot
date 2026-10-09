@@ -138,6 +138,27 @@ public class RenderServiceTests
         var r = Assert.Single(s.Renders.Values);
         Assert.Equal(RenderStatus.Failed, r.Status);
         Assert.Equal(0, _queue.DailyCount);
+        Assert.Contains(_audit.Entries, e => e.EventType == "Render_Failed" && e.PayloadJson!.Contains("\"error\":\"cancelled\""));
         Accepted(await svc.RequestAsync(s, Req(), default));   // 下一張收得進來
+    }
+
+    /// <summary>同一張沒審過的定稿卡再生：補審過一次就不再審；被擋的不記，換了正向詞要重審。</summary>
+    [Fact]
+    public async Task A_passed_pre_review_is_remembered_for_the_same_positive()
+    {
+        _chat.Then(FakeChatCompletion.Text("""{"nsfw":false,"realPerson":false,"personName":null,"wantsAutoComplete":false,"reason":"一般人物"}"""));
+        var svc = Service();
+        var s = new Session("s1");
+        var first = Accepted(await svc.RequestAsync(s, Req(reviewed: false), default));
+        first.Fail(RenderMessages.Failed, "runpod", null);
+        var again = Accepted(await svc.RequestAsync(s, Req(reviewed: false), default));
+        Assert.Equal(RenderStatus.Queued, again.Status);
+        Assert.Single(_chat.Calls);
+
+        again.Fail(RenderMessages.Failed, "runpod", null);
+        _chat.Then(FakeChatCompletion.Text("""{"nsfw":true,"realPerson":false,"personName":null,"wantsAutoComplete":false,"reason":"裸露"}"""));
+        var changed = Accepted(await svc.RequestAsync(s, Req(reviewed: false) with { Positive = "1girl, nude" }, default));
+        Assert.Equal(RenderStatus.Blocked, changed.Status);
+        Assert.Equal(2, _chat.Calls.Count);
     }
 }

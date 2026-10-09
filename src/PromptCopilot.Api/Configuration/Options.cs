@@ -80,6 +80,9 @@ public sealed class RenderOptions
     /// 2026-10-10 調成 180 秒（使用者同意）。</summary>
     public int JobTimeoutSeconds { get; set; } = 180;
     public int PollIntervalMs { get; set; } = 1000;
+    /// <summary>審圖、自評各自的上限（含 ResilientChatCompletion 的重試）。縮圖後實測審圖中位數 1.9 秒、自評 3.1 秒（可行性 §9.4），
+    /// 這個上限只是防 Gemini 卡住時佔著佇列不放：審圖逾時當沒通過（不給圖），自評逾時標 unavailable。</summary>
+    public int GeminiTimeoutSeconds { get; set; } = 60;
     /// <summary>還沒有實測資料時，預估等待用的每張秒數。</summary>
     public int DefaultImageSeconds { get; set; } = 10;
     public bool Enabled => !string.IsNullOrWhiteSpace(EndpointId) && !string.IsNullOrWhiteSpace(ApiKey);

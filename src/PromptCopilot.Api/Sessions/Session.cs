@@ -65,6 +65,9 @@ public sealed class Session
     /// <summary>這個 session 的預覽圖（預覽設計 §4）：跟 session 一起過期，不進 SessionSnapshot，對話輪回滾碰不到它。</summary>
     public ConcurrentDictionary<string, RenderRecord> Renders { get; } = new();
 
+    /// <summary>生成預覽補審（預覽設計 §6）通過的正向詞：同一份沒審過的定稿再生時不用重審。只記通過的；換了定稿正向詞就對不上，自然重審。</summary>
+    public string? PreReviewedPositive { get; set; }
+
     public Session(string id, bool retrievalEnabled = true) { Id = id; RetrievalEnabled = retrievalEnabled; }
 
     public void ApplyProfile(string profile, FacetCatalog catalog)

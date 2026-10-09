@@ -15,7 +15,7 @@ public sealed record SelfCheckAnswer(List<SelfCheckAnswerItem>? Items);
 public sealed record SelfCheckAnswerItem(string? FacetId, string? Verdict, string? Reason);
 
 /// <summary>自評（預覽設計 §4.2）：逐項問「畫面上有沒有」，只顯示、不擋、不改提示詞。回答一律對回問過的項目：
-/// 沒問的丟掉、重複的取第一筆、漏的或 verdict 亂寫的當 unclear——一項答壞不該讓整張自評變 unavailable。</summary>
+/// 沒問的丟掉、重複的取第一筆、漏的或 verdict 亂寫的當 unclear（理由分開寫）——一項答壞不該讓整張自評變 unavailable。</summary>
 public sealed class SelfChecker(IChatCompletionService chat, IOptions<LlmOptions> llm) : ISelfChecker
 {
     private static readonly HashSet<string> Verdicts = new() { "present", "absent", "unclear" };
@@ -32,10 +32,11 @@ public sealed class SelfChecker(IChatCompletionService chat, IOptions<LlmOptions
         foreach (var a in answer?.Items ?? new()) if (a?.FacetId is { } id) byId.TryAdd(id, a);
         return items.Select(i =>
         {
-            var verdict = byId.TryGetValue(i.FacetId, out var a) ? a.Verdict?.Trim().ToLowerInvariant() : null;
+            if (!byId.TryGetValue(i.FacetId, out var a)) return new SelfCheckVerdict(i.FacetId, i.Label, i.Tag, "unclear", "模型沒有回這一項");
+            var verdict = a.Verdict?.Trim().ToLowerInvariant();
             return verdict is not null && Verdicts.Contains(verdict)
-                ? new SelfCheckVerdict(i.FacetId, i.Label, i.Tag, verdict, a!.Reason?.Trim() ?? "")
-                : new SelfCheckVerdict(i.FacetId, i.Label, i.Tag, "unclear", "模型沒有回這一項");
+                ? new SelfCheckVerdict(i.FacetId, i.Label, i.Tag, verdict, a.Reason?.Trim() ?? "")
+                : new SelfCheckVerdict(i.FacetId, i.Label, i.Tag, "unclear", "模型回的判定看不懂");
         }).ToList();
     }
 

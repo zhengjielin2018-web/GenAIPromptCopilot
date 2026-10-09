@@ -3,7 +3,7 @@ using System.Threading.Channels;
 namespace PromptCopilot.Api.Rendering;
 
 /// <summary>生成預覽的佇列（預覽設計 §4）。一次只處理一張，對應 RunPod 的 Max Workers 1。
-/// 也管預估等待（排在前面的張數 × 最近 10 張的平均）與全站每日計數（台灣時間午夜歸零）。</summary>
+/// 也管預估等待（排在前面的張數 × 最近 10 張佔住佇列的平均秒數）與全站每日計數（台灣時間午夜歸零）。</summary>
 public sealed class RenderQueue(TimeProvider time)
 {
     /// <summary>台灣沒有日光節約，固定 UTC+8。</summary>
@@ -38,13 +38,13 @@ public sealed class RenderQueue(TimeProvider time)
         }
     }
 
-    /// <summary>imageSeconds：從送出 RunPod 到取回圖；沒取到圖的不進平均。</summary>
-    public void Done(RenderRecord r, double? imageSeconds)
+    /// <summary>busySeconds：這張佔住佇列多久（生圖加上審圖、自評，下一張要等到這些都結束）；沒取到圖的傳 null，不進平均。</summary>
+    public void Done(RenderRecord r, double? busySeconds)
     {
         lock (_gate)
         {
             if (ReferenceEquals(_current, r)) _current = null;
-            if (imageSeconds is not { } s) return;
+            if (busySeconds is not { } s) return;
             _recent.Enqueue(s);
             while (_recent.Count > 10) _recent.Dequeue();
         }

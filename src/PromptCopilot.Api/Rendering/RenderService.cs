@@ -72,13 +72,18 @@ public sealed class RenderService(RenderQueue queue, SafetyClassifier classifier
         }
 
         // 定稿是在審查關著時產生的、這次又開著：先補審正向詞再花錢（預覽設計 §6）。審查關著時完全不跑分類器。
-        if (request.SafetyOn && !request.PromptReviewed && await PromptBlockedBecauseAsync(record!, request.Positive, ct) is { } because)
+        // 同一份正向詞補審過了就不再審：同一張定稿卡再生不用每次多等一趟分類器。
+        if (request.SafetyOn && !request.PromptReviewed && session.PreReviewedPositive != request.Positive)
         {
-            record!.Block(RenderMessages.PromptBlocked, "prompt", because);
-            queue.ReturnDaily(record.QuotaDay);
-            await RenderAudit.TryWriteAsync(audit, new AuditEntry(request.SessionId, request.TurnIndex, "Render_Blocked",
-                PayloadJson: JsonSerializer.Serialize(new { renderId = record.Id, safety = "on", stage = "prompt", reason = because }, RenderAudit.Json)), logger);
-            return new RenderAdmission.Accepted(record);
+            if (await PromptBlockedBecauseAsync(record!, request, ct) is { } because)
+            {
+                record!.Block(RenderMessages.PromptBlocked, "prompt", because);
+                queue.ReturnDaily(record.QuotaDay);
+                await RenderAudit.TryWriteAsync(audit, new AuditEntry(request.SessionId, request.TurnIndex, "Render_Blocked",
+                    PayloadJson: JsonSerializer.Serialize(new { renderId = record.Id, safety = "on", stage = "prompt", reason = because }, RenderAudit.Json)), logger);
+                return new RenderAdmission.Accepted(record);
+            }
+            session.PreReviewedPositive = request.Positive;
         }
 
         queue.Enqueue(record!);
@@ -86,18 +91,20 @@ public sealed class RenderService(RenderQueue queue, SafetyClassifier classifier
     }
 
     /// <summary>沒過回判定理由，過了回 null。判不出來就不放行（同 SafetyClassifier 的上層）。</summary>
-    private async Task<string?> PromptBlockedBecauseAsync(RenderRecord record, string positive, CancellationToken ct)
+    private async Task<string?> PromptBlockedBecauseAsync(RenderRecord record, RenderRequest request, CancellationToken ct)
     {
         try
         {
-            var v = await classifier.ClassifyOutputAsync(positive, ct);
+            var v = await classifier.ClassifyOutputAsync(request.Positive, ct);
             return v.Nsfw || v.RealPerson ? v.Reason : null;
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
-            // 使用者關掉頁面：紀錄不能停在 queued 又不在佇列裡，否則這個 session 會一直「上一張還在生」
+            // 使用者關掉頁面：紀錄不能停在 queued 又不在佇列裡，否則這個 session 會一直「上一張還在生」。收件過的每一張都要有收尾的 audit
             record.Fail(RenderMessages.Failed, "cancelled", "請求在補審時被取消");
             queue.ReturnDaily(record.QuotaDay);
+            await RenderAudit.TryWriteAsync(audit, new AuditEntry(request.SessionId, request.TurnIndex, "Render_Failed",
+                PayloadJson: JsonSerializer.Serialize(new { renderId = record.Id, safety = "on", stage = "prompt", error = record.FailureKind, detail = record.Detail }, RenderAudit.Json)), logger);
             throw;
         }
         catch (Exception e)

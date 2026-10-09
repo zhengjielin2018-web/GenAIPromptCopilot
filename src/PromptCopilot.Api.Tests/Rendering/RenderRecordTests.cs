@@ -75,6 +75,18 @@ public class RenderRecordTests
         Assert.True(r.CountsTowardLimit);   // 已送 RunPod，錢花了
     }
 
+    /// <summary>自評比審圖先好、審圖才擋下：自評狀態不能還是 ok（看起來像「自評好了、沒有項目」）。</summary>
+    [Fact]
+    public void Blocking_after_the_self_check_finished_marks_it_unavailable()
+    {
+        var r = New();
+        r.MarkGenerating(0); r.MarkSubmitted("j1"); r.ImageArrived(Png, 1, 1);
+        r.SelfCheckFinished(new[] { Hair }, 900);
+        r.Block(RenderMessages.ImageBlocked, "image", "裸露", reviewMs: 1500);
+        Assert.Equal((RenderStatus.Blocked, SelfCheckStatus.Unavailable), (r.Status, r.SelfCheckState));
+        Assert.Equal("unavailable", r.View(null).SelfCheck.Status);
+    }
+
     [Fact]
     public void Finishing_before_submission_does_not_count_toward_limits()
     {
