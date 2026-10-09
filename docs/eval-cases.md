@@ -240,12 +240,12 @@ API 層是用 SSE 直接打分支 `feat/set-recommendations` 的 API（本機 50
 
 | 編號 | 操作 | 預期 | 結果 |
 | :--- | :--- | :--- | :--- |
-| R1 | 動漫風定稿 → 生成預覽 | 依序看到排隊／生圖中／審查圖片中 → 自評中時圖已出現 → 自評清單補上 | |
-| R2 | 按下後看按鈕；對話輪跑的時候看按鈕；另開分頁對同一 session `POST /renders` | 按鈕停用並顯示「上一張還在生成」；對話輪中也停用；另一個請求回 `409`「上一張還在生」 | |
+| R1 | 動漫風定稿 → 生成預覽 | 依序看到排隊／生圖中／審查圖片中 → 自評中時圖已出現 → 自評清單補上 | API（2026-10-10）：閒置後第一張冷啟動 91 秒，**超過 90 秒逾時失敗**（可行性 §9.4）；第二張 `generating` 13.2 秒 → `reviewing` → `self_checking` 28.0 秒時圖已拿得到（200）→ `done` 29.9 秒、自評 18 項。瀏覽器：待跑 |
+| R2 | 按下後看按鈕；對話輪跑的時候看按鈕；另開分頁對同一 session `POST /renders` | 按鈕停用並顯示「上一張還在生成」；對話輪中也停用；另一個請求回 `409`「上一張還在生」 | API：三次都回 `409`「上一張還在生」；舊卡回 `409`「只有最新一張定稿卡可以生成預覽」。瀏覽器：待跑 |
 | R2a | 按下後繼續聊天到定稿卡捲出畫面 | 完成時底部出現「預覽好了」，點了捲回那張卡 | |
 | R3 | 寫實風定稿 | 按鈕旁有「預覽會是動漫風」，生出來是動漫風 | |
-| R4 | 重新定稿後在新卡上再生 | 同一個 seed，畫面差異來自 tag | |
+| R4 | 重新定稿後在新卡上再生 | 同一個 seed，畫面差異來自 tag | API：銀色長髮 → 黑色短髮後在新卡生成，`done`。seed 不在 audit 裡，由 `Session.RenderSeed` 固定（單元測試）；並排看圖待跑 |
 | R5 | 生圖途中重新整理 | 回來後接著顯示 | |
-| R6 | `SAFETY_ALLOW_DISABLE=true`、頂列關掉審查後生成 | 圖上方標「審查已關閉（測試用）」；audit 的 `Render_Completed` 沒有 `reviewMs` | |
-| R7 | `Render__PerSessionLimit=1` 重建 api，同一個對話生第二張 | `429`「這段對話的預覽張數已達上限（1 張）」 | |
-| R8 | 讀 audit 的 `Render_Completed` | 記下 `reviewMs`、`selfCheckMs`、`delayMs`、`executionMs`，寫進 [ComfyUI 整合可行性](ComfyUI整合可行性.md) §9 | |
+| R6 | `SAFETY_ALLOW_DISABLE=true`、頂列關掉審查後生成 | 圖上方標「審查已關閉（測試用）」；audit 的 `Render_Completed` 沒有 `reviewMs` | API：`safety: off`，跳過 `reviewing` 直接 `self_checking`（7.6 秒），audit 的 `reviewMs` 是 null。瀏覽器標示：待跑 |
+| R7 | `Render__PerSessionLimit=1` 重建 api，同一個對話生第二張 | `429`「這段對話的預覽張數已達上限（1 張）」 | 沒在 compose 上跑（compose 沒映射這個設定）；由 `RenderEndpointTests.Unfinished_previous_render_is_409_and_session_limit_is_429` 涵蓋 |
+| R8 | 讀 audit 的 `Render_Completed` | 記下 `reviewMs`、`selfCheckMs`、`delayMs`、`executionMs`，寫進 [ComfyUI 整合可行性](ComfyUI整合可行性.md) §9 | 已記進可行性 §9.4：審圖 14.6 秒、自評 12.3–16.7 秒，比估計的 2–5 秒慢很多 |
