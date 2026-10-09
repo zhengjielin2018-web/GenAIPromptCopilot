@@ -95,7 +95,8 @@ services.AddSingleton<ISelfChecker, SelfChecker>();
 services.AddSingleton<RenderQueue>();
 services.AddSingleton<RenderService>();
 services.AddSingleton<RenderPipeline>();
-services.AddSingleton(sp => new Lazy<RenderPipeline>(sp.GetRequiredService<RenderPipeline>));
+// PublicationOnly：建失敗（例如 workflow 範本壞掉）不快取例外，下一張再試（RenderWorker）
+services.AddSingleton(sp => new Lazy<RenderPipeline>(sp.GetRequiredService<RenderPipeline>, LazyThreadSafetyMode.PublicationOnly));
 services.AddHostedService<RenderWorker>();
 
 // ---- orchestration ----

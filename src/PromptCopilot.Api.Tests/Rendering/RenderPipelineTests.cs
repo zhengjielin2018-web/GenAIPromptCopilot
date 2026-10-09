@@ -196,7 +196,7 @@ public class RenderPipelineTests
         _runpod.Result = () => ++calls == 1 ? throw new InvalidOperationException("boom") : FakeRunPod.Completed();
         _reviewer.Gate.SetResult(Clean);
         _checker.Gate.SetResult(new[] { Hair });
-        var worker = new RenderWorker(_queue, new Lazy<RenderPipeline>(Pipeline), NullLogger<RenderWorker>.Instance);
+        var worker = new RenderWorker(_queue, new Lazy<RenderPipeline>(Pipeline), _audit, NullLogger<RenderWorker>.Instance);
         await worker.StartAsync(default);
         var a = Plain("a", "s1", _queue.TakeDaily());
         var b = Plain("b", "s2", _queue.TakeDaily());
@@ -206,11 +206,35 @@ public class RenderPipelineTests
         await worker.StopAsync(default);
     }
 
+    /// <summary>pipeline 建不起來（例如 workflow 範本壞掉）：那張要收掉（failed、退額度、audit），不能停在 queued 把 session 卡死；
+    /// 下一張再試一次建 pipeline，不能被 Lazy 快取的例外永遠擋住。</summary>
+    [Fact]
+    public async Task A_pipeline_that_cannot_be_built_fails_that_render_and_the_next_one_retries()
+    {
+        _reviewer.Gate.SetResult(Clean);
+        _checker.Gate.SetResult(new[] { Hair });
+        var attempts = 0;
+        var lazy = new Lazy<RenderPipeline>(() => ++attempts == 1 ? throw new InvalidOperationException("workflow 的節點 6 不對") : Pipeline(),
+            LazyThreadSafetyMode.PublicationOnly);
+        var worker = new RenderWorker(_queue, lazy, _audit, NullLogger<RenderWorker>.Instance);
+        await worker.StartAsync(default);
+        var a = Plain("a", "s1", _queue.TakeDaily());
+        _queue.Enqueue(a);
+        await Eventually(() => a.Status == RenderStatus.Failed);
+        Assert.Equal(0, _queue.DailyCount);                        // 沒送 RunPod，額度退回
+        Assert.Equal(0, _queue.EstimatedWaitSeconds(10));          // 不再是處理中
+        Assert.Contains(_audit.Entries, e => e.EventType == "Render_Failed" && e.PayloadJson!.Contains("crash"));
+        var b = Plain("b", "s2", _queue.TakeDaily());
+        _queue.Enqueue(b);
+        await Eventually(() => b.Status == RenderStatus.Done);
+        await worker.StopAsync(default);
+    }
+
     [Fact]
     public async Task Stopping_the_worker_fails_the_current_and_the_waiting_ones()
     {
         _runpod.WaitFor = TimeSpan.FromMinutes(5);
-        var worker = new RenderWorker(_queue, new Lazy<RenderPipeline>(Pipeline), NullLogger<RenderWorker>.Instance);
+        var worker = new RenderWorker(_queue, new Lazy<RenderPipeline>(Pipeline), _audit, NullLogger<RenderWorker>.Instance);
         await worker.StartAsync(default);
         var a = Plain("a", "s1", _queue.TakeDaily());
         var b = Plain("b", "s2", _queue.TakeDaily());
