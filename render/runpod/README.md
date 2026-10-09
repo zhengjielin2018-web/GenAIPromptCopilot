@@ -94,6 +94,14 @@ python render_spike.py --gpu-price-per-hour 1.10 --runs 4   # 五個提示詞各
 
 ## 換模型或升級
 
+候選模型與為什麼要換，見[可行性文件](../../docs/ComfyUI整合可行性.md) §9.3。先在做法 A 的磁碟上試，選定之後才改 `Dockerfile`。動手前先看模型頁的架構（Base Model）與授權：
+
+| 類型 | 例子 | 要改什麼 |
+| :--- | :--- | :--- |
+| SDXL epsilon 版 | Illustrious／NoobAI epsilon 的調整版、合併模型 | 只換檔：`ckpt_name` 改新檔名，`steps`、`cfg`、`sampler_name` 照模型頁的建議 |
+| SDXL v-pred 版 | NoobAI-XL v-pred | 同上，再加一個 `ModelSamplingDiscrete` 節點（`v_prediction`）；不加的話圖會整張灰掉或壞掉 |
+| 不同架構 | Anima、Lumina 系 | 另做一份 workflow（模型頁或 ComfyUI 內建範本，用「Export (API)」匯出）；確認 worker-comfyui 映像檔裡的 ComfyUI 版本支援；`render_spike.py` 還不能指定別的 workflow，要先改 |
+
 **做法 A**：照「做法 A」第 2 步，把新的 checkpoint 下載到同一個磁碟（磁碟不夠大就先加大），workflow 的 `ckpt_name` 改成新檔名；升級 worker-comfyui 版本是改 endpoint 的映像檔 tag。
 
 **做法 B**：改了 `Dockerfile`（換模型、升級 worker-comfyui 版本）之後，**push 不會觸發重建**，要在 GitHub 建一個 release（tag 例如 `render-worker-v2`），RunPod 才會重新建置。建置失敗或新版有問題，可以在 Builds 分頁對舊的建置按 Rollback。
