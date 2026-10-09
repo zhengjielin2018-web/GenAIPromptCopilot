@@ -17,6 +17,8 @@
 | 誰能做 | 全部可以透過 Runpod 的 MCP connector 完成（Claude 代做） | 要在 Runpod 網頁上連 GitHub、建 endpoint |
 | 多出的費用 | 網路磁碟每 GB 每月 US$0.07（15 GB 約 US$1.05） | 無 |
 | 限制 | endpoint 只能用磁碟所在資料中心的 GPU | 任何資料中心 |
+| 冷啟動載入模型 | 從網路磁碟，實測約 20 秒 | 從本機磁碟，實測約 4 秒 |
+| 第一次部署 | 下載模型約 25 秒 | GitHub 建置約 12.5 分鐘 |
 | 換模型 | 開一台 CPU 機器下載到磁碟 | 改 `Dockerfile`、建 GitHub release |
 
 兩種做法都要先在 [runpod.io](https://www.runpod.io) 註冊並儲值。Runpod 是預付制，餘額用完就停，所以**先少量儲值，餘額就是花費上限**。
