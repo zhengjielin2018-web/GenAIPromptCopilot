@@ -9,7 +9,9 @@
 
 模型有兩種放法，endpoint 吃的 workflow 與 API 都一樣：
 
-| | A. 網路磁碟（**目前部署的是這個**，2026-10-09） | B. 模型包進映像檔 |
+2026-10-09 兩種都部署了、都保留，實測比較見[可行性文件](../../docs/ComfyUI整合可行性.md) §9.1。
+
+| | A. 網路磁碟 | B. 模型包進映像檔 |
 | :--- | :--- | :--- |
 | 怎麼做 | 官方 base 映像檔，模型放在網路磁碟上 | Runpod 的 GitHub 整合從 `Dockerfile` 建置 |
 | 誰能做 | 全部可以透過 Runpod 的 MCP connector 完成（Claude 代做） | 要在 Runpod 網頁上連 GitHub、建 endpoint |
@@ -19,7 +21,7 @@
 
 兩種做法都要先在 [runpod.io](https://www.runpod.io) 註冊並儲值。Runpod 是預付制，餘額用完就停，所以**先少量儲值，餘額就是花費上限**。
 
-## 做法 A：網路磁碟（目前的部署）
+## 做法 A：網路磁碟
 
 在 US-IL-1 建置（2026-10-09 查詢時那裡 4090 的 serverless 庫存是 HIGH，也有 CPU 機器與 STANDARD 網路磁碟）：
 
