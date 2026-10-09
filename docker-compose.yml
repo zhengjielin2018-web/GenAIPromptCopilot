@@ -54,6 +54,9 @@ services:
       Llm__ApiKey: ${GEMINI_API_KEY:-}
       # 測試用：true 時前端出現「程式端審查」開關，可以逐則關掉我們自己的審查（Gemini 的攔截不受影響）
       Safety__AllowDisable: ${SAFETY_ALLOW_DISABLE:-false}
+      # 定稿後生成預覽（render/runpod/README.md）：兩個都設才會開，沒設時前端不顯示按鈕
+      Render__ApiKey: ${RUNPOD_API_KEY:-}
+      Render__EndpointId: ${RUNPOD_ENDPOINT_ID:-}
       # GSS 關掉：aspnet image 沒有 libgssapi_krb5，Npgsql 預設會先試 GSS 加密並在 log 印一行 Error（不影響連線）
       Database__ConnectionString: Host=db;Port=5432;Database=${POSTGRES_DB:-prompt_copilot};Username=${POSTGRES_USER:-postgres};Password=${POSTGRES_PASSWORD:-postgres};GSS Encryption Mode=Disable
     ports:

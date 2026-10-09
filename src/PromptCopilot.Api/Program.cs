@@ -10,6 +10,7 @@ using PromptCopilot.Api.Endpoints;
 using PromptCopilot.Api.Filters;
 using PromptCopilot.Api.Llm;
 using PromptCopilot.Api.Orchestration;
+using PromptCopilot.Api.Rendering;
 using PromptCopilot.Api.Safety;
 using PromptCopilot.Api.Sessions;
 
@@ -84,6 +85,19 @@ services.AddSingleton(_ => new Denylist(cfg.GetSection("Safety:Denylist").Get<st
 services.AddSingleton<SafetyClassifier>();
 services.AddSingleton<SafetyGuard>();
 
+// ---- render（定稿後生成預覽，docs/superpowers/specs/2026-10-09-render-preview-design.md）----
+// 沒開（Render:EndpointId／Render:ApiKey 沒設）時照樣全部註冊：背景服務在空佇列上等，端點回 404。
+services.AddSingleton(TimeProvider.System);
+services.AddSingleton(_ => RenderWorkflow.Load(Path.Combine(AppContext.BaseDirectory, "Rendering", RenderWorkflow.FileName)));
+services.AddSingleton<IRunPodClient>(sp => RunPodClient.Create(sp.GetRequiredService<IOptions<RenderOptions>>().Value, sp.GetRequiredService<TimeProvider>()));
+services.AddSingleton<IImageReviewer, ImageReviewer>();
+services.AddSingleton<ISelfChecker, SelfChecker>();
+services.AddSingleton<RenderQueue>();
+services.AddSingleton<RenderService>();
+services.AddSingleton<RenderPipeline>();
+services.AddSingleton(sp => new Lazy<RenderPipeline>(sp.GetRequiredService<RenderPipeline>));
+services.AddHostedService<RenderWorker>();
+
 // ---- orchestration ----
 services.AddSingleton<AgentKernelFactory>();
 services.AddSingleton<IRecommendationService, RecommendationService>();
@@ -107,6 +121,7 @@ app.UseSwagger();
 app.UseSwaggerUI();
 SessionEndpoints.Map(app);
 ReferenceEndpoints.Map(app);
+RenderEndpoints.Map(app);
 app.Run();
 
 public partial class Program { }

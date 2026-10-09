@@ -196,7 +196,7 @@ public class RenderPipelineTests
         _runpod.Result = () => ++calls == 1 ? throw new InvalidOperationException("boom") : FakeRunPod.Completed();
         _reviewer.Gate.SetResult(Clean);
         _checker.Gate.SetResult(new[] { Hair });
-        var worker = new RenderWorker(_queue, Pipeline(), NullLogger<RenderWorker>.Instance);
+        var worker = new RenderWorker(_queue, new Lazy<RenderPipeline>(Pipeline), NullLogger<RenderWorker>.Instance);
         await worker.StartAsync(default);
         var a = Plain("a", "s1", _queue.TakeDaily());
         var b = Plain("b", "s2", _queue.TakeDaily());
@@ -210,7 +210,7 @@ public class RenderPipelineTests
     public async Task Stopping_the_worker_fails_the_current_and_the_waiting_ones()
     {
         _runpod.WaitFor = TimeSpan.FromMinutes(5);
-        var worker = new RenderWorker(_queue, Pipeline(), NullLogger<RenderWorker>.Instance);
+        var worker = new RenderWorker(_queue, new Lazy<RenderPipeline>(Pipeline), NullLogger<RenderWorker>.Instance);
         await worker.StartAsync(default);
         var a = Plain("a", "s1", _queue.TakeDaily());
         var b = Plain("b", "s2", _queue.TakeDaily());
