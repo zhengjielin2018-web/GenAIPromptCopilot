@@ -55,6 +55,8 @@
    | Container Disk | `20` GB | 映像檔約 7 GB 的模型加 base |
    | 環境變數 | 不設 | 沒設 S3 時圖片以 base64 回傳，spike 腳本只收這種 |
 
+   建立時出現「`runpod.serverless.start()` handler not found in your repo」的警告可以忽略：Runpod 只在 repo 的原始碼裡找這個呼叫，但 handler 在 base 映像檔裡（`/handler.py`，由映像檔的 `CMD ["/start.sh"]` 啟動），我們的 `Dockerfile` 沒有覆寫 `CMD`。
+
 3. **等建置完成**：endpoint 的 Builds 分頁出現 Completed（要下載約 7 GB 的模型，會花一些時間）。
 
 ## 金鑰與 endpoint id（兩種做法都要）
