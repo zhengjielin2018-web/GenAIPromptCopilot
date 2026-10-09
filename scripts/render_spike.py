@@ -146,21 +146,25 @@ class RunPodClient:
         return r.json()["id"]
 
     def wait(self, job_id: str, poll_s: float = 1.0, timeout_s: float = 300) -> dict:
-        """輪詢到終止狀態。超過 timeout_s 就取消工作（盡力而為）再丟 TimeoutError，不讓它在背景繼續計費。"""
+        """輪詢到終止狀態。沒等到就離開（超過 timeout_s、查狀態出錯、Ctrl+C）都先取消工作（盡力而為）再丟出去，
+        不讓已經送出的工作在背景繼續計費。"""
         start = self.clock()
-        while True:
-            r = self.http.get(f"/status/{job_id}")
-            r.raise_for_status()
-            job = r.json()
-            if job.get("status") in TERMINAL:
-                return job
-            if self.clock() - start > timeout_s:
-                try:
-                    self.http.post(f"/cancel/{job_id}")
-                except httpx.HTTPError:
-                    pass
-                raise TimeoutError(f"工作 {job_id} 超過 {timeout_s:g} 秒沒結束，已要求取消")
-            self.sleep(poll_s)
+        try:
+            while True:
+                r = self.http.get(f"/status/{job_id}")
+                r.raise_for_status()
+                job = r.json()
+                if job.get("status") in TERMINAL:
+                    return job
+                if self.clock() - start > timeout_s:
+                    raise TimeoutError(f"工作 {job_id} 超過 {timeout_s:g} 秒沒結束，已要求取消")
+                self.sleep(poll_s)
+        except BaseException:
+            try:
+                self.http.post(f"/cancel/{job_id}")
+            except httpx.HTTPError:
+                pass
+            raise
 
 
 def run_case(client: RunPodClient, template: dict, case: Case, run: int, seed: int, out: Path,
@@ -215,14 +219,20 @@ def summarize(results: list[Result], price_per_hour: float, idle_timeout_s: floa
         lines.append(f"| {label} | {_sec(percentile(vs, 50))} | {_sec(percentile(vs, 95))} |")
     if results:
         lines += ["", f"第一張的 delayTime：{_sec(results[0].delay_ms)} 秒（worker 原本縮在 0 的話，這就是冷啟動）。"]
+    per_s = price_per_hour / 3600
     if ok:
-        per_s = price_per_hour / 3600
         low = sum((r.execution_ms or 0) / 1000 for r in ok) * per_s / len(ok)
-        high = sum(((r.execution_ms or 0) + (r.delay_ms or 0)) / 1000 + idle_timeout_s for r in ok) * per_s / len(ok)
-        lines += ["", f"估計每張費用（GPU 每小時 US${price_per_hour:g}）：下限 US${low:.4f}（只算執行）、"
-                      f"上限 US${high:.4f}（加上 delayTime 與 {idle_timeout_s:g} 秒 idle timeout）。",
-                  f"換算每月 500 張：約 NT${low * 500 * twd_rate:.0f}–{high * 500 * twd_rate:.0f}"
+        sparse = sum(((r.execution_ms or 0) + (r.delay_ms or 0)) / 1000 + idle_timeout_s for r in ok) * per_s / len(ok)
+        lines += ["", f"估計每張費用（GPU 每小時 US${price_per_hour:g}）："
+                      f"下限 US${low:.4f}（worker 一直有工作，只算執行）、零星使用 US${sparse:.4f}"
+                      f"（每張各自加上 delayTime 與 {idle_timeout_s:g} 秒 idle timeout）。",
+                  f"換算每月 500 張：約 NT${low * 500 * twd_rate:.0f}–{sparse * 500 * twd_rate:.0f}"
                   f"（1 美元 = {twd_rate:g} 台幣；不含存放映像檔與審圖的費用）。"]
+    if results:
+        # 一張接一張送，worker 中途不會閒置到 idle timeout，所以 idle 只在最後算一次；失敗的工作也用了 GPU
+        run_cost = (sum(r.wall_ms for r in results) / 1000 + idle_timeout_s) * per_s
+        lines += ["", f"這一輪估計 US${run_cost:.4f}：全部來回總時間加一次 idle timeout"
+                      "（來回總時間含網路往返，略高於實際）。跑前跑後的餘額差應該接近這個數。"]
     return "\n".join(lines)
 
 

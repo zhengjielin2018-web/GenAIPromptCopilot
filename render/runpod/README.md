@@ -89,7 +89,7 @@ python render_spike.py --gpu-price-per-hour 1.10 --runs 4   # 五個提示詞各
 圖與報表存在 `scripts/data/render_spike/<時間>/`（不進版控）：`report.md` 是每張的 delayTime（排隊＋冷啟動）、executionTime、來回總時間、P50／P95、估計費用，最後附每個提示詞要看的要素；`results.json` 是原始數字。
 
 - **量冷啟動**：等 worker 閒置超過 idle timeout、縮回 0（endpoint 頁面的 worker 數變成 0）之後再跑，報表的「第一張的 delayTime」就是冷啟動。建議隔 30 分鐘以上再量一次。
-- **費用以帳單為準**：腳本的估計只用 GPU 每小時價格乘上秒數；RunPod 從 worker 啟動算到停止，跑之前跟跑之後各看一次餘額最準。
+- **費用以帳單為準**：腳本的估計只用 GPU 每小時價格乘上秒數；RunPod 從 worker 啟動算到停止，跑之前跟跑之後各看一次餘額最準。報表有兩種費用：「這一輪估計」是這次連續跑實際大約花多少（idle timeout 只在最後算一次），拿來對照餘額差；「每張費用」的零星使用是正式上線時一張一張零散生圖的估計（每張都各自等一次 delayTime 與 idle timeout），拿來估每月預算。
 - **看圖**：生成的圖只留在本機，不要提交進 repo。動漫模型就算提示詞乾淨也可能生出不當內容，負向詞已固定帶 `nsfw`，正式整合時每張圖都要過審查（可行性 §8）。
 
 ## 換模型或升級

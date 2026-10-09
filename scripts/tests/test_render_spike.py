@@ -91,6 +91,27 @@ def test_wait_cancels_the_job_when_it_times_out():
     assert seen[-1] == ("POST", "/v2/ep/cancel/j1")
 
 
+def read_timeout():
+    raise httpx.ReadTimeout("x")
+
+
+@pytest.mark.parametrize("failure", [lambda: httpx.Response(503), read_timeout], ids=["status-503", "read-timeout"])
+def test_wait_cancels_the_job_when_polling_fails(failure):
+    seen = []
+
+    def handler(request):
+        seen.append((request.method, request.url.path))
+        if request.method == "POST":
+            return httpx.Response(200, json={"id": "j1", "status": "CANCELLED"})
+        if len(seen) == 1:
+            return httpx.Response(200, json={"id": "j1", "status": "IN_QUEUE"})
+        return failure()
+
+    with pytest.raises(httpx.HTTPError):
+        client_with(handler).wait("j1", poll_s=1, timeout_s=60)
+    assert seen[-1] == ("POST", "/v2/ep/cancel/j1")
+
+
 def test_run_case_saves_the_image_and_records_runpod_timings(tmp_path):
     png = base64.b64encode(b"png").decode()
 
@@ -143,6 +164,8 @@ def test_summarize_reports_cold_start_and_cost_bounds():
     text = rs.summarize(results, price_per_hour=3.6, idle_timeout_s=5, twd_rate=30)
     assert "成功 2／3 張" in text
     assert "第一張的 delayTime：40.0 秒" in text
-    # 每秒 US$0.001：下限只算執行 6 秒；上限平均 (6+40+5 + 6+0.2+5)/2 = 31.1 秒
-    assert "下限 US$0.0060" in text and "上限 US$0.0311" in text
+    # 每秒 US$0.001：下限只算執行 6 秒；零星使用每張各自加 delayTime 與 idle，平均 (6+40+5 + 6+0.2+5)/2 = 31.1 秒
+    assert "下限 US$0.0060" in text and "零星使用 US$0.0311" in text
     assert "NT$90–466" in text
+    # 這一輪是連續跑的，idle 只算一次；失敗的那張也用了 GPU：47 + 7 + 0.5 + 5 = 59.5 秒
+    assert "這一輪估計 US$0.0595" in text
