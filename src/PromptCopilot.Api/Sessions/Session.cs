@@ -1,5 +1,7 @@
+using System.Collections.Concurrent;
 using Microsoft.SemanticKernel.ChatCompletion;
 using PromptCopilot.Api.Configuration;
+using PromptCopilot.Api.Rendering;
 
 namespace PromptCopilot.Api.Sessions;
 
@@ -59,6 +61,9 @@ public sealed class Session
 
     /// <summary>生成預覽的 seed：建 session 時隨機一次，之後固定。重新定稿再生時，畫面差異才是 tag 造成的（預覽設計 §2）。</summary>
     public long RenderSeed { get; } = Random.Shared.NextInt64(1, int.MaxValue);
+
+    /// <summary>這個 session 的預覽圖（預覽設計 §4）：跟 session 一起過期，不進 SessionSnapshot，對話輪回滾碰不到它。</summary>
+    public ConcurrentDictionary<string, RenderRecord> Renders { get; } = new();
 
     public Session(string id, bool retrievalEnabled = true) { Id = id; RetrievalEnabled = retrievalEnabled; }
 
