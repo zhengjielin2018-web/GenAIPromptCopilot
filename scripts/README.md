@@ -75,6 +75,14 @@ clean／structure／embed／load 全部五個階段，`--max-records` 預設不�
 
 `--sessions a,b` 只看指定的 session（逗號分隔的 session id，`manual-tests/replay.py` 最後一行會印），檢索時機驗收時用它排除其他資料。報告多一節「檢索時機」：動手輪／「隨便」確認輪／Discuss 輪的檢索率、選項帶 presetId 比例、定稿的 tag 來源平均、有無檢索的延遲中位數；知識庫關閉（`retrieval: off`）與沒有 `kind` 的舊資料只列筆數，不計入。
 
+## 量測：生圖後端的延遲與費用（RunPod spike）
+
+    python render_spike.py --gpu-price-per-hour 1.10 [--runs 4] [--cases rain-neon,sakura]
+
+把 `render/workflows/txt2img-sdxl.json` 填上五個內建的動漫提示詞，一次一張送到 RunPod Serverless endpoint，圖與報表存在
+`data/render_spike/<時間>/`：每張的 delayTime（排隊＋冷啟動）、executionTime、P50／P95、估計費用。`.env` 要有
+`RUNPOD_API_KEY`、`RUNPOD_ENDPOINT_ID`；endpoint 的部署步驟見 [render/runpod/README.md](../render/runpod/README.md)。
+
 ## 一次性補充語料：Kisegaeningyou 服裝集
 
 補 clothing 維度的候選池缺口用的一次性匯入，**不是** `seed_data.py` 的階段之一

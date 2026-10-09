@@ -1,7 +1,7 @@
 # 線上 ComfyUI API 整合可行性評估
 
-日期：2026-10-08（2026-10-09 更新：評估並排除 NovelAI，§2.1；後端架構，§6）
-狀態：**評估，未定案**。對應 [Agent 化提案](Agent化提案.md) §6.1（P0 閉環）與 §9 第 2 項（生圖後端）。已決定：生圖後端走 ComfyUI（2026-10-09）。方案、先後順序等其餘事項見 §11；定案後照慣例另開 `superpowers/specs/` 設計文件與 `superpowers/plans/` 計畫。
+日期：2026-10-08（2026-10-09 更新：評估並排除 NovelAI，§2.1；後端架構，§6；限制條件與 RunPod 試用，§2.2、§3.1、§7、§9）
+狀態：**評估，未定案**。對應 [Agent 化提案](Agent化提案.md) §6.1（P0 閉環）與 §9 第 2 項（生圖後端）。已決定：生圖後端走 ComfyUI（2026-10-09）；只用雲端、風格偏動漫、每月 NT$1,000 內，先試 RunPod Serverless（§2.2）。先後順序等其餘事項見 §11；定案後照慣例另開 `superpowers/specs/` 設計文件與 `superpowers/plans/` 計畫。
 對象：決定生圖後端的人。讀完應該知道：線上 ComfyUI API 能不能接、接在程式的哪裡、後端怎麼處理延遲與同時數上限、要付出什麼、哪些還沒驗證、建議怎麼開始。
 
 外部服務的規格、價格與條款是 2026-10-08／09 查到的，動工前要再確認一次（來源見文末）。
@@ -34,13 +34,13 @@
 
 | 服務 | 介面 | 計費 | 對這個專案 |
 | :--- | :--- | :--- | :--- |
-| **Comfy Cloud**（官方） | v2 `/api/v2/jobs`；舊的 v1 `/api/prompt` 已標為 deprecated | 月費方案附 credits；GPU 只算實際執行的秒數 | **建議**。維運最少，$20／月起，每個付費方案都含 API |
+| **Comfy Cloud**（官方） | v2 `/api/v2/jobs`；舊的 v1 `/api/prompt` 已標為 deprecated | 月費方案附 credits；GPU 只算實際執行的秒數 | 維運最少，$20／月起，每個付費方案都含 API；但內建模型沒有 Illustrious／NoobAI，匯入要 Creator（§2.2） |
 | Comfy API 專屬部署（官方，`<deployment>.run.comfy.app`） | 同 v2 | 依 GPU 秒計費（RTX PRO 6000 $4.54／小時、H100 $6.23／小時） | 流量變大、要固定模型或自訂節點時再升級，client 不用改 |
 | RunComfy Serverless API | 自家 API（不是 v2） | 依 GPU 實例開機秒數 | 備選；要另寫一個 client |
-| RunPod worker-comfyui | RunPod 的 `/run`、`/runsync`，工作流放在 `input.workflow` | 依 GPU 秒，通常最便宜 | 要自己做映像檔、處理冷啟動，維運最多 |
+| **RunPod worker-comfyui** | RunPod 的 `/run`、`/status`，工作流放在 `input.workflow`（§3.1） | 依 GPU 秒，通常最便宜 | **試用中（2026-10-09，§2.2）**。要自己做映像檔（GitHub 整合可代為建置）、處理冷啟動 |
 | 本機 ComfyUI＋comfy-api-proxy | 同 v2（proxy 在本機提供 v2 端點） | 電費 | 選配：docker compose profile，需要 GPU |
 
-選 Comfy Cloud 的關鍵是第一列跟最後兩列（專屬部署、本機）**共用同一套 v2 介面**，之後換後端只改組態。有 GPU 的話，spike 可以先在本機 ComfyUI 跑，不花錢。
+Comfy Cloud 的好處是第一列跟專屬部署、本機**共用同一套 v2 介面**，之後換後端只改組態。RunPod 的傳輸介面不同（§3.1），但吃同一份 API 格式的 workflow JSON，多寫一個轉接器即可，§6 的佇列與 Dispatcher 不變。
 
 ### 2.1 NovelAI（評估後不採用，2026-10-09）
 
@@ -68,7 +68,22 @@
 
 另外兩個限制：NovelAI 只畫動漫或插畫，知識庫裡 SDXL 1.0、SD 1.5 的寫實提示詞對不上；V4 以後的請求格式（`v4_prompt` 的 `base_caption`、自動附加品質詞）跟 SD tag 不同，要多一層轉換。違反條款的後果是付費帳號可能被停權（條款 §9.2）。
 
-**保留的可能**：生圖後端的介面標明「能不能由程式自主生圖」。日後要做「只有自己用、每張都按按鈕」的模式時，NovelAI 可以當成標「必須由人觸發」的後端：`ToolSetBuilder` 不把生圖工具給模型，生圖只能從前端按鈕觸發。限制由程式保證，跟工具清單限權同一個原則。目前不做。
+**保留的可能（NovelAI）**：生圖後端的介面標明「能不能由程式自主生圖」。日後要做「只有自己用、每張都按按鈕」的模式時，NovelAI 可以當成標「必須由人觸發」的後端：`ToolSetBuilder` 不把生圖工具給模型，生圖只能從前端按鈕觸發。限制由程式保證，跟工具清單限權同一個原則。目前不做。
+
+### 2.2 限制條件與選擇（2026-10-09）
+
+專案擁有者的條件：**只能用雲端**（沒有可用的本機 GPU）、**風格偏動漫**、**每月 NT$1,000 內**（以 1 美元 ≈ 31.8 台幣，約 US$31）。
+
+| 選項 | 每月約 | 動漫模型 | 結論 |
+| :--- | :--- | :--- | :--- |
+| Comfy Cloud Standard（月繳） | NT$640 | 只能用內建；官方支援模型清單沒有 Illustrious、NoobAI、Animagine、Pony，動漫類只看到 Anima、NetaYume 這類非 SDXL 的新架構模型 | 跟知識庫的 tag 相容度沒把握 |
+| Comfy Cloud Creator（年繳） | NT$890 | 可從 Civitai 匯入 | 要先付 US$336（約 NT$10,700），還沒驗證就綁一年 |
+| Comfy Cloud Creator（月繳） | NT$1,110 | 可匯入 | 超出預算 |
+| **RunPod Serverless＋worker-comfyui** | 估計 NT$150–400（用多少付多少，§7） | 自己放進映像檔；先用 NoobAI-XL 1.1 | **先試這個** |
+
+選 RunPod 的理由：預算內用得到知識庫動漫提示詞最多的那一系（NoobAI 是 Illustrious 的 finetune）；預付制，餘額就是花費上限；RunPod 的 GitHub 整合從 repo 的 Dockerfile 建置映像檔，不需要本機 Docker。代價是多一份映像檔要維護，以及閒置後第一張要多等冷啟動（第三方估計 20–60 秒，spike 量實際數字）。
+
+試用的東西都在 repo 裡：[`render/runpod/`](../render/runpod/)（Dockerfile 與部署步驟）、[`render/workflows/txt2img-sdxl.json`](../render/workflows/txt2img-sdxl.json)、[`scripts/render_spike.py`](../scripts/render_spike.py)。
 
 ---
 
@@ -90,6 +105,23 @@
 | 沒有的 | .NET SDK（只有 Python、TypeScript，且標 beta）、webhook |
 
 **對我們重試層的影響**：現在 [`ResilientChatCompletion`](../src/PromptCopilot.Api/Llm/ResilientChatCompletion.cs) 遇到傳輸錯誤就重送。生圖 client 不能照抄：送出那一步結果不明時要查工作而不是重送，否則會重複扣 credits，而且第二次還會被 `422` 擋下。
+
+### 3.1 RunPod Serverless 的差異
+
+依 RunPod 官方文件與 [worker-comfyui](https://github.com/runpod-workers/worker-comfyui) README（5.x）整理：
+
+| 項目 | 內容 |
+| :--- | :--- |
+| Base URL | `https://api.runpod.ai/v2/{endpoint_id}` |
+| 認證 | `Authorization: Bearer <RunPod API key>` |
+| 送出 | `POST /run`，body `{"input": {"workflow": <API 格式的 graph>}}`，立刻回 job id。另有 `/runsync`（等結果，結果只留 1 分鐘），不用 |
+| 輪詢 | `GET /status/{id}`：`IN_QUEUE` → `IN_PROGRESS` → `COMPLETED`／`FAILED`／`CANCELLED`／`TIMED_OUT`；回應帶 `delayTime`（排隊＋冷啟動）與 `executionTime`（毫秒）。`/run` 的結果留 30 分鐘 |
+| 取圖 | 不必另外下載：`output.images[]` 直接帶 base64（沒設 S3 時） |
+| 取消 | `POST /cancel/{id}` |
+| 時限 | `executionTimeout` 預設 10 分鐘、`ttl`（含排隊的總壽命）預設 24 小時，可在 endpoint 或單一請求設定 |
+| 冪等 | 沒有 `Idempotency-Key`：送出失敗或結果不明時一樣不重送，查工作狀態 |
+| 同時數 | 由 endpoint 的 Max Workers 決定；多出來的工作在 RunPod 排隊 |
+| 計費 | worker 從啟動算到停止（載入模型、執行、idle timeout），四捨五入到秒；拉映像檔不計費 |
 
 ---
 
@@ -189,7 +221,7 @@ POST /messages（一輪，SSE）            GET /sessions/{id}/events（長連�
 | 元件 | 做什麼 |
 | :--- | :--- |
 | `RenderJob` | 狀態：`Queued`（在自己的佇列）→ `Submitted` → `Running` → `Reviewing` → `Ready`，或 `Failed`／`Canceled`／`Stale`。帶著 sessionId、排隊當下的 session 狀態版本、提示詞與 seed、優先級、`Idempotency-Key`、Comfy 的 job id、各段耗時 |
-| `RenderDispatcher` | `BackgroundService`＋`Channel`；`SemaphoreSlim` 的槽位數等於方案的同時工作數（Standard 1、Creator 3），工作在 Comfy 那邊結束才釋放 |
+| `RenderDispatcher` | `BackgroundService`＋`Channel`；`SemaphoreSlim` 的槽位數等於後端的同時工作數（Comfy Cloud Standard 1、Creator 3；RunPod 是 endpoint 的 Max Workers），工作在遠端結束才釋放 |
 | 排程規則 | 每個 session 同時最多一個在跑、各 session 輪流取；互動優先於 eval；預估等待（前面的工作數 × 平均耗時 ÷ 槽位數）超過門檻（建議 60 秒）就直接降級，不讓使用者乾等；同一個 session 排了新的生圖或使用者送出新訊息時，取消它還在排隊的舊工作 |
 | `ComfyBackend` | 送出、輪詢、取圖、取消；`429` 照 `Retry-After` 退避；送出結果不明時查工作、不重送（§3） |
 | 後處理 | 取圖後審圖與自評平行跑；兩者都打 Gemini，另配一組限流（Gemini 也有每分鐘呼叫上限）。圖片存在 session、經我們的端點給前端（§4） |
@@ -258,6 +290,8 @@ NovelAI（§2.1）是同步 API，請求結束就代表圖生完了，一個 `Se
 
 **估算**（單張 GPU 時間未實測）：一張 SDXL 若花 5–10 秒 GPU，就是 1.3–2.7 credits，約 $0.006–0.013；Standard 方案一個月約 1,500–3,000 張。一次定稿生兩張，加上審圖與自評的 Gemini 呼叫，約 $0.02–0.03。eval 若 30 個劇本、每個生兩張、每週跑一次，一個月約 240 張，額度綽綽有餘。
 
+**RunPod（試用中）**：24 GB 的 L4、A5000、3090 每小時 US$0.69，24 GB PRO 的 4090 每小時 US$1.10；網路磁碟每 GB 每月 US$0.07。估算（未實測）：用 4090、每月 500 張、每張 6 秒執行加 5 秒 idle timeout，再加約 80 次冷啟動，約 US$3–4；用量變成三倍也還在預算內。`scripts/render_spike.py` 的報表會依實測秒數重算每張費用與每月 500 張的台幣金額，準確數字以 RunPod 帳單為準。Comfy 的價格頁沒寫是否含稅，加上海外刷卡手續費，兩家都建議抓一成緩衝。
+
 **API 沒有認證，要自己設上限。** 這個專案的 API 誰都能打（[`SafetyOptions`](../src/PromptCopilot.Api/Configuration/Options.cs) 的註解也提到這點），公開 demo 時任何人都能燒 credits。方案額度用完會回 `402`，是天然上限，但要再加每個 session 與每天的生圖上限，用完就降級成不生圖。
 
 ---
@@ -280,12 +314,14 @@ NovelAI（§2.1）是同步 API，請求結束就代表圖生完了，一個 `Se
 
 ## 9. 建議的 spike
 
-目標：用數字回答上面的未知數。預估 1–2 天，花費不超過一個月的 Standard 方案。
+目標：用數字回答上面的未知數。2026-10-09 起改在 RunPod 上做（§2.2），花費預估幾美元。
 
-1. 開 Standard 方案、在 platform.comfy.org 拿 API key（只放 `.env`，不進版控）。在 Cloud 編輯器做最小的 SDXL txt2img 工作流，用 File → Export Workflow (API) 匯出；在 Model Library 確認有哪些 SDXL checkpoint。
-2. 寫一支腳本**直接打 v2 的 REST 端點**（不用 Python SDK，因為正式實作的 C# 也是直接打 REST）：送出 → 輪詢 → 取圖。跑 20 張，記 `queue_ms`、`execution_ms`、總時間、credits 扣了多少；隔 30 分鐘以上再跑第一張，量冷啟動。
-3. 拿 [eval 案例](eval-cases.md)裡已經定稿過的 10 個提示詞生圖，用 Gemini 做 facet 自評，人工對照判讀，算一致率。
+1. 照 [`render/runpod/README.md`](../render/runpod/README.md) 部署 endpoint：RunPod 的 GitHub 整合從 `render/runpod/Dockerfile` 建置（worker-comfyui 5.10.0 加 NoobAI-XL 1.1），API key 與 endpoint id 只放 `.env`。
+2. 跑 [`scripts/render_spike.py`](../scripts/render_spike.py)：直接打 RunPod 的 REST 端點（正式實作的 C# 也是直接打 REST），送出 → 輪詢 → 取圖，一次一張。先跑 `--runs 4`（五個動漫提示詞各四張、共 20 張），記 `delayTime`、`executionTime`、來回總時間、P50／P95；隔 30 分鐘以上、worker 縮回 0 之後再跑一次，量冷啟動。跑前跑後各看一次 RunPod 餘額，對照腳本的估計。
+3. 看 spike 的圖：每個提示詞要確認的要素寫在報表最後，先人工判讀，再用 Gemini 做 facet 自評，算一致率（自評的腳本之後補）。
 4. 同一批圖跑看圖審查，看有沒有誤判或漏判。
+
+原本規劃在 Comfy Cloud 上做的版本（開 Standard 方案、打 v2 端點、記 `queue_ms`／`execution_ms` 與 credits）保留為換回 Comfy Cloud 時的做法。
 
 **判斷門檻**（建議值，可以調）：
 
@@ -312,14 +348,18 @@ NovelAI（§2.1）是同步 API，請求結束就代表圖生完了，一個 `Se
 
 ## 11. 需要專案擁有者決定的事
 
-已決定：生圖後端走 ComfyUI，不用 NovelAI（2026-10-09，§2.1）。還沒決定的：
+已決定（2026-10-09）：
 
-1. **方案**：Standard（$20，只用內建模型），還是 Creator（$35，可以匯入 Illustrious／NoobAI，API 併發 3）。
-2. **順序**：先做 B（定稿後生圖）再做 A（自主閉環），還是等 spike 數字直接決定。
-3. **費用上限**：每月生圖費用上限；公開 demo 時每個 session、每天各幾張。
-4. **降級門檻**：排隊預估超過幾秒就不生圖（建議 60 秒，§6.2）。
-5. **eval 與 demo**：共用同一個方案（eval 優先級較低），還是 eval 另外開方案或排在離峰。
-6. **spike 在哪跑**：本機有 GPU 的話先跑本機 ComfyUI（不花錢）；沒有就需要一把 Comfy Cloud 的 API key。
+- 生圖後端走 ComfyUI，不用 NovelAI（§2.1）。
+- 只用雲端、風格偏動漫、每月 NT$1,000 內；先在 RunPod Serverless 上試，模型先用 NoobAI-XL 1.1（§2.2）。
+
+還沒決定的：
+
+1. **順序**：先做 B（定稿後生圖）再做 A（自主閉環），還是等 spike 數字直接決定。
+2. **公開 demo 的上限**：每個 session、每天各幾張（每月總額已定為 NT$1,000 內）。
+3. **降級門檻**：排隊預估超過幾秒就不生圖（建議 60 秒，§6.2）。
+4. **eval 與 demo**：共用同一個 endpoint（eval 優先級較低），還是 eval 排在離峰。
+5. **spike 之後**：RunPod 的冷啟動與費用可以接受就留在 RunPod；不行再評估 Comfy Cloud（內建模型或 Creator）。
 
 ---
 
@@ -331,5 +371,8 @@ NovelAI（§2.1）是同步 API，請求結束就代表圖生完了，一個 `Se
 - [Comfy Cloud 匯入模型](https://docs.comfy.org/cloud/import-models)、[SDXL Base 1.0 支援模型頁](https://comfy.org/p/supported-models/sd-xl-base-1-0)
 - [Comfy 服務條款](https://www.comfy.org/terms-of-service)
 - [RunComfy Serverless 計費](https://docs.runcomfy.com/serverless/about-billing)、[RunPod Serverless 計費](https://docs.runpod.io/serverless/pricing)、[runpod/worker-comfyui](https://hub.docker.com/r/runpod/worker-comfyui)
+- RunPod：[價格](https://www.runpod.io/pricing)、[送出請求與狀態](https://docs.runpod.io/serverless/endpoints/send-requests)、[GitHub 整合](https://docs.runpod.io/serverless/github-integration)、[worker-comfyui（GitHub）](https://github.com/runpod-workers/worker-comfyui)
+- 模型：[NoobAI-XL 1.1](https://huggingface.co/Laxhar/noobai-XL-1.1)（FAIPL-1.0-SD）；備選 [Illustrious-XL v2.0](https://huggingface.co/OnomaAIResearch/Illustrious-XL-v2.0)（CreativeML OpenRAIL-M）、[Animagine XL 4.0](https://huggingface.co/cagliostrolab/animagine-xl-4.0)（OpenRAIL++）
+- [Comfy 支援模型清單](https://comfy.org/p/supported-models)
 - [Semantic Kernel Google connector：`GeminiRequest.cs`](https://github.com/microsoft/semantic-kernel/blob/main/dotnet/src/Connectors/Connectors.Google/Core/Gemini/Models/GeminiRequest.cs)（`ImageContent` 轉 `inlineData`）
 - NovelAI：[Image Generation API 文件](https://image.novelai.net/docs/index.html)（規格 `doc.json`）、[Primary API 文件](https://api.novelai.net/docs/)、[服務條款](https://novelai.net/terms)、[Diffusion V5](https://novelai.net/v5)、[Opus 使用上限說明](https://journal.novelai.net/opus-usage-limit-explained/)、[V5 API 實測（dev.to）](https://dev.to/ilan_kim/calling-the-novelai-v5-api-directly-nai-diffusion-5-full-request-body-paramsversion-4310-133a)、[V5 Opus 用量實測（dev.to）](https://dev.to/ilan_kim/novelai-v5-on-opus-usage-limits-the-2026-09-21-subscription-anlas-reset-and-the-apinovelainet-567l)
