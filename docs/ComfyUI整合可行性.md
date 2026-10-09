@@ -1,6 +1,6 @@
 # 線上 ComfyUI API 整合可行性評估
 
-日期：2026-10-08（2026-10-09 更新：評估並排除 NovelAI，§2.1；後端架構，§6；限制條件與 RunPod 試用，§2.2、§3.1、§7、§9；20 張實測，§9.2）
+日期：2026-10-08（2026-10-09 更新：評估並排除 NovelAI，§2.1；後端架構，§6；限制條件與 RunPod 試用，§2.2、§3.1、§7、§9；20 張實測，§9.2；換模型暫緩，§9.3）
 狀態：**評估，未定案**。對應 [Agent 化提案](Agent化提案.md) §6.1（P0 閉環）與 §9 第 2 項（生圖後端）。已決定：生圖後端走 ComfyUI（2026-10-09）；只用雲端、風格偏動漫、每月 NT$1,000 內，先試 RunPod Serverless（§2.2）。先後順序等其餘事項見 §11；定案後照慣例另開 `superpowers/specs/` 設計文件與 `superpowers/plans/` 計畫。
 對象：決定生圖後端的人。讀完應該知道：線上 ComfyUI API 能不能接、接在程式的哪裡、後端怎麼處理延遲與同時數上限、要付出什麼、哪些還沒驗證、建議怎麼開始。
 
@@ -379,6 +379,31 @@ Runpod endpoint（4090、US-IL-1、模型在網路磁碟上），用 `render/wor
 | 自評一致率 ≥ 80% | 定稿閘門可以依自評擋回 |
 | 自評一致率 < 80% | 自評只顯示，不擋定稿 |
 
+### 9.3 生圖品質與換模型（暫緩，2026-10-09）
+
+專案擁有者看過 §9.2 的圖，覺得 NoobAI-XL 1.1 跟 NovelAI V5 比起來偏弱。決定先記下來，之後有空再換模型；換模型不擋 §9 其餘步驟。
+
+**弱的原因不全在模型**：用的是 NoobAI-XL 1.1 的原始底模（epsilon 版），工作流只有一次 txt2img，沒有兩段式放大重繪（hires fix）、沒有臉部修補（detailer），品質詞只帶 `masterpiece, best quality`（NoobAI 系常用的是 `very aesthetic, absurdres` 這類）。NovelAI 給的是整條管線的成品。先試「調過的同系模型＋放大重繪」，可能不必換架構就縮小差距。
+
+**候選**（2026-10-09 查到的）：
+
+| 模型 | 架構 | 提示詞 | 授權 | 備註 |
+| :--- | :--- | :--- | :--- | :--- |
+| WAI-Illustrious 等 Illustrious／NoobAI 的調整版 | SDXL | Danbooru tag | 各模型不同，多半沿用底模 | 跟現在的 workflow 相容，只換檔 |
+| NoobAI-XL v-pred | SDXL（v-prediction） | Danbooru tag | FAIPL-1.0-SD | workflow 要加 `ModelSamplingDiscrete` |
+| **Anima**（CircleStone Labs 與 Comfy Org，2026-05 起） | 2B DiT（NVIDIA Cosmos 為底），Qwen 系文字編碼器 | **Danbooru tag**，可補自然語言 | **模型非商用**（CircleStone Non-Commercial；衍生模型、LoRA 也是），生成的圖可商用 | 日本社群直接拿來跟 NovelAI V5 比；V5 在照提示詞畫、不崩壞上仍領先。有 Base／Turbo／Aesthetic 版與社群的 2.9B 版 |
+| NetaYume Lumina | Lumina-Image-2.0 為底 | tag＋自然語言 | 見模型頁 | |
+
+Anima 吃 Danbooru tag，§2.2 對 Comfy Cloud 內建動漫模型「跟知識庫 tag 相容度沒把握」的疑慮因此減輕，Comfy Cloud Standard（內建 Anima）可以重新列入 §11 第 5 項的比較。採用 Anima 前要先確認專案算不算商用。
+
+**換模型的成本看模型屬於哪一類**（步驟見 [`render/runpod/README.md`](../render/runpod/README.md)「換模型或升級」）：
+
+1. SDXL epsilon 版：只換檔、改 `ckpt_name` 與取樣設定。
+2. SDXL v-pred 版：同上，加一個節點。
+3. 不同架構（Anima、Lumina）：整份 workflow 換掉；確認 worker 映像檔的 ComfyUI 版本支援；`render_spike.py` 要加 `--workflow` 參數，`NODES` 的節點編號也要能跟著 workflow 換（現在寫死 6、7、3）。
+
+**做法**：做法 A 的 endpoint（網路磁碟）留著當換模型的試驗台：開 CPU 機器把新模型下載到磁碟、改 `ckpt_name`，不必重建映像檔，十分鐘內能比。選定之後才寫進做法 B 的 `Dockerfile`，優先選 Hugging Face 上有發布的版本（Civitai 下載要 token，不能寫進 `Dockerfile`）。比較時用同樣五個提示詞、同樣的 seed，跟 §9.2 的圖並排看。
+
 ---
 
 ## 10. 對既有文件的影響（定案後才改）
@@ -406,7 +431,8 @@ Runpod endpoint（4090、US-IL-1、模型在網路磁碟上），用 `render/wor
 2. **公開 demo 的上限**：每個 session、每天各幾張（每月總額已定為 NT$1,000 內）。
 3. **降級門檻**：排隊預估超過幾秒就不生圖（建議 60 秒，§6.2）。
 4. **eval 與 demo**：共用同一個 endpoint（eval 優先級較低），還是 eval 排在離峰。
-5. **spike 之後**：RunPod 的冷啟動與費用可以接受就留在 RunPod；不行再評估 Comfy Cloud（內建模型或 Creator）。
+5. **spike 之後**：RunPod 的冷啟動與費用可以接受就留在 RunPod；不行再評估 Comfy Cloud（內建模型或 Creator）。內建的 Anima 吃 Danbooru tag（§9.3），Standard 方案也值得比。
+6. **生圖模型**：NoobAI-XL 1.1 偏弱，換哪個、要不要接受非商用授權（Anima），見 §9.3；暫緩。
 
 ---
 
@@ -421,5 +447,6 @@ Runpod endpoint（4090、US-IL-1、模型在網路磁碟上），用 `render/wor
 - RunPod：[價格](https://www.runpod.io/pricing)、[送出請求與狀態](https://docs.runpod.io/serverless/endpoints/send-requests)、[GitHub 整合](https://docs.runpod.io/serverless/github-integration)、[worker-comfyui（GitHub）](https://github.com/runpod-workers/worker-comfyui)
 - 模型：[NoobAI-XL 1.1](https://huggingface.co/Laxhar/noobai-XL-1.1)（FAIPL-1.0-SD）；備選 [Illustrious-XL v2.0](https://huggingface.co/OnomaAIResearch/Illustrious-XL-v2.0)（CreativeML OpenRAIL-M）、[Animagine XL 4.0](https://huggingface.co/cagliostrolab/animagine-xl-4.0)（OpenRAIL++）
 - [Comfy 支援模型清單](https://comfy.org/p/supported-models)
+- 換模型（§9.3）：[Anima（Civitai）](https://civitai.com/models/2458426/anima)、[Anima Turbo／Aesthetic v1.0](https://comfyui-wiki.com/en/news/2026-07-08-anima-turbo-aesthetic-v1)、[Anima-2.9B](https://comfyui-wiki.com/en/news/2026-08-12-anima-2-9b)、[Anima 說明（note）](https://note.com/417__/n/n9541333b1f09?hl=en)、[NovelAI V5 與 Anima 的社群比較（note）](https://note.com/toukashiki/n/ne4f998285209?hl=en)、[NetaYume Lumina Image v2.0](https://huggingface.co/duongve/NetaYume-Lumina-Image-2.0)、[Illustrious vs NoobAI XL](https://aiofm.info/en/compare/illustrious-vs-noobai-xl)
 - [Semantic Kernel Google connector：`GeminiRequest.cs`](https://github.com/microsoft/semantic-kernel/blob/main/dotnet/src/Connectors/Connectors.Google/Core/Gemini/Models/GeminiRequest.cs)（`ImageContent` 轉 `inlineData`）
 - NovelAI：[Image Generation API 文件](https://image.novelai.net/docs/index.html)（規格 `doc.json`）、[Primary API 文件](https://api.novelai.net/docs/)、[服務條款](https://novelai.net/terms)、[Diffusion V5](https://novelai.net/v5)、[Opus 使用上限說明](https://journal.novelai.net/opus-usage-limit-explained/)、[V5 API 實測（dev.to）](https://dev.to/ilan_kim/calling-the-novelai-v5-api-directly-nai-diffusion-5-full-request-body-paramsversion-4310-133a)、[V5 Opus 用量實測（dev.to）](https://dev.to/ilan_kim/novelai-v5-on-opus-usage-limits-the-2026-09-21-subscription-anlas-reset-and-the-apinovelainet-567l)
