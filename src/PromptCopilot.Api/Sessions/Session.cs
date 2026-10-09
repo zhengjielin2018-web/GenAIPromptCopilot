@@ -7,9 +7,10 @@ public enum FacetState { Covered, Missing, Waived, NotApplicable }
 public enum SessionStatus { Collecting, Finalized }
 /// <summary>PositiveSources／NegativeSources：定稿時由伺服器比對 ledger 標的 tag 來源（<see cref="TagAttribution"/>）。
 /// 可為 null 只是為了讓舊的呼叫端不用改；讀取端一律 <c>?? Array.Empty</c>。
-/// Reviewed=false：這份定稿是在關掉程式端審查（測試用開關）的那一輪產生的，輸出側沒檢過，不能存進共享庫。</summary>
+/// Reviewed=false：這份定稿是在關掉程式端審查（測試用開關）的那一輪產生的，輸出側沒檢過，不能存進共享庫。
+/// TurnIndex：哪一輪定的稿，由 RecordFinalize 蓋上；生成預覽只收最新那張定稿卡（預覽設計 §5.1）。</summary>
 public sealed record FinalPrompt(string Positive, string Negative, string Tips, string IntentSummary,
-    IReadOnlyList<TagSource>? PositiveSources = null, IReadOnlyList<TagSource>? NegativeSources = null, bool Reviewed = true);
+    IReadOnlyList<TagSource>? PositiveSources = null, IReadOnlyList<TagSource>? NegativeSources = null, bool Reviewed = true, int TurnIndex = 0);
 
 public sealed record SessionSnapshot(
     SessionStatus Status, string? Profile, int AskCount, int DiscussStreak, bool AutoFill,
@@ -56,6 +57,9 @@ public sealed class Session
     private readonly Dictionary<string, int> _slateBatches = new();
     private static readonly IReadOnlyDictionary<string, int> NoneSeen = new Dictionary<string, int>();
 
+    /// <summary>生成預覽的 seed：建 session 時隨機一次，之後固定。重新定稿再生時，畫面差異才是 tag 造成的（預覽設計 §2）。</summary>
+    public long RenderSeed { get; } = Random.Shared.NextInt64(1, int.MaxValue);
+
     public Session(string id, bool retrievalEnabled = true) { Id = id; RetrievalEnabled = retrievalEnabled; }
 
     public void ApplyProfile(string profile, FacetCatalog catalog)
@@ -86,7 +90,7 @@ public sealed class Session
 
     public void RecordAsk() => AskCount++;
     public void RecordDiscuss() { if (Status == SessionStatus.Collecting) DiscussStreak++; }
-    public void RecordFinalize(FinalPrompt final) { LastFinal = final; Status = SessionStatus.Finalized; DiscussStreak = 0; }
+    public void RecordFinalize(FinalPrompt final) { LastFinal = final with { TurnIndex = TurnIndex }; Status = SessionStatus.Finalized; DiscussStreak = 0; }
 
     /// <summary>採用寫進 ledger：定稿 chip 能開抽屜、system prompt 的 offered 區段會列它。dist 0、grounded true：
     /// 使用者親手選的，當然可借入。</summary>

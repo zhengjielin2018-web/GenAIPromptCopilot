@@ -23,6 +23,7 @@ services.Configure<EmbeddingOptions>(cfg.GetSection(EmbeddingOptions.Section));
 services.Configure<OrchestratorOptions>(cfg.GetSection(OrchestratorOptions.Section));
 services.Configure<DatabaseOptions>(cfg.GetSection(DatabaseOptions.Section));
 services.Configure<SafetyOptions>(cfg.GetSection(SafetyOptions.Section));
+services.Configure<RenderOptions>(cfg.GetSection(RenderOptions.Section));
 services.AddSingleton(sp => sp.GetRequiredService<IOptions<OrchestratorOptions>>().Value);
 
 // ---- infra ----
