@@ -36,13 +36,15 @@ public class RenderPipelineTests
     {
         public TaskCompletionSource<ImageVerdict> Gate { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public int Calls;
-        public Task<ImageVerdict> ReviewAsync(byte[] png, CancellationToken ct) { Interlocked.Increment(ref Calls); return Gate.Task; }
+        public GeminiImage? LastImage;
+        public Task<ImageVerdict> ReviewAsync(GeminiImage image, CancellationToken ct) { Interlocked.Increment(ref Calls); LastImage = image; return Gate.Task; }
     }
 
     public sealed class GatedChecker : ISelfChecker
     {
         public TaskCompletionSource<IReadOnlyList<SelfCheckVerdict>> Gate { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public Task<IReadOnlyList<SelfCheckVerdict>> CheckAsync(byte[] png, IReadOnlyList<SelfCheckItem> items, CancellationToken ct) => Gate.Task;
+        public GeminiImage? LastImage;
+        public Task<IReadOnlyList<SelfCheckVerdict>> CheckAsync(GeminiImage image, IReadOnlyList<SelfCheckItem> items, CancellationToken ct) { LastImage = image; return Gate.Task; }
     }
 
     private static readonly ImageVerdict Clean = new(false, false, null, "風景");
@@ -92,6 +94,23 @@ public class RenderPipelineTests
         Assert.Equal(("Render_Completed", "s1", (int?)3), (e.EventType, e.SessionId, e.TurnIndex));
         Assert.Contains("\"present\":1", e.PayloadJson);
         Assert.Contains("\"jobId\":\"j1\"", e.PayloadJson);
+    }
+
+    /// <summary>給 Gemini 的是縮小的 JPEG（可行性 §9.4：1.5 MB 的 PNG 審圖要十幾秒），使用者拿到的仍是原圖；兩邊共用同一張縮圖。</summary>
+    [Fact]
+    public async Task Gemini_gets_one_downscaled_jpeg_and_the_user_gets_the_original()
+    {
+        var full = ImageForGeminiTests.Png(832, 1216);
+        _runpod.Result = () => new RunPodJob("j1", "COMPLETED", 1, 1,
+            JsonSerializer.SerializeToElement(new { images = new[] { new { type = "base64", data = Convert.ToBase64String(full) } } }), null);
+        _reviewer.Gate.SetResult(Clean);
+        _checker.Gate.SetResult(new[] { Hair });
+        var r = await Dequeued();
+        await Pipeline().ProcessAsync(r, default);
+        Assert.Equal(full, r.Image);
+        Assert.Equal("image/jpeg", _reviewer.LastImage!.MimeType);
+        Assert.Same(_reviewer.LastImage, _checker.LastImage);
+        Assert.True(_reviewer.LastImage.Data.Length < full.Length);
     }
 
     [Fact]

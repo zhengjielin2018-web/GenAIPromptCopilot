@@ -27,8 +27,11 @@ public sealed class RenderPipeline(IRunPodClient runpod, RenderWorkflow workflow
             imageSeconds = time.GetElapsedTime(submitted).TotalSeconds;
             r.ImageArrived(png, job.DelayTime, job.ExecutionTime);
 
-            var selfCheck = SelfCheckAsync(r, png, ct);
-            if (r.Request.SafetyOn) await ReviewAsync(r, png, ct);
+            // 審圖與自評共用同一張縮圖；使用者拿到的仍是原圖（可行性 §9.4）
+            var forGemini = ImageForGemini.Prepare(png);
+            if (forGemini.Error is { } why) logger.LogWarning("render {RenderId}: downscale for Gemini failed, sending the original PNG ({Error})", r.Id, why);
+            var selfCheck = SelfCheckAsync(r, forGemini, ct);
+            if (r.Request.SafetyOn) await ReviewAsync(r, forGemini, ct);
             await selfCheck;
         }
         catch (TimeoutException e) { r.Fail(RenderMessages.Timeout, "timeout", e.Message); }
@@ -51,12 +54,12 @@ public sealed class RenderPipeline(IRunPodClient runpod, RenderWorkflow workflow
         return WrapUpAsync(r, null, 0);
     }
 
-    private async Task ReviewAsync(RenderRecord r, byte[] png, CancellationToken ct)
+    private async Task ReviewAsync(RenderRecord r, GeminiImage image, CancellationToken ct)
     {
         var t = time.GetTimestamp();
         try
         {
-            var v = await reviewer.ReviewAsync(png, ct);
+            var v = await reviewer.ReviewAsync(image, ct);
             var ms = (int)time.GetElapsedTime(t).TotalMilliseconds;
             if (v.Nsfw || v.RealPerson) r.Block(RenderMessages.ImageBlocked, "image", v.Reason, ms);
             else r.ReviewPassed(ms);
@@ -69,10 +72,10 @@ public sealed class RenderPipeline(IRunPodClient runpod, RenderWorkflow workflow
         }
     }
 
-    private async Task SelfCheckAsync(RenderRecord r, byte[] png, CancellationToken ct)
+    private async Task SelfCheckAsync(RenderRecord r, GeminiImage image, CancellationToken ct)
     {
         var t = time.GetTimestamp();
-        try { r.SelfCheckFinished(await checker.CheckAsync(png, r.Request.SelfCheckItems, ct), (int)time.GetElapsedTime(t).TotalMilliseconds); }
+        try { r.SelfCheckFinished(await checker.CheckAsync(image, r.Request.SelfCheckItems, ct), (int)time.GetElapsedTime(t).TotalMilliseconds); }
         catch (Exception e)
         {
             // 自評只是顯示：失敗就標 unavailable，圖照給（審查關著時 Gemini 拒收也一樣）

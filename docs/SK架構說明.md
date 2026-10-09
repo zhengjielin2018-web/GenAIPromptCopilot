@@ -58,7 +58,7 @@ SK 的設計是「核心只定義通用格式，每家模型各有一個 connect
 
 **生圖也沒有走 SK。** 定稿後生成預覽（[設計](superpowers/specs/2026-10-09-render-preview-design.md)）由背景服務 [`RenderPipeline`](../src/PromptCopilot.Api/Rendering/RenderPipeline.cs) 用 [`RunPodClient`](../src/PromptCopilot.Api/Rendering/RunPodClient.cs) 直接打 RunPod 的 REST（`/run`、`/status`、`/cancel`），不經過對話輪、不進 kernel。取回圖之後的看圖審查（[`ImageReviewer`](../src/PromptCopilot.Api/Safety/ImageReviewer.cs)）與自評（[`SelfChecker`](../src/PromptCopilot.Api/Rendering/SelfChecker.cs)）跟 `SafetyClassifier` 一樣，直接呼叫同一個 `IChatCompletionService`（不帶 kernel、`ResponseSchema` 要 JSON）。
 
-**圖片怎麼給 Gemini：** 放在一則 user 訊息的 `ImageContent`（PNG bytes，`image/png`），旁邊一個 `TextContent` 放指示；Google connector 把它轉成 Gemini 的 `inlineData`。這點由 `GeminiImageRequestTests` 用真的 connector 釘住（假的 HTTP handler 接住請求本文，不打網路）。圖片**不進主對話的 `ChatHistory`**：之後每一輪都要重送、token 一直漲，而且工具結果帶圖的寫法 connector 這一版還沒確認支援（[ComfyUI 整合可行性](ComfyUI整合可行性.md) §4）。
+**圖片怎麼給 Gemini：** 放在一則 user 訊息的 `ImageContent`（[`ImageForGemini`](../src/PromptCopilot.Api/Rendering/ImageForGemini.cs) 縮成長邊 768 的 JPEG，`image/jpeg`；用 SkiaSharp，縮不了就退回原本的 PNG），旁邊一個 `TextContent` 放指示；Google connector 把它轉成 Gemini 的 `inlineData`。這點由 `GeminiImageRequestTests` 用真的 connector 釘住（假的 HTTP handler 接住請求本文，不打網路）。圖片**不進主對話的 `ChatHistory`**：之後每一輪都要重送、token 一直漲，而且工具結果帶圖的寫法 connector 這一版還沒確認支援（[ComfyUI 整合可行性](ComfyUI整合可行性.md) §4）。
 
 ---
 

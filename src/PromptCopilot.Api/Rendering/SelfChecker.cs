@@ -8,7 +8,7 @@ namespace PromptCopilot.Api.Rendering;
 
 public interface ISelfChecker
 {
-    Task<IReadOnlyList<SelfCheckVerdict>> CheckAsync(byte[] png, IReadOnlyList<SelfCheckItem> items, CancellationToken ct);
+    Task<IReadOnlyList<SelfCheckVerdict>> CheckAsync(GeminiImage image, IReadOnlyList<SelfCheckItem> items, CancellationToken ct);
 }
 
 public sealed record SelfCheckAnswer(List<SelfCheckAnswerItem>? Items);
@@ -21,10 +21,10 @@ public sealed class SelfChecker(IChatCompletionService chat, IOptions<LlmOptions
     private static readonly HashSet<string> Verdicts = new() { "present", "absent", "unclear" };
     private static readonly JsonSerializerOptions Json = new() { PropertyNameCaseInsensitive = true };
 
-    public async Task<IReadOnlyList<SelfCheckVerdict>> CheckAsync(byte[] png, IReadOnlyList<SelfCheckItem> items, CancellationToken ct)
+    public async Task<IReadOnlyList<SelfCheckVerdict>> CheckAsync(GeminiImage image, IReadOnlyList<SelfCheckItem> items, CancellationToken ct)
     {
         if (items.Count == 0) return Array.Empty<SelfCheckVerdict>();   // 沒東西可查，不花一次呼叫
-        var content = await GeminiImagePrompt.AskAsync(chat, llm.Value.Model, BuildPrompt(items), png, typeof(SelfCheckAnswer), ct);
+        var content = await GeminiImagePrompt.AskAsync(chat, llm.Value.Model, BuildPrompt(items), image, typeof(SelfCheckAnswer), ct);
         SelfCheckAnswer? answer;
         try { answer = JsonSerializer.Deserialize<SelfCheckAnswer>(content, Json); }
         catch (JsonException e) { throw new InvalidOperationException($"自評回了非 JSON：{content[..Math.Min(80, content.Length)]}", e); }

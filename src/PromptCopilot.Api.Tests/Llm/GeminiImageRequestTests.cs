@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Options;
 using Microsoft.SemanticKernel.Connectors.Google;
 using PromptCopilot.Api.Configuration;
+using PromptCopilot.Api.Rendering;
 using PromptCopilot.Api.Safety;
 using PromptCopilot.Api.Tests.Fakes;
 
@@ -10,7 +11,7 @@ namespace PromptCopilot.Api.Tests.Llm;
 public class GeminiImageRequestTests
 {
     [Fact]
-    public async Task The_image_goes_out_as_inline_png_data()
+    public async Task The_downscaled_image_goes_out_as_inline_jpeg_data()
     {
         var handler = new StubHttpHandler(_ => Task.FromResult(StubHttpHandler.Json(new
         {
@@ -18,14 +19,14 @@ public class GeminiImageRequestTests
             usageMetadata = new { promptTokenCount = 1, candidatesTokenCount = 1, totalTokenCount = 2 },
         })));
         var chat = new GoogleAIGeminiChatCompletionService("gemini-3.5-flash-lite", "test-key", GoogleAIVersion.V1_Beta, new HttpClient(handler));
-        var png = new byte[] { 0x89, 0x50, 0x4E, 0x47, 1, 2, 3 };
+        var image = ImageForGemini.Prepare(Rendering.ImageForGeminiTests.Png(832, 1216));
 
-        var v = await new ImageReviewer(chat, Options.Create(new LlmOptions())).ReviewAsync(png, default);
+        var v = await new ImageReviewer(chat, Options.Create(new LlmOptions())).ReviewAsync(image, default);
 
         Assert.Equal("風景", v.Reason);
         var body = handler.Bodies.Single();
         Assert.Contains("\"inlineData\"", body);
-        Assert.Contains("\"image/png\"", body);
-        Assert.Contains(Convert.ToBase64String(png), body);
+        Assert.Contains("\"image/jpeg\"", body);
+        Assert.Contains(Convert.ToBase64String(image.Data), body);
     }
 }

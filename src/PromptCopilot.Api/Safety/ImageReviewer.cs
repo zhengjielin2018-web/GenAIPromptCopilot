@@ -10,7 +10,7 @@ public sealed record ImageVerdict(bool Nsfw, bool RealPerson, string? PersonName
 
 public interface IImageReviewer
 {
-    Task<ImageVerdict> ReviewAsync(byte[] png, CancellationToken ct);
+    Task<ImageVerdict> ReviewAsync(GeminiImage image, CancellationToken ct);
 }
 
 /// <summary>看圖審查（預覽設計 §6）：寫法照 SafetyClassifier。判不出來（非 JSON、缺 reason）就丟，由呼叫端當成沒通過——不放行。
@@ -27,9 +27,9 @@ public sealed class ImageReviewer(IChatCompletionService chat, IOptions<LlmOptio
 
     private static readonly JsonSerializerOptions Json = new() { PropertyNameCaseInsensitive = true };
 
-    public async Task<ImageVerdict> ReviewAsync(byte[] png, CancellationToken ct)
+    public async Task<ImageVerdict> ReviewAsync(GeminiImage image, CancellationToken ct)
     {
-        var content = await GeminiImagePrompt.AskAsync(chat, llm.Value.Model, Prompt, png, typeof(ImageVerdict), ct);
+        var content = await GeminiImagePrompt.AskAsync(chat, llm.Value.Model, Prompt, image, typeof(ImageVerdict), ct);
         ImageVerdict? v;
         try { v = JsonSerializer.Deserialize<ImageVerdict>(content, Json); }
         catch (JsonException e) { throw new InvalidOperationException($"看圖審查回了非 JSON：{content[..Math.Min(80, content.Length)]}", e); }

@@ -21,12 +21,12 @@ public class RenderEndpointTests
     private sealed class CountingReviewer : IImageReviewer
     {
         public int Calls;
-        public Task<ImageVerdict> ReviewAsync(byte[] png, CancellationToken ct) { Interlocked.Increment(ref Calls); return Task.FromResult(new ImageVerdict(false, false, null, "ok")); }
+        public Task<ImageVerdict> ReviewAsync(GeminiImage image, CancellationToken ct) { Interlocked.Increment(ref Calls); return Task.FromResult(new ImageVerdict(false, false, null, "ok")); }
     }
 
     private sealed class OneItemChecker : ISelfChecker
     {
-        public Task<IReadOnlyList<SelfCheckVerdict>> CheckAsync(byte[] png, IReadOnlyList<SelfCheckItem> items, CancellationToken ct) =>
+        public Task<IReadOnlyList<SelfCheckVerdict>> CheckAsync(GeminiImage image, IReadOnlyList<SelfCheckItem> items, CancellationToken ct) =>
             Task.FromResult<IReadOnlyList<SelfCheckVerdict>>(new[] { new SelfCheckVerdict("appearance.hair", "髮型", "silver hair", "present", "銀髮") });
     }
 

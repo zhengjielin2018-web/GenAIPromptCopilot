@@ -62,7 +62,7 @@
 | `RenderService` | `Rendering/RenderService.cs` | **收件與建立工作的唯一入口**：輸入是中性的 `RenderRequest`（正向詞、負向詞、自評項目、seed、`safety`、定稿當時是否審過、來源 `turnIndex`），做 §5.1 裡跟 session 狀態無關的檢查（上一張還沒好、張數上限、預估等待）、必要時補審提示詞（§6）、建 `RenderRecord`、排進佇列。**不讀 `LastFinal`、不拿 session 鎖**：那些是呼叫端的事（§5.1），之後自主閉環的工具從一輪對話裡呼叫它時，那一輪已經拿著鎖（§12） |
 | `RenderQueue` | `Rendering/RenderQueue.cs` | `Channel<RenderJob>`、排第幾、最近 10 張的平均耗時、每日計數 |
 | `RenderWorker` | `Rendering/RenderWorker.cs`，`BackgroundService` | 單一消費者（對應 Runpod Max Workers 1）：組 workflow → 送出 → 等 → 取圖 → 審圖與自評平行跑（審圖過了就先放出圖，自評繼續跑）→ 收尾。**收尾集中在一個方法**（寫最終狀態、更新平均耗時、寫 audit），`done`／`failed`／`blocked` 都走它；自主閉環要在圖好了時觸發下一輪，就在這裡多一步（§12）。服務停止時取消手上的工作 |
-| `ImageReviewer` | `Safety/ImageReviewer.cs` | 看圖審查：nsfw、真實人物，回 JSON（`ResponseSchema`、`Temperature = 0`），寫法照 `SafetyClassifier`；圖片放在 user 訊息的 `ImageContent`（PNG bytes）。缺 `reason` 視為解析失敗 |
+| `ImageReviewer` | `Safety/ImageReviewer.cs` | 看圖審查：nsfw、真實人物，回 JSON（`ResponseSchema`、`Temperature = 0`），寫法照 `SafetyClassifier`；圖片放在 user 訊息的 `ImageContent`。缺 `reason` 視為解析失敗。2026-10-10 起送的是 `ImageForGemini` 縮過的圖：長邊 768 的 JPEG（品質 85），審圖與自評共用一張，使用者看到的仍是原圖；實測原圖 PNG 審圖要 12–17 秒（可行性 §9.4） |
 | `SelfChecker` | `Rendering/SelfChecker.cs` | 自評：列出要檢查的項目（§4.2），請 Gemini 逐項回 `present`／`absent`／`unclear` 與一句理由 |
 | `RenderRecord` | `Rendering/RenderRecord.cs` | 一張圖的狀態、圖片 bytes、審圖與自評結果、耗時、`safety` |
 | `Session.Renders` | `Sessions/Session.cs` | `ConcurrentDictionary<string, RenderRecord>`；`Session.RenderSeed` 建 session 時隨機一次。不進 `SessionSnapshot`：對話輪回滾碰不到它 |
@@ -256,7 +256,7 @@ audit 寫失敗只記 log，不改變回應（同推薦的做法）。
 - **自評**：項目從 covered＋有 tag 的 facet 產生、用快照；Gemini 出錯 → `unavailable`、圖照給；審查擋下時自評結果不回。
 - **狀態順序**（可控制完成順序的假審圖、假自評）：審圖沒好 → `reviewing`、圖拿不到；審圖過了、自評沒好 → `self_checking`、圖拿得到；自評先好、審圖後過 → 直接 `done`；審查關著 → 取圖後直接 `self_checking`。
 - **`RenderWorker`**：單張丟出未預期的例外後繼續處理下一張；停止時 cancel 手上的工作。
-- **契約**（`GeminiContractTests`）：審圖與自評送出的請求裡，圖片是 `inlineData`、`mimeType` 是 `image/png`。
+- **契約**（`GeminiImageRequestTests`）：審圖與自評送出的請求裡，圖片是 `inlineData`、`mimeType` 是 `image/jpeg`（縮圖後）。
 
 ### 11.2 端點（`EndpointTests`）
 

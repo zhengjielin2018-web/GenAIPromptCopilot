@@ -11,13 +11,14 @@ public class SelfCheckerTests
 {
     private static readonly SelfCheckItem Hair = new("appearance.hair", "髮型", "long silver hair");
     private static readonly SelfCheckItem Lens = new("camera.focal", "焦段", "85mm");
+    private static readonly GeminiImage Jpeg = new(new byte[] { 1 }, "image/jpeg");
     private static SelfChecker Checker(FakeChatCompletion chat) => new(chat, Options.Create(new LlmOptions()));
 
     [Fact]
     public async Task No_items_means_no_call()
     {
         var chat = new FakeChatCompletion();   // 被呼叫就丟 script exhausted
-        Assert.Empty(await Checker(chat).CheckAsync(new byte[] { 1 }, Array.Empty<SelfCheckItem>(), default));
+        Assert.Empty(await Checker(chat).CheckAsync(Jpeg, Array.Empty<SelfCheckItem>(), default));
         Assert.Empty(chat.Calls);
     }
 
@@ -26,7 +27,7 @@ public class SelfCheckerTests
     {
         var chat = new FakeChatCompletion().Then(FakeChatCompletion.Text(
             """{"items":[{"facetId":"camera.focal","verdict":"unclear","reason":"看不出焦段"},{"facetId":"appearance.hair","verdict":"present","reason":"銀色長髮"}]}"""));
-        var result = await Checker(chat).CheckAsync(new byte[] { 1 }, new[] { Hair, Lens }, default);
+        var result = await Checker(chat).CheckAsync(Jpeg, new[] { Hair, Lens }, default);
         Assert.Equal(new[] { ("appearance.hair", "present"), ("camera.focal", "unclear") }, result.Select(r => (r.FacetId, r.Verdict)));
         Assert.Equal(("髮型", "long silver hair", "銀色長髮"), (result[0].Label, result[0].Tag, result[0].Reason));
         var prompt = chat.Calls[0][0].Items.OfType<Microsoft.SemanticKernel.TextContent>().Single().Text!;
@@ -39,7 +40,7 @@ public class SelfCheckerTests
     {
         var chat = new FakeChatCompletion().Then(FakeChatCompletion.Text(
             """{"items":[{"facetId":"appearance.hair","verdict":"PRESENT","reason":"有"},{"facetId":"appearance.hair","verdict":"absent","reason":"重複"},{"facetId":"scene.weather","verdict":"present","reason":"沒問"},{"facetId":"camera.focal","verdict":"maybe","reason":"亂寫"}]}"""));
-        var result = await Checker(chat).CheckAsync(new byte[] { 1 }, new[] { Hair, Lens }, default);
+        var result = await Checker(chat).CheckAsync(Jpeg, new[] { Hair, Lens }, default);
         Assert.Equal(new[] { ("appearance.hair", "present"), ("camera.focal", "unclear") }, result.Select(r => (r.FacetId, r.Verdict)));
     }
 
@@ -47,7 +48,7 @@ public class SelfCheckerTests
     public async Task A_missing_item_is_unclear()
     {
         var chat = new FakeChatCompletion().Then(FakeChatCompletion.Text("""{"items":[{"facetId":"appearance.hair","verdict":"absent","reason":"短髮"}]}"""));
-        var result = await Checker(chat).CheckAsync(new byte[] { 1 }, new[] { Hair, Lens }, default);
+        var result = await Checker(chat).CheckAsync(Jpeg, new[] { Hair, Lens }, default);
         Assert.Equal(("unclear", "模型沒有回這一項"), (result[1].Verdict, result[1].Reason));
     }
 
@@ -55,7 +56,7 @@ public class SelfCheckerTests
     public async Task Non_json_is_an_error()
     {
         var chat = new FakeChatCompletion().Then(FakeChatCompletion.Text("sorry"));
-        await Assert.ThrowsAsync<InvalidOperationException>(() => Checker(chat).CheckAsync(new byte[] { 1 }, new[] { Hair }, default));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => Checker(chat).CheckAsync(Jpeg, new[] { Hair }, default));
     }
 
     [Fact]
