@@ -38,7 +38,7 @@
 
 ### 3.1 做
 
-1. 後端：`RenderOptions`、`RunPodClient`、`RenderWorkflow`、`RenderQueue` 與背景服務、`ImageReviewer`、`SelfChecker`、`Session.Renders`、三支端點與 `GET /api/config/render`、audit。
+1. 後端：`RenderOptions`、`RunPodClient`、`RenderWorkflow`、`RenderService`、`RenderQueue` 與背景服務、`ImageReviewer`、`SelfChecker`、`Session.Renders`、三支端點與 `GET /api/config/render`、audit。
 2. 前端：定稿卡的「生成預覽」按鈕、狀態顯示、圖、自評清單、寫實風提醒、審查關閉的標示；重新整理後接回。
 3. 測試（§9）與 `docs/eval-cases.md` 驗收案例。
 4. 文件同步（§10）。
@@ -59,8 +59,9 @@
 | `RenderOptions` | `Configuration/Options.cs`，設定節 `Render` | 見 §4.1 |
 | `RunPodClient` | `Rendering/RunPodClient.cs`，typed `HttpClient` | `SubmitAsync(workflow) → jobId`、`WaitAsync(jobId) → job`、`CancelAsync(jobId)`。行為照 [`scripts/render_spike.py`](../../../scripts/render_spike.py)：送出失敗不重送；沒等到終止狀態就離開（逾時、查狀態出錯、取消）一律先送 cancel（盡力而為）再丟出去 |
 | `RenderWorkflow` | `Rendering/RenderWorkflow.cs` | 讀 [`render/workflows/txt2img-sdxl.json`](../../../render/workflows/txt2img-sdxl.json)（csproj 連結進輸出目錄），複製後填正向詞（節點 6）、負向詞（節點 7）、seed（節點 3）；節點的 `class_type` 對不上就丟例外。負向詞＝定稿的負向詞＋固定的 `nsfw` 等詞（同 spike 腳本的 `NEGATIVE`，去重） |
-| `RenderQueue` | `Rendering/RenderQueue.cs` | 收件檢查（§5.1）、`Channel<RenderJob>`、排第幾、最近 10 張的平均耗時、每日計數 |
-| `RenderWorker` | `Rendering/RenderWorker.cs`，`BackgroundService` | 單一消費者（對應 Runpod Max Workers 1）：組 workflow → 送出 → 等 → 取圖 → 審圖與自評平行跑（審圖過了就先放出圖，自評繼續跑）→ 寫回 `RenderRecord` → audit。服務停止時取消手上的工作 |
+| `RenderService` | `Rendering/RenderService.cs` | **收件與建立工作的唯一入口**：輸入是中性的 `RenderRequest`（正向詞、負向詞、自評項目、seed、`safety`、定稿當時是否審過、來源 `turnIndex`），做 §5.1 裡跟 session 狀態無關的檢查（上一張還沒好、張數上限、預估等待）、必要時補審提示詞（§6）、建 `RenderRecord`、排進佇列。**不讀 `LastFinal`、不拿 session 鎖**：那些是呼叫端的事（§5.1），之後自主閉環的工具從一輪對話裡呼叫它時，那一輪已經拿著鎖（§12） |
+| `RenderQueue` | `Rendering/RenderQueue.cs` | `Channel<RenderJob>`、排第幾、最近 10 張的平均耗時、每日計數 |
+| `RenderWorker` | `Rendering/RenderWorker.cs`，`BackgroundService` | 單一消費者（對應 Runpod Max Workers 1）：組 workflow → 送出 → 等 → 取圖 → 審圖與自評平行跑（審圖過了就先放出圖，自評繼續跑）→ 收尾。**收尾集中在一個方法**（寫最終狀態、更新平均耗時、寫 audit），`done`／`failed`／`blocked` 都走它；自主閉環要在圖好了時觸發下一輪，就在這裡多一步（§12）。服務停止時取消手上的工作 |
 | `ImageReviewer` | `Safety/ImageReviewer.cs` | 看圖審查：nsfw、真實人物，回 JSON（`ResponseSchema`、`Temperature = 0`），寫法照 `SafetyClassifier`；圖片放在 user 訊息的 `ImageContent`（PNG bytes）。缺 `reason` 視為解析失敗 |
 | `SelfChecker` | `Rendering/SelfChecker.cs` | 自評：列出要檢查的項目（§4.2），請 Gemini 逐項回 `present`／`absent`／`unclear` 與一句理由 |
 | `RenderRecord` | `Rendering/RenderRecord.cs` | 一張圖的狀態、圖片 bytes、審圖與自評結果、耗時、`safety` |
@@ -126,6 +127,8 @@ body：`{"turnIndex": n, "safety": "on" | "off"}`，`safety` 可省略（預設 
 | 預估等待 > `MaxEstimatedWaitSeconds` | `503`「目前人多，稍後再試」 |
 
 預估等待＝（佇列裡排在前面的張數＋處理中的 1 張）× 最近 10 張的平均耗時（從送出 Runpod 到取回圖；還沒有資料時用 `DefaultImageSeconds`）。
+
+**誰檢查哪幾列**：前四列與「有一輪在跑」「還沒定稿／不是最新」由端點做——端點拿 session 鎖、讀 `LastFinal` 與 facet 狀態、組成 `RenderRequest`、放鎖，再交給 `RenderService`。後四列（上一張還沒好、兩種張數上限、預估等待）由 `RenderService` 做；「檢查上一張」到「建立紀錄」在 `RenderService` 自己的鎖裡一次做完，兩個請求同時到也只有一個過得去。
 
 通過後：需要補審就補審（§6），被擋則建一筆 `blocked` 的紀錄、不排隊；否則建一筆 `queued` 的紀錄排進佇列。兩種都回 `202 {"renderId": "..."}`，讓前端走同一條顯示路徑。被拒絕（`429`、`503`）寫一筆 `Render_Rejected` audit。
 
@@ -245,6 +248,7 @@ audit 寫失敗只記 log，不改變回應（同推薦的做法）。
   - 上一張還沒好 → 拒絕；session 張數到上限 → 拒絕；全站到上限 → 拒絕；台灣時間過午夜歸零。
   - 預估等待：沒有資料時用預設秒數，有資料時用最近 10 張的平均；超過門檻 → 拒絕。
   - 只有送去 Runpod 的才計數：補審被擋不算、送出後失敗算。
+- **`RenderService`**：不需要 `Session.Lock`、不讀 `LastFinal` 也能收件（直接給 `RenderRequest`）；同一個 session 兩個請求同時到，只有一個建立紀錄。
 - **審查組合**（`FakeChatCompletion`）：定稿審過／沒審過 × `on`／`off` 四種：
   - 沒審過＋`on` 會補審；補審被擋不呼叫 Runpod。
   - `off` 時審查分類器（文字與看圖）一次都沒被呼叫。
@@ -283,3 +287,19 @@ audit 寫失敗只記 log，不改變回應（同推薦的做法）。
 6. 審查開關關著（本機 `Safety:AllowDisable=true`）：圖上方標「審查已關閉」，audit 沒有審圖的耗時。
 7. 把 `PerSessionLimit` 暫時設 1：第二張回 `429`。
 8. 從 audit 讀出審圖、自評的實際耗時，記進可行性 §9。
+
+## 12. 往自主閉環的接點
+
+本案是可行性 §5.2 的 B；之後做 A（模型自己生圖、看、改、再生，可行性 §6.4）時，下面這張表說明哪些直接沿用、哪些要新增。
+
+| 本案的東西 | A 怎麼用 |
+| :--- | :--- |
+| `RunPodClient`、`RenderWorkflow`、`RenderQueue`、`RenderWorker` | 原樣沿用：送出、等、取圖、排隊、上限、預估等待 |
+| `RenderService` | A 的生圖工具在一輪對話裡直接呼叫它，送的是草稿而不是 `LastFinal`；那一輪已經拿著 session 鎖，所以它本來就不拿鎖、不讀 `LastFinal`（§4） |
+| `ImageReviewer`、`SelfChecker` | 原樣沿用。自評結果改成 JSON 文字回給模型；圖片不進 `ChatHistory`（可行性 §4） |
+| `RenderWorker` 的收尾方法 | A 在這裡多一步：圖好了就通知 Dispatcher 觸發下一輪 |
+| `RenderRecord`、`Session.Renders`、圖片端點、audit | 原樣沿用；A 可能要在紀錄上加 session 版本戳，回來時版本變了就標 `Stale`（可行性 §6.4） |
+| session 固定 seed、同一個 session 一次一張 | A 本來就需要 |
+| 前端的圖與自評清單 | 沿用顯示；更新來源從輪詢改成事件流 |
+
+A 要新增、跟本案無關的：生圖工具與「等生圖」的終止結果、伺服器觸發的新輪種類（`TurnKind.Observe`）、把「跑一輪」從 HTTP 請求抽出來（`AgenticOrchestrator`）、常駐的 session 事件流、每個要求的生圖預算、system prompt 的規則、依自評自動修正（要先決定是否量自評一致率，可行性 §9.2）。
