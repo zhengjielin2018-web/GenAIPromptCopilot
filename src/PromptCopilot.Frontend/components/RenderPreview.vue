@@ -10,8 +10,8 @@
       <span v-if="button.note" class="text-xs text-muted">{{ button.note }}</span>
       <span v-if="realistic" class="text-xs text-muted">預覽會是動漫風</span>
     </div>
-    <p v-if="slot?.error" class="mt-1.5 text-xs text-magenta">{{ slot.error }}</p>
-    <p v-else-if="slot?.expired" class="mt-1.5 text-xs text-muted">預覽已過期</p>
+    <p v-if="slot?.requestError" class="mt-1.5 text-xs text-magenta">{{ slot.requestError }}</p>
+    <p v-if="slot?.expired" class="mt-1.5 text-xs text-muted">預覽已過期</p>
     <template v-else-if="view">
       <p v-if="line" class="mt-1.5 text-xs" :class="view.status === 'failed' || view.status === 'blocked' ? 'text-magenta' : 'text-muted'">{{ line }}</p>
       <div v-if="showsImage(view.status)" class="mt-2">
@@ -29,7 +29,9 @@
           </li>
         </ul>
       </div>
+      <p v-if="slot?.error" class="mt-1.5 text-xs text-magenta">{{ slot.error }}</p>
     </template>
+    <p v-else-if="slot?.error" class="mt-1.5 text-xs text-magenta">{{ slot.error }}</p>
     <p v-else-if="slot?.requesting || slot?.renderId" class="mt-1.5 text-xs text-muted">排隊中</p>
   </section>
 </template>

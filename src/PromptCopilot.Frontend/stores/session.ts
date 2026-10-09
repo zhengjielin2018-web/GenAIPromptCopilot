@@ -7,15 +7,13 @@ import { composeDraft, appendChip, chipKey, type Chip } from '../lib/composer'
 import { adoptPlaceholder } from '../lib/adopt'
 import { pendingConfirmTurn, confirmDisplay } from '../lib/confirm'
 import { messageBody } from '../lib/safety'
-import { isFinished, toastText } from '../lib/render'
+import { toastText } from '../lib/render'
+import { applyView, beginRequest, gaveUp, isInFlight, requestAccepted, requestFailed, resumed, type RenderSlot } from '../lib/renderSlot'
 import { pollRender } from '../lib/renderPoll'
-import { AGENT_EVENT_TYPES, type AdoptRequest, type AgentEvent, type FacetCatalog, type RecommendedSet, type RenderView, type RetrievalMode } from '../types/api'
+import { AGENT_EVENT_TYPES, type AdoptRequest, type AgentEvent, type FacetCatalog, type RecommendedSet, type RetrievalMode } from '../types/api'
 import type { TurnBody } from '../composables/useApi'
 
 type SaveStatus = { status: 'idle' | 'saving' | 'saved' | 'error'; error?: string }
-/** 一張定稿卡最新一次的預覽（預覽設計 §8）。fresh：這個頁面上按出來的（重新整理後接回的不算）——
- *  只有 fresh 的、或看過它還沒結束的，結束時才跳提示；重新整理後接回一張早就好了的不該跳。 */
-type RenderSlot = { renderId: string | null; view: RenderView | null; error: string | null; expired: boolean; requesting: boolean; fresh: boolean }
 
 const BACKEND_DOWN = '連不到後端。請確認 API 在跑，再按「重試」。'
 const EXPIRED_KEPT_TEXT = '上次的對話已過期，已開新對話。原文留在輸入框，可以直接再送。'
@@ -85,8 +83,7 @@ export const useSessionStore = defineStore('session', () => {
   const pollers = new Map<number, { stop(): void }>()
 
   /** 這個 session 有一張預覽還沒結束（不管在哪張卡上）：所有按鈕停用（預覽設計 §8）。 */
-  const renderInFlight = computed(() => Object.values(renders.value).some(r =>
-    r.requesting || (!!r.renderId && !r.expired && !r.error && (!r.view || !isFinished(r.view.status)))))
+  const renderInFlight = computed(() => isInFlight(renders.value))
 
   /** opts.draft 只在送出當下帶原文（輪次中重載時放回輸入框），其餘時候存空字串。 */
   function persist(opts: { draft?: string } = {}) {
@@ -121,7 +118,7 @@ export const useSessionStore = defineStore('session', () => {
           for (const t of saved.savedTurns ?? []) saveState.value[t] = { status: 'saved' }
           // 重新整理前還在生的預覽接回來；已經好的也拿一次狀態，卡上才畫得出圖
           for (const [t, renderId] of Object.entries(saved.renders ?? {})) {
-            renders.value = { ...renders.value, [Number(t)]: { renderId, view: null, error: null, expired: false, requesting: false, fresh: false } }
+            renders.value = { ...renders.value, [Number(t)]: resumed(renderId) }
             startPolling(Number(t))
           }
           restoreDraft(saved.draft)
@@ -253,10 +250,8 @@ export const useSessionStore = defineStore('session', () => {
 
   function stopAllPollers() { for (const p of pollers.values()) p.stop(); pollers.clear() }
 
-  function patchRender(turnIndex: number, p: Partial<RenderSlot>) {
-    const cur = renders.value[turnIndex]
-    if (cur) renders.value = { ...renders.value, [turnIndex]: { ...cur, ...p } }
-  }
+  /** 狀態怎麼變在 lib/renderSlot；這裡只換掉那一格。 */
+  function setRender(turnIndex: number, slot: RenderSlot) { renders.value = { ...renders.value, [turnIndex]: slot } }
 
   function startPolling(turnIndex: number) {
     pollers.get(turnIndex)?.stop()
@@ -266,13 +261,12 @@ export const useSessionStore = defineStore('session', () => {
     pollers.set(turnIndex, pollRender({
       get: () => api.getRender(id, renderId),
       onView: v => {
-        const slot = renders.value[turnIndex]!
-        const wasRunning = slot.fresh || (!!slot.view && !isFinished(slot.view.status))
-        patchRender(turnIndex, isFinished(v.status) ? { view: v, fresh: false } : { view: v })
-        if (isFinished(v.status) && wasRunning && !visibleCards.has(turnIndex)) renderToast.value = { turnIndex, text: toastText(v.status) }
+        const { slot, toast } = applyView(renders.value[turnIndex]!, v, visibleCards.has(turnIndex))
+        setRender(turnIndex, slot)
+        if (toast) renderToast.value = { turnIndex, text: toastText(v.status) }
       },
-      onGone: () => patchRender(turnIndex, { expired: true }),
-      onGiveUp: () => patchRender(turnIndex, { error: '查不到預覽的狀態，重新整理頁面再看看' }),
+      onGone: () => setRender(turnIndex, { ...renders.value[turnIndex]!, expired: true }),
+      onGiveUp: () => setRender(turnIndex, gaveUp(renders.value[turnIndex]!, '查不到預覽的狀態，重新整理頁面再看看')),
       isCurrent: () => state.value.sessionId === id && renders.value[turnIndex]?.renderId === renderId,
       setTimer: (fn, ms) => setTimeout(fn, ms),
     }))
@@ -282,7 +276,8 @@ export const useSessionStore = defineStore('session', () => {
   async function requestRender(turnIndex: number) {
     const id = state.value.sessionId
     if (!id || !renderEnabled.value || busy.value || renderInFlight.value || turnIndex !== latestFinalizedTurn.value) return
-    renders.value = { ...renders.value, [turnIndex]: { renderId: null, view: null, error: null, expired: false, requesting: true, fresh: true } }
+    // 拿到 202 之前，卡上原本那張照樣留著；被拒絕時也不清掉（預覽設計 §8：訊息顯示在按鈕下方）
+    setRender(turnIndex, beginRequest(renders.value[turnIndex]))
     try {
       const r = await api.requestRender(id, messageBody({ turnIndex }, { canDisable: safetyCanDisable.value, off: safetyOff.value }))
       // 等待期間換了 session：舊對話的回應不能接到新對話
@@ -291,15 +286,15 @@ export const useSessionStore = defineStore('session', () => {
         // 404 有兩種：生圖被關掉了（藏按鈕），或 session 過期（跟換一批一樣開新對話、提示）
         if (r.status === 404 && r.error !== '生圖沒有開啟') { await newSession(); notice.value = '上次的對話已過期，已開新對話。'; return }
         if (r.status === 404) renderEnabled.value = false
-        patchRender(turnIndex, { requesting: false, error: r.error })
+        setRender(turnIndex, requestFailed(renders.value[turnIndex]!, r.error))
         return
       }
-      patchRender(turnIndex, { requesting: false, renderId: r.renderId })
+      setRender(turnIndex, requestAccepted(r.renderId))
       persist()
       startPolling(turnIndex)
     } catch {
       if (state.value.sessionId !== id) return
-      patchRender(turnIndex, { requesting: false, error: BACKEND_DOWN })
+      setRender(turnIndex, requestFailed(renders.value[turnIndex]!, BACKEND_DOWN))
     }
   }
 
