@@ -261,7 +261,7 @@ agent 化是在這套控管**裡面**，把「做 → 看 → 改」這個圈加
 | 託管的 SDXL API | ✅ | 不用 | 按張計費 | 中；多一把 API key |
 | Gemini／Imagen 生圖 | ✗ 不吃 tag 語法，驗證的是替代品 | 不用 | 按張計費 | 最輕；沿用現有 key |
 
-建議：託管的 SDXL API 為主，本機 ComfyUI 為選配（`compose` profile）。
+建議：託管的 SDXL API 為主，本機 ComfyUI 為選配（`compose` profile）。線上 ComfyUI API（Comfy API v2）的可行性評估見 [ComfyUI 整合可行性](ComfyUI整合可行性.md)：兩個選項可以共用同一個 client。
 
 **資料**：預覽圖是暫存，不寫進知識庫、不進種子，session 過期一起清掉；跟 [資料來源](資料來源.md)「上游圖片一律不轉存」是兩回事，但 README 要寫清楚。
 

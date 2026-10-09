@@ -33,6 +33,10 @@ class Settings(BaseModel):
     civitai_min_interval_s: float = 1.0
     gemini_min_interval_s: float = 0.5
 
+    # 生圖 spike（render_spike.py）：RunPod Serverless 的 API key 與 endpoint id
+    runpod_api_key: str = Field(default="", repr=False)
+    runpod_endpoint_id: str = ""
+
     def __init__(self, _env_file: str | Path | None = REPO_ROOT / ".env", **overrides):
         field_names = type(self).model_fields
         file_values = (
