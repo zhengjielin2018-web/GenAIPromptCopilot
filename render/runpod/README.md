@@ -29,12 +29,18 @@
    | 環境變數 | 不設 | 沒設 S3 時圖片以 base64 回傳，spike 腳本只收這種 |
 
 4. **等建置完成**：endpoint 的 Builds 分頁出現 Completed（要下載約 7 GB 的模型，會花一些時間）。
-5. **拿金鑰與 endpoint id**：Settings → API Keys 建一把 key；endpoint 的 Overview 頁有 endpoint id。寫進 repo 根目錄的 `.env`（不進版控）：
+5. **拿金鑰與 endpoint id**：Settings → API Keys 建一把 key（可以選權限的話，給能呼叫 serverless endpoint 的最小權限）；endpoint 的 Overview 頁有 endpoint id。**金鑰絕對不要 commit、不要貼進 issue、PR 或聊天**，這個 repo 是公開的。放在跑 spike 的那台機器上，二選一：
 
-   ```dotenv
-   RUNPOD_API_KEY=...
-   RUNPOD_ENDPOINT_ID=...
-   ```
+   - **在自己電腦上跑**：在自己電腦上 clone 下來的資料夾根目錄建一個 `.env`（跟 `.env.example` 同一層）。`.gitignore` 第一條就是 `.env`，git 不會追蹤它，`git status` 也看不到它；不放心可以跑 `git check-ignore -v .env` 確認。
+
+     ```dotenv
+     RUNPOD_API_KEY=...
+     RUNPOD_ENDPOINT_ID=...
+     ```
+
+   - **在 Claude Code 雲端 session 裡跑**：不要建檔案，改在雲端環境的設定裡加（session 標題列的環境選單 → Edit）：`RUNPOD_API_KEY` 放在 Network secrets（舊版 app 叫 API credentials；沒有這一區就放環境變數），`RUNPOD_ENDPOINT_ID` 放環境變數。新開的 session 才讀得到。`render_spike.py` 兩邊都讀，同一個名字兩邊都有時以環境變數為準。
+
+   不用了就到 Runpod 把這把 key 刪掉。
 
 ## 跑 spike
 
