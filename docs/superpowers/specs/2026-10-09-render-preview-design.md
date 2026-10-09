@@ -168,7 +168,7 @@ body：`{"turnIndex": n, "safety": "on" | "off"}`，`safety` 可省略（預設 
 | 定稿當時 | 這次 `safety` | 生圖前 | 生圖後 |
 | :--- | :--- | :--- | :--- |
 | 審過 | `on` | 不再審 | 看圖審查；沒過就 `blocked` |
-| 沒審過 | `on` | **補審正向詞**：denylist＋`ClassifyOutputAsync`，跟 `OutputSafetyFilter` 同一套；沒過就 `blocked`，不送 Runpod | 同上 |
+| 沒審過 | `on` | **補審正向詞**：`SafetyClassifier.ClassifyOutputAsync`，跟 `OutputSafetyFilter` 同一套（輸出側只用分類器，denylist 只在輸入端）；沒過或分類器出錯就 `blocked`，不送 Runpod | 同上 |
 | 任一 | `off` | 不審 | **不跑看圖審查**；圖直接給，前端標「審查已關閉（測試用）」 |
 
 - 看圖審查判 nsfw 或真實人物：圖丟掉不存，`message` 是「預覽圖被判定為不當內容，沒有顯示」，判定理由只進 audit（同 `SafetyGuard` 的 `BlockDetail` 原則）。
