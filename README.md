@@ -72,7 +72,7 @@ docker compose up
 不想灌種子、要自己跑管線：`.env` 加一行 `SEED_URL=`（空字串），再照 [scripts/README.md](scripts/README.md)。
 
 - 沒填 `GEMINI_API_KEY`：整套照樣起來，但每一輪對話都會失敗（`docker compose logs api` 開頭有一行警告）。填好後 `docker compose up -d api` 重建 api 容器即可。
-- 生成預覽圖（選配）：定稿卡上的「生成預覽」用 RunPod Serverless＋ComfyUI 生一張動漫風的圖，附看圖審查與自評。先照 [render/runpod/README.md](render/runpod/README.md) 部署 endpoint，再在 `.env` 填 `RUNPOD_API_KEY`、`RUNPOD_ENDPOINT_ID`，`docker compose up -d --build api`；沒填就不顯示按鈕。每張約 US$0.0034（RunPod 預付制，餘額就是花費上限）；每個對話最多 10 張、全站每天 200 張（`Render` 設定節可調）。預覽圖只存在後端記憶體的對話裡，跟對話一起過期，不轉存、不進知識庫。設計見 [定稿後生成預覽](docs/superpowers/specs/2026-10-09-render-preview-design.md)。
+- 生成預覽圖（選配）：定稿卡上的「生成預覽」用 RunPod Serverless＋ComfyUI 生一張動漫風的圖，附看圖審查與「使用者想法符合度」評分。先照 [render/runpod/README.md](render/runpod/README.md) 部署 endpoint，再在 `.env` 填 `RUNPOD_API_KEY`、`RUNPOD_ENDPOINT_ID`，`docker compose up -d --build api`；沒填就不顯示按鈕。每張約 US$0.0034（RunPod 預付制，餘額就是花費上限）；每個對話最多 10 張、全站每天 200 張（`Render` 設定節可調）。預覽圖只存在後端記憶體的對話裡，跟對話一起過期，不轉存、不進知識庫。設計見 [定稿後生成預覽](docs/superpowers/specs/2026-10-09-render-preview-design.md)。
 - 重置知識庫：`docker compose down -v` 刪掉資料庫 volume，下次 `up` 重新建表並灌種子。
 - 看一輪發生什麼事：`docker compose logs -f api`，每輪結束有一行 `Turn <session>#<turn> <事件> …`，每次呼叫 Gemini 有一行 `Gemini <狀態碼> …`。完整紀錄在資料庫的 `audit_logs`（查法見 [manual-tests/README.md](manual-tests/README.md) 第 5 節）。
 
