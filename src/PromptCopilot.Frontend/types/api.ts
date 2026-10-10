@@ -126,10 +126,15 @@ export const TERMINAL_TOOLS: ReadonlySet<string> = new Set(['AskUser', 'Discuss'
 
 /** 定稿後生成預覽（2026-10-09，預覽設計 §5.2） */
 export type RenderStatus = 'queued' | 'generating' | 'reviewing' | 'self_checking' | 'done' | 'failed' | 'blocked'
-export type SelfCheckVerdictKind = 'present' | 'absent' | 'unclear'
-export interface SelfCheckItemView { facetId: string; label: string; tag: string; verdict: SelfCheckVerdictKind; reason: string }
+export type SelfCheckVerdictKind = 'met' | 'unmet' | 'unclear'
+export type SelfCheckIssue = 'none' | 'prompt_missing' | 'not_rendered' | 'unclear'
+/** 一條使用者要求的判圖結果（符合度設計 §7）。tags 與 negativeTags 都空 = prompt 沒寫。 */
+export interface SelfCheckItemView {
+  id: string; text: string; source: 'user' | 'delegated'; tags: string[]; negativeTags: string[]
+  verdict: SelfCheckVerdictKind; issue: SelfCheckIssue; reason: string
+}
 export interface RenderView {
   renderId: string; turnIndex: number; status: RenderStatus; position: number | null; safety: 'on' | 'off'; message: string | null
-  selfCheck: { status: 'pending' | 'ok' | 'unavailable'; items: SelfCheckItemView[] }
-  timings: { queueMs: number | null; delayMs: number | null; executionMs: number | null; reviewMs: number | null; selfCheckMs: number | null }
+  selfCheck: { status: 'pending' | 'ok' | 'unavailable'; score: number | null; summary: string | null; items: SelfCheckItemView[] }
+  timings: { queueMs: number | null; delayMs: number | null; executionMs: number | null; reviewMs: number | null; requirementsMs: number | null; selfCheckMs: number | null }
 }

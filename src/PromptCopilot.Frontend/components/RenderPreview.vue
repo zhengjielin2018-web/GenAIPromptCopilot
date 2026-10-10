@@ -17,17 +17,20 @@
       <div v-if="showsImage(view.status)" class="mt-2">
         <p v-if="view.safety === 'off'" class="mb-1 text-[11px] font-medium text-magenta">審查已關閉（測試用）</p>
         <img :src="api.renderImageUrl(s.state.sessionId!, view.renderId)" alt="這份定稿的預覽圖" class="max-h-[32rem] rounded-md border border-rule">
-        <p v-if="view.status === 'self_checking'" class="mt-2 text-xs text-muted">自評中…</p>
-        <p v-else-if="view.selfCheck.status === 'unavailable'" class="mt-2 text-xs text-muted">這張的自評無法進行</p>
-        <p v-else-if="view.selfCheck.items.length === 0" class="mt-2 text-xs text-muted">沒有可檢查的項目</p>
-        <ul v-else class="mt-2 flex flex-col gap-1 text-xs">
-          <li v-for="i in view.selfCheck.items" :key="i.facetId" class="flex items-baseline gap-2">
-            <span class="w-3 shrink-0 text-center font-bold" :class="i.verdict === 'present' ? 'text-cyan' : i.verdict === 'absent' ? 'text-magenta' : 'text-muted'">{{ verdictMark(i.verdict) }}</span>
-            <span class="shrink-0 font-medium">{{ i.label }}</span>
-            <span class="shrink-0 font-mono text-[11px] text-muted">{{ i.tag }}</span>
-            <span class="text-ink/80">{{ i.reason }}</span>
-          </li>
-        </ul>
+        <p v-if="view.status === 'self_checking'" class="mt-2 text-xs text-muted">評分中…</p>
+        <p v-else-if="view.selfCheck.status === 'unavailable'" class="mt-2 text-xs text-muted">這張的評分無法進行</p>
+        <div v-else class="mt-2" data-section="self-check">
+          <p v-if="view.selfCheck.score !== null" class="text-base font-bold">符合度 {{ view.selfCheck.score }}</p>
+          <p class="text-xs text-ink/80">{{ view.selfCheck.summary }}</p>
+          <template v-if="groups.user.length">
+            <h5 class="mt-2 text-xs font-bold">你的要求</h5>
+            <SelfCheckList :items="groups.user" class="mt-1" />
+          </template>
+          <details v-if="groups.delegated.length" class="mt-2">
+            <summary class="cursor-pointer text-xs text-muted">模型幫你挑的（不計分，{{ groups.delegated.length }} 條）</summary>
+            <SelfCheckList :items="groups.delegated" class="mt-1" />
+          </details>
+        </div>
       </div>
       <p v-if="slot?.error" class="mt-1.5 text-xs text-magenta">{{ slot.error }}</p>
     </template>
@@ -38,7 +41,7 @@
 
 <script setup lang="ts">
 import type { FinalizedData } from '../types/api'
-import { isRealistic, renderButton, showsImage, statusText, verdictMark } from '../lib/render'
+import { isRealistic, renderButton, showsImage, splitItems, statusText } from '../lib/render'
 /** 定稿卡的預覽區（預覽設計 §8）：按鈕只在最新的卡；舊卡只顯示它自己生過的那張。 */
 const props = defineProps<{ data: FinalizedData; turnIndex: number }>()
 const s = useSessionStore()
@@ -46,6 +49,7 @@ const api = useApi()
 const slot = computed(() => s.renders[props.turnIndex] ?? null)
 const view = computed(() => slot.value?.view ?? null)
 const line = computed(() => (view.value ? statusText(view.value) : ''))
+const groups = computed(() => splitItems(view.value?.selfCheck.items ?? []))
 const button = computed(() => renderButton({ enabled: s.renderEnabled, isLatest: s.latestFinalizedTurn === props.turnIndex, busy: s.busy, inFlight: s.renderInFlight }))
 const realistic = computed(() => isRealistic(s.state.facetTags, props.data.positive))
 </script>

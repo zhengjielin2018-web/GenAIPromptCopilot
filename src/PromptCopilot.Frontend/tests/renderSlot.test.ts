@@ -4,7 +4,7 @@ import type { RenderView } from '../types/api'
 
 const view = (status: RenderView['status']): RenderView => ({
   renderId: 'r1', turnIndex: 3, status, position: null, safety: 'on', message: null,
-  selfCheck: { status: 'pending', items: [] }, timings: { queueMs: null, delayMs: null, executionMs: null, reviewMs: null, selfCheckMs: null },
+  selfCheck: { status: 'pending', score: null, summary: null, items: [] }, timings: { queueMs: null, delayMs: null, executionMs: null, reviewMs: null, requirementsMs: null, selfCheckMs: null },
 })
 const done = () => applyView(requestAccepted('r1'), view('done'), true).slot
 
