@@ -207,8 +207,8 @@ pipeline（出佇列後）
 }
 ```
 
-- `score`：整數 0–100 或 `null`；`summary`：`status` 是 `ok` 時一定有，其他狀態是 `null`。
-- `items` 照清單順序（大致就是對話順序），含 `delegated`；跟現在一樣，狀態到 `done` 才回。
+- `score`：整數 0–100 或 `null`；`summary`：狀態到 `done` 而且 `status` 是 `ok` 時一定有，否則是 `null`。
+- `items` 照清單順序（大致就是對話順序），含 `delegated`；跟現在一樣，狀態到 `done` 才回。`score`、`summary` 也一樣等 `done`（審查開著時評分可能比審圖先好）。
 - `timings` 多 `requirementsMs`（文字步耗時）；`selfCheckMs` 改成只算看圖步。
 - 狀態名稱 `self_checking`、欄位名稱 `selfCheck` 不變。
 
