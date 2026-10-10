@@ -68,6 +68,11 @@ public sealed class Session
     /// <summary>生成預覽補審（預覽設計 §6）通過的正向詞：同一份沒審過的定稿再生時不用重審。只記通過的；換了定稿正向詞就對不上，自然重審。</summary>
     public string? PreReviewedPositive { get; set; }
 
+    private volatile RequirementSnapshot? _requirements;
+    /// <summary>最新一份要求清單（符合度設計 §4.3）：鍵相同就重用，分數才能跨圖比較。由背景的 pipeline 寫、端點拿著鎖時讀，所以用 volatile。
+    /// 不進 SessionSnapshot：鍵照使用者的話算，回滾後鍵對不上就會重新整理，不會拿到錯的清單。</summary>
+    public RequirementSnapshot? Requirements { get => _requirements; set => _requirements = value; }
+
     public Session(string id, bool retrievalEnabled = true) { Id = id; RetrievalEnabled = retrievalEnabled; }
 
     public void ApplyProfile(string profile, FacetCatalog catalog)

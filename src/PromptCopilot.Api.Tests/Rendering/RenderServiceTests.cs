@@ -23,7 +23,7 @@ public class RenderServiceTests
     }
 
     private static RenderRequest Req(string session = "s1", bool safetyOn = true, bool reviewed = true) =>
-        new(session, 3, "1girl", "lowres", 42, Array.Empty<SelfCheckItem>(), safetyOn, reviewed);
+        RenderRecordTests.Request(session, safetyOn, reviewed);
 
     private static RenderRecord Accepted(RenderAdmission a) => Assert.IsType<RenderAdmission.Accepted>(a).Record;
     private static RenderAdmission.Rejected Rejected(RenderAdmission a) => Assert.IsType<RenderAdmission.Rejected>(a);
@@ -37,6 +37,7 @@ public class RenderServiceTests
         Assert.Same(r, s.Renders[r.Id]);
         Assert.Equal((RenderStatus.Queued, (int?)1, 1), (r.Status, _queue.PositionOf(r), _queue.DailyCount));
         Assert.Empty(_chat.Calls);
+        Assert.Same(s, r.Owner);   // 評分要把清單快照寫回這個 session
     }
 
     [Fact]

@@ -27,15 +27,18 @@ public static class RenderEndpoints
             if (safetyOn is false && !safety.Value.AllowDisable)
                 return Results.Json(new ErrorBody("後端沒開放關閉審查：.env 設 SAFETY_ALLOW_DISABLE=true 後重建 api（本機開發設 Safety:AllowDisable）"),
                     statusCode: StatusCodes.Status403Forbidden);
-            // 讀定稿與 facet 狀態：那一輪還在跑（而且隨時可能回滾）時讀到的是半途的狀態（同存進共享庫）
+            // 讀定稿、facet 狀態與對話：那一輪還在跑（而且隨時可能回滾）時讀到的是半途的狀態（同存進共享庫）
             if (!await s.Lock.WaitAsync(0)) return Results.Conflict(new ErrorBody("這個 session 還有一輪在跑"));
             RenderRequest request;
             try
             {
                 if (s.Status != SessionStatus.Finalized || s.LastFinal is null) return Results.Conflict(new ErrorBody("尚未定稿"));
                 if (s.LastFinal.TurnIndex != req.TurnIndex) return Results.Conflict(new ErrorBody("只有最新一張定稿卡可以生成預覽"));
+                // 對話整理在鎖裡組：背景的 pipeline 不碰 ChatHistory。使用者沒再開口（鍵相同）就沿用上一份清單（符合度設計 §4.3）
+                var intent = IntentTranscript.Build(s, catalog);
+                var reused = s.Requirements is { } snap && snap.Key == intent.Key ? snap.Items : null;
                 request = new RenderRequest(s.Id, req.TurnIndex, s.LastFinal.Positive, s.LastFinal.Negative, s.RenderSeed,
-                    SelfCheckItems.From(s, catalog), safetyOn.Value, s.LastFinal.Reviewed);
+                    intent, safetyOn.Value, s.LastFinal.Reviewed, reused);
             }
             finally { s.Lock.Release(); }
 

@@ -6,6 +6,7 @@ using PromptCopilot.Api.Configuration;
 using PromptCopilot.Api.Llm;
 using PromptCopilot.Api.Rendering;
 using PromptCopilot.Api.Safety;
+using PromptCopilot.Api.Sessions;
 using PromptCopilot.Api.Tests.Fakes;
 
 namespace PromptCopilot.Api.Tests.Rendering;
@@ -25,8 +26,11 @@ public class RenderPipelineTests
         public Task<string> SubmitAsync(JsonObject workflow, CancellationToken ct) =>
             SubmitError is { } e ? Task.FromException<string>(e) : Task.FromResult("j1");
 
+        public TaskCompletionSource<bool>? WaitGate { get; set; }
+
         public async Task<RunPodJob> WaitAsync(string jobId, TimeSpan timeout, CancellationToken ct)
         {
+            if (WaitGate is { } g) await g.Task.WaitAsync(ct);
             if (WaitFor > TimeSpan.Zero) await Task.Delay(WaitFor, ct);
             return Result();
         }
@@ -42,36 +46,63 @@ public class RenderPipelineTests
 
     public sealed class GatedChecker : ISelfChecker
     {
-        public TaskCompletionSource<IReadOnlyList<SelfCheckVerdict>> Gate { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource<IReadOnlyList<RequirementVerdict>> Gate { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public GeminiImage? LastImage;
+        public IReadOnlyList<RequirementMatch>? LastItems;
         public CancellationToken LastToken;
-        public Task<IReadOnlyList<SelfCheckVerdict>> CheckAsync(GeminiImage image, IReadOnlyList<SelfCheckItem> items, CancellationToken ct)
-        { LastImage = image; LastToken = ct; return Gate.Task.WaitAsync(ct); }
+        public Task<IReadOnlyList<RequirementVerdict>> CheckAsync(GeminiImage image, IReadOnlyList<RequirementMatch> items, CancellationToken ct)
+        { LastImage = image; LastItems = items; LastToken = ct; return Gate.Task.WaitAsync(ct); }
+    }
+
+    /// <summary>文字步。預設立刻回一條（Hair）；Open = false 時等 Gate。端點測試也用它。</summary>
+    public sealed class FakeExtractor : IRequirementExtractor
+    {
+        public static readonly RequirementMatch Hair = new("r1", "銀色長髮", RequirementSources.User, new[] { "silver hair" }, Array.Empty<string>());
+        public TaskCompletionSource<IReadOnlyList<RequirementMatch>> Gate { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public bool Open { get; set; } = true;
+        public int ExtractCalls, MatchCalls;
+        public string? LastTranscript;
+        public IReadOnlyList<Requirement>? LastFixed;
+        public CancellationToken LastToken;
+
+        public Task<IReadOnlyList<RequirementMatch>> ExtractAsync(string transcript, string positive, string negative, CancellationToken ct)
+        {
+            Interlocked.Increment(ref ExtractCalls); LastTranscript = transcript; LastToken = ct;
+            return Open ? Task.FromResult<IReadOnlyList<RequirementMatch>>(new[] { Hair }) : Gate.Task.WaitAsync(ct);
+        }
+
+        public Task<IReadOnlyList<RequirementMatch>> MatchAsync(IReadOnlyList<Requirement> fixedList, string positive, string negative, CancellationToken ct)
+        {
+            Interlocked.Increment(ref MatchCalls); LastFixed = fixedList; LastToken = ct;
+            return Open ? Task.FromResult<IReadOnlyList<RequirementMatch>>(new[] { Hair }) : Gate.Task.WaitAsync(ct);
+        }
     }
 
     private static readonly ImageVerdict Clean = new(false, false, null, "風景");
-    private static readonly SelfCheckVerdict Hair = new("appearance.hair", "髮型", "silver hair", "present", "銀色長髮");
+    private static readonly RequirementVerdict Hair = new("r1", "銀色長髮", RequirementSources.User, new[] { "silver hair" }, Array.Empty<string>(), "met", "none", "銀色長髮");
 
     private readonly FakeRunPod _runpod = new();
     private readonly GatedReviewer _reviewer = new();
+    private readonly FakeExtractor _extractor = new();
     private readonly GatedChecker _checker = new();
     private readonly RecordingAudit _audit = new();
     private readonly RenderQueue _queue = new(TimeProvider.System);
+    private readonly Session _owner = new("s1");
 
     private RenderPipeline Pipeline(RenderOptions? o = null) => new(_runpod, RenderWorkflow.Load(Path.Combine(AppContext.BaseDirectory, "Rendering", RenderWorkflow.FileName)),
-        _reviewer, _checker, _queue, _audit, Options.Create(o ?? new RenderOptions()), NullLogger<RenderPipeline>.Instance, TimeProvider.System);
+        _reviewer, _extractor, _checker, _queue, _audit, Options.Create(o ?? new RenderOptions()), NullLogger<RenderPipeline>.Instance, TimeProvider.System);
 
     /// <summary>從佇列拿出來，跟背景服務一樣。</summary>
-    private async Task<RenderRecord> Dequeued(bool safetyOn = true)
+    private async Task<RenderRecord> Dequeued(bool safetyOn = true, IReadOnlyList<Requirement>? reused = null)
     {
         var day = _queue.TakeDaily();
-        var r = new RenderRecord("r1", new RenderRequest("s1", 3, "1girl", "lowres", 42, new[] { new SelfCheckItem("appearance.hair", "髮型", "silver hair") }, safetyOn, true), day);
+        var r = new RenderRecord("r1", RenderRecordTests.Request(safetyOn: safetyOn) with { ReusedRequirements = reused }, day, _owner);
         _queue.Enqueue(r);
         return await _queue.DequeueAsync(default);
     }
 
     private static RenderRecord Plain(string id, string session, DateOnly day) =>
-        new(id, new RenderRequest(session, 1, "x", "", 1, Array.Empty<SelfCheckItem>(), true, true), day);
+        new(id, RenderRecordTests.Request(session: session), day);
 
     private static async Task Eventually(Func<bool> cond)
     {
@@ -94,7 +125,9 @@ public class RenderPipelineTests
         Assert.Equal((RenderStatus.Done, true, (int?)120, (int?)4600), (r.Status, r.Submitted, r.DelayMs, r.ExecutionMs));
         var e = Assert.Single(_audit.Entries);
         Assert.Equal(("Render_Completed", "s1", (int?)3), (e.EventType, e.SessionId, e.TurnIndex));
-        Assert.Contains("\"present\":1", e.PayloadJson);
+        Assert.Contains("\"score\":100", e.PayloadJson);
+        Assert.Contains("\"listKey\":\"k1\"", e.PayloadJson);
+        Assert.Contains("\"requirementsMs\":", e.PayloadJson);
         Assert.Contains("\"jobId\":\"j1\"", e.PayloadJson);
     }
 
@@ -314,5 +347,114 @@ public class RenderPipelineTests
         await worker.StopAsync(default);
         Assert.Equal((RenderStatus.Failed, RenderStatus.Failed), (a.Status, b.Status));
         Assert.Equal(2, _audit.Entries.Count(e => e.EventType == "Render_Failed"));
+    }
+
+    /// <summary>文字步不需要圖：RunPod 還沒回就開始跑（符合度設計 §6）。</summary>
+    [Fact]
+    public async Task Requirements_start_before_runpod_returns()
+    {
+        _runpod.WaitGate = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        _reviewer.Gate.SetResult(Clean);
+        _checker.Gate.SetResult(new[] { Hair });
+        var r = await Dequeued();
+        var run = Pipeline().ProcessAsync(r, default);
+        await Eventually(() => _extractor.ExtractCalls == 1);
+        Assert.Equal(RenderStatus.Generating, r.Status);
+        Assert.Contains("使用者：銀髮", _extractor.LastTranscript);
+        _runpod.WaitGate.SetResult(true);
+        await run;
+        Assert.Equal(RenderStatus.Done, r.Status);
+        Assert.Equal(new[] { FakeExtractor.Hair }, _checker.LastItems);
+    }
+
+    [Fact]
+    public async Task Fresh_list_is_written_back_and_reused_list_is_not()
+    {
+        _reviewer.Gate.SetResult(Clean);
+        _checker.Gate.SetResult(new[] { Hair });
+        await Pipeline().ProcessAsync(await Dequeued(), default);
+        var snap = _owner.Requirements!;
+        Assert.Equal("k1", snap.Key);
+        Assert.Equal(new[] { new Requirement("r1", "銀色長髮", RequirementSources.User) }, snap.Items);
+
+        _owner.Requirements = new RequirementSnapshot("k1", new[] { new Requirement("r1", "舊的清單", RequirementSources.User) });
+        var fixedList = _owner.Requirements.Items;
+        var r = await Dequeued(reused: fixedList);
+        await Pipeline().ProcessAsync(r, default);
+        Assert.Equal((1, 1), (_extractor.ExtractCalls, _extractor.MatchCalls));
+        Assert.Same(fixedList, _extractor.LastFixed);
+        Assert.Equal("舊的清單", _owner.Requirements.Items[0].Text);   // 重用時不寫回
+        Assert.Contains("\"listReused\":true", _audit.Entries.Last().PayloadJson);
+    }
+
+    /// <summary>Review Focus 3、4：文字步出錯（審查關著時被拒收、重用時漏答）：圖照給，評分 unavailable，看圖步不呼叫。</summary>
+    [Fact]
+    public async Task Requirements_failure_still_shows_the_image()
+    {
+        _extractor.Open = false;
+        _extractor.Gate.SetException(new UpstreamBlockedException("PROHIBITED_CONTENT"));
+        var r = await Dequeued(safetyOn: false);
+        await Pipeline().ProcessAsync(r, default);
+        Assert.Equal((RenderStatus.Done, SelfCheckStatus.Unavailable), (r.Status, r.SelfCheckState));
+        Assert.Equal(Png, r.Image);
+        Assert.Null(_checker.LastItems);
+        Assert.Null(_owner.Requirements);
+        Assert.Contains("\"status\":\"unavailable\"", Assert.Single(_audit.Entries).PayloadJson);
+    }
+
+    /// <summary>Review Focus 5：圖到了清單還沒好，看圖步等它；看圖步的時間上限從看圖步開始算。
+    /// 清單 1.2 秒才好、看圖步再 1.2 秒：從圖到算是 2.4 秒，超過 2 秒上限；從看圖步開始算才不會逾時。</summary>
+    [Fact]
+    public async Task Self_check_waits_for_slow_requirements_and_its_timeout_starts_late()
+    {
+        _extractor.Open = false;
+        _reviewer.Gate.SetResult(Clean);
+        var r = await Dequeued();
+        var run = Pipeline(new RenderOptions { GeminiTimeoutSeconds = 2 }).ProcessAsync(r, default);
+        await Eventually(() => r.Status == RenderStatus.SelfChecking);
+        await Task.Delay(1200);
+        Assert.Null(_checker.LastItems);                           // 看圖步還沒開始
+        _extractor.Gate.SetResult(new[] { FakeExtractor.Hair });
+        await Eventually(() => _checker.LastItems is not null);
+        await Task.Delay(1200);
+        _checker.Gate.SetResult(new[] { Hair });
+        await run.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal((RenderStatus.Done, SelfCheckStatus.Ok), (r.Status, r.SelfCheckState));
+    }
+
+    [Fact]
+    public async Task Requirements_that_time_out_are_unavailable()
+    {
+        _extractor.Open = false;
+        _reviewer.Gate.SetResult(Clean);
+        var r = await Dequeued();
+        await Pipeline(new RenderOptions { GeminiTimeoutSeconds = 1 }).ProcessAsync(r, default).WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal((RenderStatus.Done, SelfCheckStatus.Unavailable), (r.Status, r.SelfCheckState));
+        Assert.NotNull(r.RequirementsMs);
+    }
+
+    [Fact]
+    public async Task Runpod_failure_cancels_the_requirements_step()
+    {
+        _extractor.Open = false;
+        _runpod.Result = () => new RunPodJob("j1", "FAILED", 100, 200, null, "ckpt not found");
+        var r = await Dequeued();
+        await Pipeline().ProcessAsync(r, default).WaitAsync(TimeSpan.FromSeconds(5));   // 文字步的 Gate 從頭到尾沒放
+        Assert.True(_extractor.LastToken.IsCancellationRequested);
+        Assert.Equal(RenderStatus.Failed, r.Status);
+        Assert.Null(_owner.Requirements);
+    }
+
+    [Fact]
+    public async Task Blocking_cancels_requirements_still_running()
+    {
+        _extractor.Open = false;
+        var r = await Dequeued();
+        var run = Pipeline().ProcessAsync(r, default);
+        await Eventually(() => r.Status == RenderStatus.Reviewing);
+        _reviewer.Gate.SetResult(new ImageVerdict(true, false, null, "裸露"));
+        await run.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.True(_extractor.LastToken.IsCancellationRequested);
+        Assert.Equal(RenderStatus.Blocked, r.Status);
     }
 }
