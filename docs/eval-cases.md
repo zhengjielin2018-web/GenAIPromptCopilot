@@ -268,3 +268,23 @@ API 層是用 SSE 直接打分支 `feat/set-recommendations` 的 API（本機 50
 
 - **清單粒度不一**：規則寫「一條只放一件看得見的事」，實際有併成一條的（「半身特寫與平視視角」「青春少女與微笑表情」），也有拆太細的（「坐在」「窗台」分兩條）。併成一條時，只要一半沒畫出來整條就 unmet，歸因變粗。
 - **判定雜訊**：R12 同一張圖兩次分數差 9 分，來自主觀的風格類要求（鮮豔色調）。之後閉環要拿分數當門檻時要考慮這點（符合度設計 §14）。
+
+## 2026-10-10 修正建議（R14–R17）
+
+設計見[修正建議設計](superpowers/specs/2026-10-10-fix-suggestions-design.md) §9.3。`docker compose up -d --build api frontend` 重建後，API 用 scratchpad 的 Python 腳本打 `localhost:5000`：開對話 → 定稿 → 生成預覽 → 照 `selfCheck.suggestion` 走（`fix_prompt`／`rewrite_tags` 把 `message` 當使用者訊息送出、確認卡選第一個、定稿後再生；`reroll` 用 `reroll: true` 再生；`none` 就停），每段最多 4 張。追問時自動選第一個選項；B、E 一律回「這些你決定就好」。畫面用 Playwright（同 R9–R13）。實際呼叫 RunPod 與 Gemini，腳本不進 repo。跑了 7 段對話，18 張生成完成：A 銀色雙馬尾少女抱白貓、B 咖啡廳看書的女孩、C 戴紅圍巾的柴犬、D 紅髮少年騎腳踏車背吉他、E 女孩（其他交給模型）、F 雨中撐傘的小女孩與青蛙、G 兩個少女背對背。
+
+| 編號 | 操作 | 預期 | 結果 |
+| :--- | :--- | :--- | :--- |
+| R14 | 出現「prompt 漏了」→ 按「請助理修改」→ 確認 → 定稿 → 生成預覽 | 送出的是程式組的那句話；新圖的 seed 跟上一張相同；那條要求這次有對應的 tag | ⚠️ `fix_prompt` 實機沒碰到（7 段對話沒有一條被判「prompt 漏了」），由 `FixAdvisorTests` 涵蓋。同一條路徑（送 `message` → 確認卡 → 定稿 → 生成預覽）由 `rewrite_tags` 走了 3 次（D、F、G）：✅ 送出的是程式組的那句話；新圖的 seed 都跟上一張相同；改寫後的 tag 都進了 prompt（`(carrying acoustic guitar on back:1.3)`、`cute little frog sitting on ground near feet`、`(kimono:1.2), traditional kimono`）。D 的吉他改寫後畫出來（80 → 100），F 的青蛙改寫後要再換一個 seed 才畫出來，G 的和服改寫後仍沒畫出來。畫面：F 最後一張按「請助理修改」後按鈕停用、旁邊寫「已送出修正」 |
+| R15 | 只剩「沒畫出來」→ 按「換 seed 重生」 | 新圖的 seed 不同；audit 的 `reroll: true` | ✅ 8 次（B 兩次、C、D、F 兩次、G 兩次）：新圖的 seed 都不同，audit `reroll: true`；使用者沒開口，`listKey` 不變、`listReused: true`。畫面：建議那一行、「換 seed 重生」按鈕、圖下方 `seed 2040762035` 都在 |
+| R16 | 同一條要求在 2 個 seed 下都沒畫出來 | 建議變成「改寫」 | ✅ 5 次（D、F 兩次、G 兩次）：文字是「換了 2 個 seed 都沒畫出來」，多條用「、」串接，負向的寫成「負向：text」。⚠️ B 的「專注閱讀的表情與動作」也在 2 個 seed 下都沒畫出來，卻還是建議換 seed：prompt 沒變，但文字步第一張對到 `focused expression`、第二張對到 `focused expression, focused on book`，tag 集合不同就從頭算（見觀察）。第 3 個 seed 畫出來了 |
+| R17 | 委託項目畫錯 | 建議旁邊有註記 | 實機沒碰到：有委託項目的 E（5 條）、D 第 3 張（1 條）都畫出來了。由 `FixAdvisorTests` 涵蓋 |
+
+觀察（沒擋驗收，留給下一步決定）：
+
+- **tag 對應的雜訊會讓 seed 計數從頭算**：設計假設「tag 變了 = 改寫過」，但文字步每張都重新對 tag，同一份 prompt 也會對到不同的 tag（R16 的 B）。該建議改寫時還在建議換 seed，多花一張。可能的改法（沒做）：同一條要求改成比「prompt 的正向＋負向詞有沒有變」，不比對到的 tag。
+- **要求清單偶爾有錯字**：D 第 3 張的清單幾乎每條都是錯字（「牙錢十全」「鄉間匑匑」），F 前兩張有幾個字錯（「青蟙」應為「青蛙」、「雨鞴」應為「雨鞋」、「水殤倒影蘇虹燈」應為「水窪倒映霓虹燈」）。同一份回應裡有對有錯，錯的是字形相近的字，F 重新整理清單後又正確，判斷是模型（`gemini-3.5-flash-lite`、`Temperature = 0`、JSON 輸出）的輸出出錯，不是編碼問題。錯字會跟著進建議文字與送給助理的那句話。這是評分案的清單整理，這次沒處理。
+- **換第幾個 seed 才畫出來**（`Render:SeedsBeforeRewrite` 的參考）：C 的三條第 2 個 seed 都畫出來；B 第 3 個；D 的吉他、F 的青蛙與「不要出現任何文字」、G 的和服兩個 seed 都沒畫出來，改寫後吉他第 1 個、青蛙與文字第 2 個 seed 畫出來，和服仍沒有。樣本少，先不調。
+- **改寫一個 tag 會連帶影響其他條**：G 改寫和服、seed 不變，原本畫對的「背對背」「西裝外套」這張變成沒畫出來（91 → 73）。prompt 一變構圖就跟著變，「seed 不變才看得出差異」只在改動小時成立。
+- **送出修正後清單會重新整理**：使用者開口了，`listKey` 換新，條目的切法與 id 會變（G「穿和服」→「左邊穿和服」），舊清單下的失敗不算、seed 從頭算（照設計，修正建議設計 Review Focus 2）。
+- A 第一次遇到 RunPod 閒置約 4 小時後的冷啟動，超過 180 秒逾時（`Render_Failed`、`timeout`），跟這次改動無關；重跑正常。
