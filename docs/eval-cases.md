@@ -251,3 +251,20 @@ API 層是用 SSE 直接打分支 `feat/set-recommendations` 的 API（本機 50
 | R6 | `SAFETY_ALLOW_DISABLE=true`、頂列關掉審查後生成 | 圖上方標「審查已關閉（測試用）」；audit 的 `Render_Completed` 沒有 `reviewMs` | ✅ 關掉審查後生成：圖上方「審查已關閉（測試用）」，沒有經過「審查圖片中」；audit 的 `reviewMs` 是 null |
 | R7 | `Render__PerSessionLimit=1` 重建 api，同一個對話生第二張 | `429`「這段對話的預覽張數已達上限（1 張）」 | 沒在 compose 上跑（compose 沒映射這個設定）；由 `RenderEndpointTests.Unfinished_previous_render_is_409_and_session_limit_is_429` 涵蓋 |
 | R8 | 讀 audit 的 `Render_Completed` | 記下 `reviewMs`、`selfCheckMs`、`delayMs`、`executionMs`，寫進 [ComfyUI 整合可行性](ComfyUI整合可行性.md) §9 | 已記進可行性 §9.4：審圖 14.6 秒、自評 12.3–16.7 秒，比估計的 2–5 秒慢很多 |
+
+## 2026-10-10 符合度評分（R9–R13）
+
+設計見[符合度評分設計](superpowers/specs/2026-10-10-intent-fit-scoring-design.md) §12.4。`docker compose up -d --build api frontend` 重建後，API 用 scratchpad 的 Python 腳本打 `localhost:5000`（追問時自動選第一個選項；R10b 改成一律回「這些你決定就好」）；畫面用 Playwright（`playwright-core` 驅動系統的 Edge，headless），把完成的 session 與 renderId 放進 sessionStorage 後重新整理，讀預覽區。實際呼叫 RunPod 與 Gemini，腳本不進 repo。
+
+| 編號 | 操作 | 預期 | 結果 |
+| :--- | :--- | :--- | :--- |
+| R9 | 「一個銀色雙馬尾的少女站在傍晚的海邊，穿白色洋裝，不要帽子，動漫風」→ 定稿 → 生成預覽 | 依序到評分中時圖已出現；補上「符合度 N」與說明文字；「你的要求」跟對話對得上 | ✅ generating → reviewing → self_checking → done；符合度 100，「使用者要求 11 條，11 條符合」；條目含銀色雙馬尾、白色洋裝、傍晚的海邊、不要帽子與追問時選的半身、平視、微笑。**「不要帽子」那條 prompt 其實沒把 `hat` 寫進負向詞**，評分給 met＋兩個 tag 欄都空，前端顯示「prompt 沒寫，剛好畫出來」——評分抓到了 prompt 的真實缺口 |
+| R10 | 「一個在咖啡廳看書的女孩，其他隨便」 | 出現收合的「模型幫你挑的（不計分，N 條）」；分數只算使用者講的 | ⚠️ 第一次腳本在追問時替使用者選了選項，8 條都成了 user（使用者選的就是 user，判法正確），沒測到委託。R10b 改成「畫一個在咖啡廳看書的女孩，其他都隨便你決定」、追問一律回「這些你決定就好」：✅ user 3 條（女生、咖啡廳、看書）＋ delegated 5 條（坐在桌旁、拿著書、室內、溫暖燈光、舒適氛圍）；符合度 100 只算 3 條；畫面上「模型幫你挑的（不計分，5 條）」預設收合，點開後格式同上 |
+| R11 | 「一個長髮少女在櫻花樹下，動漫風」→ 定稿 →「頭髮改成短髮」→ 定稿 → 生成預覽 | 清單只有短髮 | ✅ 清單只有「短髮」，沒有長髮。符合度 89：「半身特寫與平視視角」判 unmet（畫成全身），歸類 `not_rendered`，畫面標「沒畫出來」、滑鼠提示「prompt 有寫，但這次沒畫出來」 |
+| R12 | 「一隻黑貓坐在窗台上看雨，動漫風」→ 定稿 → 生成預覽 → 同一張卡再生一次 | 第二張 audit 的 `listReused: true`、`listKey` 相同 | ✅ 第一張 `listReused: false`、第二張 `true`，`listKey` 都是 `2bea0030`，清單 12 條相同。**同一張圖（同 seed、同 prompt）兩次判定不同**：「鮮豔色調」第一次 unmet、第二次 met，分數 91 → 100；主觀的風格類要求判定有雜訊 |
+| R13 | 讀 audit | `requirementsMs`、`selfCheckMs` 寫進可行性 §9.4 | ✅ 6 張：文字步 1.1–2.1 秒（中位數 1.6），一律比生圖短，沒有拉長整張的時間；看圖步 2.6–5.1 秒（中位數 2.9），跟原本的自評同一個量級。已記進[可行性](ComfyUI整合可行性.md) §9.4 |
+
+觀察（沒擋驗收，留給下一步決定）：
+
+- **清單粒度不一**：規則寫「一條只放一件看得見的事」，實際有併成一條的（「半身特寫與平視視角」「青春少女與微笑表情」），也有拆太細的（「坐在」「窗台」分兩條）。併成一條時，只要一半沒畫出來整條就 unmet，歸因變粗。
+- **判定雜訊**：R12 同一張圖兩次分數差 9 分，來自主觀的風格類要求（鮮豔色調）。之後閉環要拿分數當門檻時要考慮這點（符合度設計 §14）。
