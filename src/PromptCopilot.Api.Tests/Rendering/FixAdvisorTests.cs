@@ -60,15 +60,23 @@ public class FixAdvisorTests
         Assert.Equal(new[] { "r1" }, s.ItemIds);
     }
 
-    /// <summary>Review Focus 3：同一個 seed 生兩張只算一次（改 prompt 時 seed 不變）；tag 改寫過就從頭算。</summary>
+    /// <summary>Review Focus 3：同一個 seed 生兩張只算一次（改 prompt 時 seed 不變）；prompt 改過、tag 也改寫過就從頭算。</summary>
     [Fact]
     public void Seeds_are_counted_once_and_reset_when_tags_change()
     {
         var sameSeed = new PastRender(7, Pos, Neg, R(HairUnmet));
         Assert.Equal(SuggestionKinds.Reroll, Advise(R(HairUnmet), seed: 7, others: new[] { sameSeed }).Kind);
 
-        var otherTags = new PastRender(5, Pos, Neg, R(V("r1", "銀色雙馬尾", "unmet", new[] { "silver hair", "twin tails" })));
-        Assert.Equal(SuggestionKinds.Reroll, Advise(R(HairUnmet), seed: 8, others: new[] { otherTags }).Kind);
+        var rewritten = new PastRender(5, "1girl, silver hair, twin tails, beach", Neg, R(V("r1", "銀色雙馬尾", "unmet", new[] { "silver hair", "twin tails" })));
+        Assert.Equal(SuggestionKinds.Reroll, Advise(R(HairUnmet), seed: 8, others: new[] { rewritten }).Kind);
+    }
+
+    /// <summary>實機 eval-cases R16 的 B：文字步每張重新對 tag，prompt 沒變也會對到不同的 tag。prompt 沒變就算同一條，不能因此從頭算。</summary>
+    [Fact]
+    public void Same_prompt_counts_even_when_the_matched_tags_differ()
+    {
+        var earlier = new PastRender(7, Pos, Neg, R(V("r1", "銀色雙馬尾", "unmet", new[] { "silver hair" })));
+        Assert.Equal(SuggestionKinds.RewriteTags, Advise(R(HairUnmet), seed: 8, others: new[] { earlier }).Kind);
     }
 
     /// <summary>Review Focus 2：使用者又開口、清單換了（listKey 不同），舊清單的失敗不算。</summary>

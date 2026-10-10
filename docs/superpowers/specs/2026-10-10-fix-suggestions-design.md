@@ -61,7 +61,7 @@
 - 第 2 條只列達到 N 的那幾條；第 3 條列全部 `not_rendered` 的。多條時用「、」串接。
 - `itemIds`：這個建議針對的條目 id（第 1、2 條另含下面的「剛好畫出來」條目）。
 
-**「沒畫出來的 seed 數」**：在同一段對話（`RenderRecord.Owner.Renders`，含這一張）裡，取評分 `ok`、`listKey` 跟這張相同的圖；對這條要求（同一個 id），只算它的 `tags`＋`negativeTags`（當成集合比較）跟這張相同、而且 `issue` 是 `not_rendered` 的那些圖，數它們用了幾個**不同的 seed**。改 prompt 時 seed 不變，同一個 seed 生兩張只算一次；tag 變了（改寫過）自然從頭算。
+**「沒畫出來的 seed 數」**：在同一段對話（`RenderRecord.Owner.Renders`，含這一張）裡，取評分 `ok`、`listKey` 跟這張相同的圖；對這條要求（同一個 id），只算 `issue` 是 `not_rendered`、而且 prompt（正向詞與負向詞）跟這張一樣**或**這條的 `tags`＋`negativeTags`（當成集合比較）跟這張相同的那些圖，數它們用了幾個**不同的 seed**。改 prompt 時 seed 不變，同一個 seed 生兩張只算一次；prompt 改過、tag 也改寫過就從頭算。（2026-10-10 實機後補上「prompt 一樣」：文字步每張重新對 tag，prompt 沒變也會對到不同的 tag，只比 tag 會被雜訊歸零，見 [eval-cases](../../eval-cases.md) R16。手動流程裡同一份清單下的圖 prompt 一定一樣——改 prompt 要使用者開口，一開口清單就換了；比 tag 留給閉環在同一份清單下改 prompt 的情況。）
 
 **「剛好畫出來」**：使用者的要求、`verdict: met`、`tags` 與 `negativeTags` 都空。
 - `kind` 是 `fix_prompt` 或 `rewrite_tags`：一併放進送給助理的話與 `itemIds`。

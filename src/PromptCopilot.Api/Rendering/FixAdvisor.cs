@@ -30,7 +30,7 @@ public static class FixAdvisor
         {
             // 只數同一份清單的圖：使用者又開口、清單換了，舊清單下的失敗不算（含這一張）
             var history = others.Where(o => o.Result.ListKey == current.ListKey).Append(new PastRender(seed, positive, negative, current)).ToList();
-            var stuck = notRendered.Select(i => (Item: i, Seeds: FailedSeeds(i, history))).Where(x => x.Seeds >= n).ToList();
+            var stuck = notRendered.Select(i => (Item: i, Seeds: FailedSeeds(i, positive, negative, history))).Where(x => x.Seeds >= n).ToList();
             if (stuck.Count > 0)
             {
                 kind = SuggestionKinds.RewriteTags;
@@ -65,12 +65,15 @@ public static class FixAdvisor
         return new FixSuggestion(kind, text, message, targets.Select(i => i.Id).ToList(), notes);
     }
 
-    /// <summary>這條要求（同 id、同一組 tag）被判「沒畫出來」的不同 seed 數。同一個 seed 生兩張只算一次；tag 改寫過就不算舊的。</summary>
-    private static int FailedSeeds(RequirementVerdict item, IReadOnlyList<PastRender> history)
+    /// <summary>這條要求（同 id）被判「沒畫出來」的不同 seed 數。同一個 seed 生兩張只算一次。
+    /// 那張的 prompt 跟這張一樣，或這條對到的 tag 跟這張一樣，才算同一條：文字步每張重新對 tag，prompt 沒變也會對到不同的 tag
+    /// （eval-cases R16 的 B），只比 tag 會被雜訊歸零；prompt 改過、tag 也改寫過的舊圖才不算（之後閉環在同一份清單下改 prompt 時用得到）。</summary>
+    private static int FailedSeeds(RequirementVerdict item, string positive, string negative, IReadOnlyList<PastRender> history)
     {
         var tags = TagSet(item);
         return history
-            .Where(h => h.Result.Items.FirstOrDefault(x => x.Id == item.Id) is { Issue: "not_rendered" } v && TagSet(v).SetEquals(tags))
+            .Where(h => h.Result.Items.FirstOrDefault(x => x.Id == item.Id) is { Issue: "not_rendered" } v
+                && ((h.Positive == positive && h.Negative == negative) || TagSet(v).SetEquals(tags)))
             .Select(h => h.Seed).Distinct().Count();
     }
 
