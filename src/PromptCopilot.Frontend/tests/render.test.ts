@@ -1,11 +1,12 @@
 import { describe, it, expect } from 'vitest'
-import { isFinished, showsImage, isRealistic, statusText, renderButton, verdictMark, toastText, issueLabel, tagText, splitItems } from '../lib/render'
+import { isFinished, showsImage, isRealistic, statusText, renderButton, verdictMark, toastText, issueLabel, tagText, splitItems, suggestionButton } from '../lib/render'
 import type { RenderView, SelfCheckItemView } from '../types/api'
 
 const view = (over: Partial<RenderView>): RenderView => ({
   renderId: 'r1', turnIndex: 3, status: 'queued', position: null, safety: 'on', message: null,
-  selfCheck: { status: 'pending', score: null, summary: null, items: [] },
+  selfCheck: { status: 'pending', score: null, summary: null, items: [], suggestion: null },
   timings: { queueMs: null, delayMs: null, executionMs: null, reviewMs: null, requirementsMs: null, selfCheckMs: null },
+  seed: 42,
   ...over,
 })
 
@@ -88,5 +89,25 @@ describe('self-check items', () => {
     const { user, delegated } = splitItems(items)
     expect(user.map(i => i.id)).toEqual(['r1', 'r3'])
     expect(delegated.map(i => i.id)).toEqual(['r2'])
+  })
+})
+
+describe('suggestionButton', () => {
+  const base = { kind: 'fix_prompt' as const, isLatest: true, busy: false, inFlight: false, sent: false }
+
+  it('labels by kind and hides for none or old cards', () => {
+    expect(suggestionButton(base)).toEqual({ visible: true, label: '請助理修改', disabled: false, note: null })
+    expect(suggestionButton({ ...base, kind: 'rewrite_tags' })).toEqual({ visible: true, label: '請助理修改', disabled: false, note: null })
+    expect(suggestionButton({ ...base, kind: 'reroll' })).toEqual({ visible: true, label: '換 seed 重生', disabled: false, note: null })
+    expect(suggestionButton({ ...base, kind: 'none' })).toEqual({ visible: false })
+    expect(suggestionButton({ ...base, isLatest: false })).toEqual({ visible: false })
+  })
+
+  // Review Focus 5：按過一次、對話在跑、預覽還沒結束都不能再送
+  it('disables while busy, while a preview runs, and after the fix was sent', () => {
+    expect(suggestionButton({ ...base, sent: true })).toEqual({ visible: true, label: '請助理修改', disabled: true, note: '已送出修正' })
+    expect(suggestionButton({ ...base, inFlight: true })).toEqual({ visible: true, label: '請助理修改', disabled: true, note: '上一張還在生成' })
+    expect(suggestionButton({ ...base, busy: true })).toEqual({ visible: true, label: '請助理修改', disabled: true, note: null })
+    expect(suggestionButton({ ...base, kind: 'reroll', sent: true })).toEqual({ visible: true, label: '換 seed 重生', disabled: false, note: null })
   })
 })

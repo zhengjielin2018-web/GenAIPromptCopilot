@@ -8,7 +8,7 @@ import { adoptPlaceholder } from '../lib/adopt'
 import { pendingConfirmTurn, confirmDisplay } from '../lib/confirm'
 import { messageBody } from '../lib/safety'
 import { toastText } from '../lib/render'
-import { applyView, beginRequest, gaveUp, isInFlight, requestAccepted, requestFailed, resumed, type RenderSlot } from '../lib/renderSlot'
+import { applyView, beginRequest, gaveUp, isInFlight, markFixSent, requestAccepted, requestFailed, resumed, type RenderSlot } from '../lib/renderSlot'
 import { pollRender } from '../lib/renderPoll'
 import { AGENT_EVENT_TYPES, type AdoptRequest, type AgentEvent, type FacetCatalog, type RecommendedSet, type RetrievalMode } from '../types/api'
 import type { TurnBody } from '../composables/useApi'
@@ -274,13 +274,13 @@ export const useSessionStore = defineStore('session', () => {
   }
 
   /** 生成預覽：只有最新的定稿卡、沒在跑對話輪、沒有別張預覽沒結束時能按（伺服器也會擋）。 */
-  async function requestRender(turnIndex: number) {
+  async function requestRender(turnIndex: number, opts: { reroll?: boolean } = {}) {
     const id = state.value.sessionId
     if (!id || !renderEnabled.value || busy.value || renderInFlight.value || turnIndex !== latestFinalizedTurn.value) return
     // 拿到 202 之前，卡上原本那張照樣留著；被拒絕時也不清掉（預覽設計 §8：訊息顯示在按鈕下方）
     setRender(turnIndex, beginRequest(renders.value[turnIndex]))
     try {
-      const r = await api.requestRender(id, messageBody({ turnIndex }, { canDisable: safetyCanDisable.value, off: safetyOff.value }))
+      const r = await api.requestRender(id, messageBody(opts.reroll ? { turnIndex, reroll: true } : { turnIndex }, { canDisable: safetyCanDisable.value, off: safetyOff.value }))
       // 等待期間換了 session：舊對話的回應不能接到新對話
       if (state.value.sessionId !== id) return
       if (!r.ok) {
@@ -300,6 +300,18 @@ export const useSessionStore = defineStore('session', () => {
     } catch {
       if (state.value.sessionId !== id) return
       setRender(turnIndex, requestFailed(renders.value[turnIndex]!, BACKEND_DOWN))
+    }
+  }
+
+  /** 照修正建議做（修正建議設計 §8）：改 prompt 類當成一般訊息送給助理（照常跳確認卡），換 seed 直接重生。 */
+  async function followSuggestion(turnIndex: number) {
+    const slot = renders.value[turnIndex]
+    const sg = slot?.view?.selfCheck.suggestion
+    if (!slot || !sg || turnIndex !== latestFinalizedTurn.value || busy.value || renderInFlight.value) return
+    if (sg.kind === 'reroll') { await requestRender(turnIndex, { reroll: true }); return }
+    if ((sg.kind === 'fix_prompt' || sg.kind === 'rewrite_tags') && sg.message && !slot.fixSent) {
+      setRender(turnIndex, markFixSent(slot))
+      await runTurn(sg.message, { text: sg.message })
     }
   }
 
@@ -366,6 +378,6 @@ export const useSessionStore = defineStore('session', () => {
     boot, newSession, send, retry, setDraft, toggleChip, isChipSelected, openDrawer, closeDrawer, expandSave, save,
     adoptTarget, openAdopt, closeAdopt, adopt,
     batchState, nextBatch,
-    renderEnabled, renders, renderInFlight, renderToast, requestRender, setCardVisible, dismissRenderToast,
+    renderEnabled, renders, renderInFlight, renderToast, requestRender, followSuggestion, setCardVisible, dismissRenderToast,
   }
 })

@@ -1,4 +1,4 @@
-import type { RenderStatus, RenderView, SelfCheckItemView, SelfCheckVerdictKind } from '../types/api'
+import type { RenderStatus, RenderView, SelfCheckItemView, SelfCheckVerdictKind, SuggestionKind } from '../types/api'
 
 const FINISHED: ReadonlySet<RenderStatus> = new Set(['done', 'failed', 'blocked'])
 export function isFinished(status: RenderStatus): boolean { return FINISHED.has(status) }
@@ -58,3 +58,15 @@ export function splitItems(items: SelfCheckItemView[]): { user: SelfCheckItemVie
 }
 
 export function toastText(status: RenderStatus): string { return status === 'done' ? '預覽好了' : '預覽沒有完成' }
+
+export type SuggestionButton = { visible: false } | { visible: true; label: string; disabled: boolean; note: string | null }
+
+/** 修正建議的按鈕（修正建議設計 §8）：只在最新的定稿卡；「請助理修改」按過一次就停用（只記在前端，重新整理後恢復）。 */
+export function suggestionButton(o: { kind: SuggestionKind; isLatest: boolean; busy: boolean; inFlight: boolean; sent: boolean }): SuggestionButton {
+  if (o.kind === 'none' || !o.isLatest) return { visible: false }
+  const label = o.kind === 'reroll' ? '換 seed 重生' : '請助理修改'
+  if (o.kind !== 'reroll' && o.sent) return { visible: true, label, disabled: true, note: '已送出修正' }
+  if (o.inFlight) return { visible: true, label, disabled: true, note: '上一張還在生成' }
+  if (o.busy) return { visible: true, label, disabled: true, note: null }
+  return { visible: true, label, disabled: false, note: null }
+}

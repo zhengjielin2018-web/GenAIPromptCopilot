@@ -1,14 +1,22 @@
 import { describe, it, expect } from 'vitest'
-import { beginRequest, requestFailed, requestAccepted, resumed, gaveUp, applyView, isInFlight } from '../lib/renderSlot'
+import { beginRequest, requestFailed, requestAccepted, resumed, gaveUp, applyView, isInFlight, markFixSent } from '../lib/renderSlot'
 import type { RenderView } from '../types/api'
 
 const view = (status: RenderView['status']): RenderView => ({
   renderId: 'r1', turnIndex: 3, status, position: null, safety: 'on', message: null,
-  selfCheck: { status: 'pending', score: null, summary: null, items: [] }, timings: { queueMs: null, delayMs: null, executionMs: null, reviewMs: null, requirementsMs: null, selfCheckMs: null },
+  selfCheck: { status: 'pending', score: null, summary: null, items: [], suggestion: null }, timings: { queueMs: null, delayMs: null, executionMs: null, reviewMs: null, requirementsMs: null, selfCheckMs: null }, seed: 42,
 })
 const done = () => applyView(requestAccepted('r1'), view('done'), true).slot
 
 describe('render slot', () => {
+  it('remembers a sent fix until a new preview replaces the slot', () => {
+    const sent = markFixSent(done())
+    expect(sent.fixSent).toBe(true)
+    expect(beginRequest(sent).fixSent).toBe(true)
+    expect(requestAccepted('r2').fixSent).toBe(false)
+    expect(resumed('r1').fixSent).toBe(false)
+  })
+
   // 再按一次被 429／503／409 或斷線擋下：已經好的那張要留著，訊息只放在按鈕下方（預覽設計 §8）
   it('keeps the existing preview when a new request is refused', () => {
     const s = requestFailed(beginRequest(done()), '這段對話的預覽張數已達上限（10 張）')

@@ -5,7 +5,7 @@ import type { RenderView } from '../types/api'
 
 const view = (status: RenderView['status']): RenderView => ({
   renderId: 'r1', turnIndex: 3, status, position: null, safety: 'on', message: null,
-  selfCheck: { status: 'pending', score: null, summary: null, items: [] }, timings: { queueMs: null, delayMs: null, executionMs: null, reviewMs: null, requirementsMs: null, selfCheckMs: null },
+  selfCheck: { status: 'pending', score: null, summary: null, items: [], suggestion: null }, timings: { queueMs: null, delayMs: null, executionMs: null, reviewMs: null, requirementsMs: null, selfCheckMs: null }, seed: 42,
 })
 const flush = () => new Promise(r => setTimeout(r, 0))
 

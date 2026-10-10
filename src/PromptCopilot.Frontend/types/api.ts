@@ -133,8 +133,12 @@ export interface SelfCheckItemView {
   id: string; text: string; source: 'user' | 'delegated'; tags: string[]; negativeTags: string[]
   verdict: SelfCheckVerdictKind; issue: SelfCheckIssue; reason: string
 }
+export type SuggestionKind = 'fix_prompt' | 'rewrite_tags' | 'reroll' | 'none'
+/** 修正建議（修正建議設計 §6）。text：給使用者看的一行（none 時 null）；message：按下按鈕送給助理的話（只有 fix_prompt、rewrite_tags）。 */
+export interface SuggestionView { kind: SuggestionKind; text: string | null; message: string | null; itemIds: string[]; notes: string[] }
 export interface RenderView {
   renderId: string; turnIndex: number; status: RenderStatus; position: number | null; safety: 'on' | 'off'; message: string | null
-  selfCheck: { status: 'pending' | 'ok' | 'unavailable'; score: number | null; summary: string | null; items: SelfCheckItemView[] }
+  selfCheck: { status: 'pending' | 'ok' | 'unavailable'; score: number | null; summary: string | null; items: SelfCheckItemView[]; suggestion: SuggestionView | null }
   timings: { queueMs: number | null; delayMs: number | null; executionMs: number | null; reviewMs: number | null; requirementsMs: number | null; selfCheckMs: number | null }
+  seed: number
 }
