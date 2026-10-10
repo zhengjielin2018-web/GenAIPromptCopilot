@@ -65,6 +65,11 @@ public sealed class RequirementExtractor(IChatCompletionService chat, IOptions<L
         catch (JsonException e) { throw new InvalidOperationException($"整理要求回了非 JSON：{content[..Math.Min(80, content.Length)]}", e); }
     }
 
+    /// <summary>prompt 寫反（使用者說不要帽子，正向詞卻有 hat）時，對到反方向的 tag 會被歸成「沒畫出來」、叫人換 seed；
+    /// 方向不對就不給 tag，歸成「prompt 漏了」，動作才對（符合度設計 §4.2）。</summary>
+    private const string Direction =
+        "- 方向要對：「不要」的要求只能對負向詞裡的 tag，其他要求只能對正向詞裡的 tag；方向不對就給空陣列（例如使用者說不要帽子、正向詞卻有 hat，就給空陣列）。\n";
+
     internal static string BuildExtractPrompt(string transcript, string positive, string negative) =>
         "你在整理使用者對一張圖的要求。下面是使用者與助理的對話整理、使用者交給助理決定的項目，以及助理寫好的 SD 提示詞。\n"
         + "回 JSON 的 requirements，每條：\n"
@@ -73,7 +78,8 @@ public sealed class RequirementExtractor(IChatCompletionService chat, IOptions<L
         + "- tags：提示詞裡對應這條要求的 tag，只能從下面的正向詞或負向詞照抄；找不到對應的就給空陣列\n"
         + "規則：\n"
         + "- 同一件事只列一次；後面說的蓋過前面說的；使用者否決過的不列。\n"
-        + "- 使用者說「不要」的東西也列，對應的 tag 通常在負向詞裡。\n"
+        + "- 使用者說「不要」的東西也列。\n"
+        + Direction
         + "- 畫質詞與通用負向詞（masterpiece、best quality、lowres、bad hands 之類）不列。\n"
         + "- 使用者回「對，就這樣」，表示他認可前一則「助理（確認）」的內容，那些內容算 user。\n"
         + "- 交給助理決定的項目：列出提示詞實際選了什麼，source 標 delegated；使用者明說不指定的不列。\n"
@@ -85,6 +91,7 @@ public sealed class RequirementExtractor(IChatCompletionService chat, IOptions<L
         "下面是一份固定的要求清單與一組 SD 提示詞。逐條找出提示詞裡對應這條要求的 tag，回 JSON 的 requirements，每條：\n"
         + "- id：照抄下面的 id\n"
         + "- tags：只能從正向詞或負向詞照抄；找不到對應的就給空陣列\n"
+        + Direction
         + "不要新增、刪除或改寫清單裡的要求。\n"
         + "要求（id｜要求）：\n"
         + string.Join("\n", fixedList.Select(r => $"- {r.Id}｜{r.Text}"))

@@ -78,8 +78,9 @@ public static class RenderEndpoints
         })
         .WithSummary("查一張預覽的狀態")
         .WithDescription("""
-            `status`：`queued`（`position` 是排第幾，1 是下一張）→ `generating`（已送 RunPod）→ `reviewing`（看圖審查中，圖還不給；審查關著時跳過）→ `self_checking`（圖拿得到，自評還在跑）→ `done`；或 `failed`／`blocked`（`message` 是給使用者看的一句話）。
-            `selfCheck`：`{status: pending | ok | unavailable, items: [{facetId, label, tag, verdict: present | absent | unclear, reason}]}`，`items` 只在 `done` 時有。`timings` 是各段毫秒數。
+            `status`：`queued`（`position` 是排第幾，1 是下一張）→ `generating`（已送 RunPod）→ `reviewing`（看圖審查中，圖還不給；審查關著時跳過）→ `self_checking`（圖拿得到，評分還在跑）→ `done`；或 `failed`／`blocked`（`message` 是給使用者看的一句話）。
+            `selfCheck`：使用者想法符合度評分（docs/superpowers/specs/2026-10-10-intent-fit-scoring-design.md §7）。`{status: pending | ok | unavailable, score, summary, items: [{id, text, source: user | delegated, tags, negativeTags, verdict: met | unmet | unclear, issue: none | prompt_missing | not_rendered | unclear, reason}]}`。`score` 是 0–100（只算 `source: user`、`unclear` 不計），沒有判得出來的要求時是 `null`；`score`、`summary`、`items` 只在 `done` 時有。`tags` 與 `negativeTags` 都空表示 prompt 沒寫這條。
+            `timings` 是各段毫秒數：`queueMs`、`delayMs`、`executionMs`、`reviewMs`、`requirementsMs`（整理要求清單，跟生圖同時跑）、`selfCheckMs`（看圖步）。
             """)
         .Produces<RenderView>(StatusCodes.Status200OK)
         .Produces<ErrorBody>(StatusCodes.Status404NotFound);

@@ -10,6 +10,7 @@
 | 10 | 整套組合推薦的已知限制：錨靠模型翻譯、SQL 的錨比對比 C# 粗、換了內容沒重給 `tags` 時舊錨留著；採用輪失敗後重試是純文字，HTTP 層就失敗時填回的是佔位字 | 限制 | 低 |
 | 11 | `AskUser`／`Discuss` 的 call args 壓縮對 Gemini 不生效 | 成本 | 低 |
 | 6 | 子專案 4 全分支審查留下的小項目 | 整理 | 低 |
+| 17 | 長對話裡最早的要求不會進符合度評分的清單 | 效果 | 低 |
 
 ---
 
@@ -81,6 +82,12 @@
 **現象**（2026-10-06 實驗紀錄 §6.4）：動手輪查「家居服上衣」「家居褲」時，facet 向量的命中多是「低」分級、內容混在其他衣物裡（`cozy oversized sweater, holding a steaming cup`、`flower print pajama pants, cotton pajama long sleeve top`、`black tank top, gray sweatpants, clothes`）。模型照「只借相符的詞」沒有借，自己寫 `comfortable loungewear top`、`loungewear pants`；知識庫裡其實有 `pajama pants`、`sweatpants` 這類單品。
 
 **可能的方向**：檢索品質問題，跟檢索時機無關。可以從查詢端（「家居服」翻成具體單品再查）、片段端（facet tag 拆得更細）或借用規則（允許從混雜片段挑出單一單品）著手，另開一案。
+
+## 17. 長對話裡最早的要求不會進符合度評分的清單（效果，低）
+
+**現象**（2026-10-10 符合度評分最終審查）：每輪收尾 `HistoryTrimmer.Truncate` 把 `ChatHistory` 截成最近 `Orchestrator:HistoryTurns`（20）則使用者訊息。先確認再動手之後，按確認卡、回追問各算一則，大約 8–10 輪修改就會截掉第一句；第一句通常是最完整的主體描述。[`IntentTranscript`](../src/PromptCopilot.Api/Rendering/IntentTranscript.cs) 從截短後的 history 組對話整理，清單就少了這些要求，分數只算在剩下的要求上。[`RecommendationService.JoinedUserText`](../src/PromptCopilot.Api/Orchestration/RecommendationService.cs) 有同樣的限制。
+
+**可能的方向**：`Session` 另存一份不截短的對話紀錄（使用者原話＋助理的確認／追問／回應），放進 `SessionSnapshot` 讓回滾一起回來，`IntentTranscript` 與推薦都讀那一份。要動 orchestrator 與回滾，另開一案（[符合度評分設計](superpowers/specs/2026-10-10-intent-fit-scoring-design.md) §4.1）。
 
 ## 已修正
 

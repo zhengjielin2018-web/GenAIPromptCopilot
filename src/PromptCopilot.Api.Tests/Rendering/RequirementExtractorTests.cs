@@ -77,6 +77,23 @@ public class RequirementExtractorTests
         Assert.Contains("不要新增、刪除或改寫", prompt);
     }
 
+    /// <summary>最終審查 Important 2：「不要帽子」對到正向詞的 hat（prompt 寫反）會被歸成「沒畫出來」，叫人換 seed 而不是改 prompt。
+    /// 兩個 prompt 都要講方向：「不要」只對負向詞、其他只對正向詞，方向不對就當 prompt 沒寫。</summary>
+    [Fact]
+    public async Task Both_prompts_require_tags_in_the_matching_direction()
+    {
+        var extract = new FakeChatCompletion().Then(FakeChatCompletion.Text("""{"requirements":[]}"""));
+        await Extractor(extract).ExtractAsync("對話：\n使用者：不要帽子", Positive, Negative, default);
+        var match = new FakeChatCompletion().Then(FakeChatCompletion.Text("""{"requirements":[{"id":"r1","tags":[]}]}"""));
+        await Extractor(match).MatchAsync(new[] { new Requirement("r1", "不要帽子", RequirementSources.User) }, Positive, Negative, default);
+        foreach (var prompt in new[] { PromptOf(extract), PromptOf(match) })
+        {
+            Assert.Contains("「不要」的要求只能對負向詞裡的 tag", prompt);
+            Assert.Contains("其他要求只能對正向詞裡的 tag", prompt);
+            Assert.Contains("方向不對就給空陣列", prompt);
+        }
+    }
+
     /// <summary>Review Focus 3：漏答不能當成「prompt 漏了」，也不改成重新整理（會換掉清單）。</summary>
     [Fact]
     public async Task Match_missing_an_id_is_an_error()
