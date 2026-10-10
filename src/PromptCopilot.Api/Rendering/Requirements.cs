@@ -23,5 +23,19 @@ public sealed record RequirementMatch(string Id, string Text, string Source, IRe
 public sealed record RequirementVerdict(string Id, string Text, string Source, IReadOnlyList<string> Tags, IReadOnlyList<string> NegativeTags,
     string Verdict, string Issue, string Reason);
 
-/// <summary>一張圖的評分。ListKey：IntentKey 前 8 碼，audit 用來看哪幾張是對同一份清單判的。</summary>
-public sealed record SelfCheckResult(int? Score, string Summary, IReadOnlyList<RequirementVerdict> Items, string ListKey, bool ListReused);
+/// <summary>一張圖的評分。ListKey：IntentKey 前 8 碼，audit 用來看哪幾張是對同一份清單判的。
+/// Suggestion：修正建議（修正建議設計 §4），評分完成時由 FixAdvisor 算好；算不出來是 null。</summary>
+public sealed record SelfCheckResult(int? Score, string Summary, IReadOnlyList<RequirementVerdict> Items, string ListKey, bool ListReused,
+    FixSuggestion? Suggestion = null);
+
+public static class SuggestionKinds
+{
+    public const string FixPrompt = "fix_prompt";
+    public const string RewriteTags = "rewrite_tags";
+    public const string Reroll = "reroll";
+    public const string None = "none";
+}
+
+/// <summary>對外格式的 selfCheck.suggestion（修正建議設計 §6）。Text：給使用者看的一行（none 時 null）；Message：按下按鈕送給助理的話
+/// （只有 fix_prompt、rewrite_tags 有）；ItemIds：針對哪幾條；Notes：委託畫錯、剛好畫出來、prompt 與 seed 都沒變的註記。</summary>
+public sealed record FixSuggestion(string Kind, string? Text, string? Message, IReadOnlyList<string> ItemIds, IReadOnlyList<string> Notes);
