@@ -32,7 +32,7 @@
 | 審查開關 | 跟對話輪同一套：`safety: off` 要後端開放才收；**關著時完全不跑審查分類器** | 專案擁有者指定。關著時本來就是測試，不必多花一次 Gemini 呼叫 |
 | 生圖前要不要審提示詞 | 定稿當時審過就不再審；定稿是在審查關著時產生的（`LastFinal.Reviewed == false`）、這次又開著，就先補審 | 審過的不重花錢；沒審過的不能直接拿去生 |
 | 圖存哪 | **存在 session 裡，跟 session 一起過期**；不寫資料庫、不進知識庫與種子 | 預覽圖是暫存，跟「上游圖片一律不轉存」（[資料來源](../../資料來源.md)）是兩回事，但同樣不留 |
-| 同一個 session 的 seed | **建 session 時隨機一次，之後固定** | 重新定稿再生時，畫面差異才是 tag 造成的（可行性 §4） |
+| 同一個 session 的 seed | **建 session 時隨機一次，之後固定**（2026-10-10 起改成「目前的 seed」：換 seed 重生時才變，見[修正建議設計](2026-10-10-fix-suggestions-design.md) §5） | 重新定稿再生時，畫面差異才是 tag 造成的（可行性 §4） |
 | 用哪個 endpoint | 做法 B（GitHub 建置、模型包進映像檔）的 `GenAIPromptCopilot` | 冷啟動載入快、沒有網路磁碟月費（可行性 §9.1）；做法 A 留作換模型的試驗台 |
 
 ## 3. 範圍
@@ -301,7 +301,7 @@ audit 寫失敗只記 log，不改變回應（同推薦的做法）。
 | `ImageReviewer`、`SelfChecker` | 原樣沿用。自評結果改成 JSON 文字回給模型；圖片不進 `ChatHistory`（可行性 §4） |
 | `RenderWorker` 的收尾方法 | A 在這裡多一步：圖好了就通知 Dispatcher 觸發下一輪 |
 | `RenderRecord`、`Session.Renders`、圖片端點、audit | 原樣沿用；A 可能要在紀錄上加 session 版本戳，回來時版本變了就標 `Stale`（可行性 §6.4） |
-| session 固定 seed、同一個 session 一次一張 | A 本來就需要 |
+| session 固定 seed、同一個 session 一次一張 | A 本來就需要；seed 已改成可換（修正建議設計 §5） |
 | 前端的圖與自評清單 | 沿用顯示；更新來源從輪詢改成事件流 |
 
 A 要新增、跟本案無關的：生圖工具與「等生圖」的終止結果、伺服器觸發的新輪種類（`TurnKind.Observe`）、把「跑一輪」從 HTTP 請求抽出來（`AgenticOrchestrator`）、常駐的 session 事件流、每個要求的生圖預算、system prompt 的規則、依自評自動修正（要先決定是否量自評一致率，可行性 §9.2）。
