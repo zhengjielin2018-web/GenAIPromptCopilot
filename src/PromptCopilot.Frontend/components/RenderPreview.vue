@@ -10,7 +10,7 @@
       <span v-if="button.note" class="text-xs text-muted">{{ button.note }}</span>
       <span v-if="realistic" class="text-xs text-muted">預覽會是動漫風</span>
     </div>
-    <p v-if="slot?.requestError" class="mt-1.5 text-xs text-magenta">{{ slot.requestError }}</p>
+    <p v-if="slot?.requestError && slot.requestKind === 'render'" class="mt-1.5 text-xs text-magenta">{{ slot.requestError }}</p>
     <p v-if="slot?.expired" class="mt-1.5 text-xs text-muted">預覽已過期</p>
     <template v-else-if="view">
       <p v-if="line" class="mt-1.5 text-xs" :class="view.status === 'failed' || view.status === 'blocked' ? 'text-magenta' : 'text-muted'">{{ line }}</p>
@@ -33,6 +33,7 @@
               </button>
               <span v-if="fix.visible && fix.note" class="text-muted">{{ fix.note }}</span>
             </div>
+            <p v-if="slot?.requestError && slot.requestKind === 'reroll'" class="text-xs text-magenta">{{ slot.requestError }}</p>
             <p v-for="n in sg.notes" :key="n" class="text-xs text-muted">{{ n }}</p>
           </div>
           <template v-if="groups.user.length">

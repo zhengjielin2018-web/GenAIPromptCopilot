@@ -278,7 +278,7 @@ export const useSessionStore = defineStore('session', () => {
     const id = state.value.sessionId
     if (!id || !renderEnabled.value || busy.value || renderInFlight.value || turnIndex !== latestFinalizedTurn.value) return
     // 拿到 202 之前，卡上原本那張照樣留著；被拒絕時也不清掉（預覽設計 §8：訊息顯示在按鈕下方）
-    setRender(turnIndex, beginRequest(renders.value[turnIndex]))
+    setRender(turnIndex, beginRequest(renders.value[turnIndex], opts.reroll ? 'reroll' : 'render'))
     try {
       const r = await api.requestRender(id, messageBody(opts.reroll ? { turnIndex, reroll: true } : { turnIndex }, { canDisable: safetyCanDisable.value, off: safetyOff.value }))
       // 等待期間換了 session：舊對話的回應不能接到新對話

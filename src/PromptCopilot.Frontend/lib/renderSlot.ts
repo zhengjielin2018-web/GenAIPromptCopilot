@@ -4,7 +4,8 @@ import { isFinished } from './render'
 /** 一張定稿卡最新一次的預覽（預覽設計 §8）。store 只做 I/O，狀態怎麼變都在這裡（可測）。
  *  error：輪詢放棄時的訊息（圖照樣留著）；requestError：按鈕送出被拒絕或斷線的訊息（顯示在按鈕下方，不取代已經好的那張）。
  *  fresh：這個頁面上按出來的（重新整理後接回的不算）——只有 fresh 的、或看過它還沒結束的，結束時才跳提示。
- *  fixSent：這張的「請助理修改」已經按過（修正建議設計 §8），換成新的一張就重設。 */
+ *  fixSent：這張的「請助理修改」已經按過（修正建議設計 §8），換成新的一張就重設。
+ *  requestKind：最近一次是按「生成預覽」還是「換 seed 重生」送出的；被拒絕的訊息顯示在那個按鈕下方（修正建議設計 §9.1）。 */
 export interface RenderSlot {
   renderId: string | null
   view: RenderView | null
@@ -14,13 +15,14 @@ export interface RenderSlot {
   requesting: boolean
   fresh: boolean
   fixSent: boolean
+  requestKind: 'render' | 'reroll'
 }
 
-const EMPTY: RenderSlot = { renderId: null, view: null, error: null, requestError: null, expired: false, requesting: false, fresh: false, fixSent: false }
+const EMPTY: RenderSlot = { renderId: null, view: null, error: null, requestError: null, expired: false, requesting: false, fresh: false, fixSent: false, requestKind: 'render' }
 
-/** 按下「生成預覽」：拿到 202 之前，卡上原本那張照樣留著。 */
-export function beginRequest(prev: RenderSlot | undefined): RenderSlot {
-  return { ...(prev ?? EMPTY), requesting: true, requestError: null }
+/** 按下「生成預覽」或「換 seed 重生」：拿到 202 之前，卡上原本那張照樣留著。 */
+export function beginRequest(prev: RenderSlot | undefined, kind: RenderSlot['requestKind'] = 'render'): RenderSlot {
+  return { ...(prev ?? EMPTY), requesting: true, requestError: null, requestKind: kind }
 }
 
 /** 被拒絕（409／429／503）或斷線：舊的那張不動，訊息放在按鈕下方。 */

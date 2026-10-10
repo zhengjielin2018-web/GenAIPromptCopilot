@@ -9,6 +9,13 @@ const view = (status: RenderView['status']): RenderView => ({
 const done = () => applyView(requestAccepted('r1'), view('done'), true).slot
 
 describe('render slot', () => {
+  // 修正建議設計 §9.1：換 seed 被拒絕時，訊息要顯示在「換 seed 重生」下方，不是遠在圖上方的「生成預覽」下方
+  it('remembers which button made a refused request', () => {
+    expect(requestFailed(beginRequest(done(), 'reroll'), '這段對話的預覽張數已達上限（10 張）').requestKind).toBe('reroll')
+    expect(requestFailed(beginRequest(done()), '這段對話的預覽張數已達上限（10 張）').requestKind).toBe('render')
+    expect(beginRequest(requestFailed(beginRequest(done(), 'reroll'), 'x')).requestKind).toBe('render')
+  })
+
   it('remembers a sent fix until a new preview replaces the slot', () => {
     const sent = markFixSent(done())
     expect(sent.fixSent).toBe(true)
