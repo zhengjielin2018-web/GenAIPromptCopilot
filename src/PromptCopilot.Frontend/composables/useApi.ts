@@ -79,7 +79,7 @@ export function useApi() {
   }
 
   /** 生成預覽（預覽設計 §5.1）。失敗回狀態碼與後端的理由，由 store 決定怎麼顯示。 */
-  async function requestRender(id: string, body: { turnIndex: number; safety?: 'off' }): Promise<RenderRequestResult> {
+  async function requestRender(id: string, body: { turnIndex: number; safety?: 'off'; reroll?: boolean }): Promise<RenderRequestResult> {
     const r = await fetch(`${base}/api/sessions/${encodeURIComponent(id)}/renders`, {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
     })

@@ -518,6 +518,31 @@ public class EndpointTests : IClassFixture<EndpointTests.Factory>
         Assert.Empty(undocumented);
     }
 
+    /// <summary>符合度設計 §7：預覽狀態的 selfCheck 換成要求清單與分數，Swagger 上的格式說明要跟著換，不能還寫舊的 facet 清單。</summary>
+    [Fact]
+    public async Task Render_status_description_documents_the_intent_fit_format()
+    {
+        var doc = await _client.GetFromJsonAsync<System.Text.Json.JsonElement>("/swagger/v1/swagger.json");
+        var description = doc.GetProperty("paths").GetProperty("/api/sessions/{id}/renders/{renderId}").GetProperty("get").GetProperty("description").GetString();
+        foreach (var field in new[] { "score", "summary", "negativeTags", "met | unmet | unclear", "prompt_missing", "not_rendered", "requirementsMs" })
+            Assert.Contains(field, description);
+        Assert.DoesNotContain("facetId", description);
+        Assert.DoesNotContain("自評", description);
+    }
+
+    /// <summary>修正建議設計 §5、§6：POST 多了 reroll，GET 多了 seed 與 selfCheck.suggestion。</summary>
+    [Fact]
+    public async Task Render_descriptions_document_reroll_seed_and_suggestion()
+    {
+        var doc = await _client.GetFromJsonAsync<System.Text.Json.JsonElement>("/swagger/v1/swagger.json");
+        var paths = doc.GetProperty("paths");
+        var post = paths.GetProperty("/api/sessions/{id}/renders").GetProperty("post").GetProperty("description").GetString();
+        Assert.Contains("reroll", post);
+        var get = paths.GetProperty("/api/sessions/{id}/renders/{renderId}").GetProperty("get").GetProperty("description").GetString();
+        foreach (var field in new[] { "`seed`", "suggestion", "fix_prompt", "rewrite_tags", "reroll", "itemIds", "notes" })
+            Assert.Contains(field, get);
+    }
+
     /// <summary>子專案 3 設計 §2.6：finalized 多了 intentSummary，Swagger 的事件表要跟著寫，照文件寫的客戶端才知道有這個欄位。</summary>
     [Fact]
     public async Task Messages_description_documents_intent_summary_on_finalized()

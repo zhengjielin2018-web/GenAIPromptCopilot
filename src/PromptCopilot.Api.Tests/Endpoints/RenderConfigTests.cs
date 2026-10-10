@@ -31,5 +31,6 @@ public class RenderConfigTests
         var o = new RenderOptions();
         Assert.Equal((10, 200, 60, 180, 1000, 10), (o.PerSessionLimit, o.DailyLimit, o.MaxEstimatedWaitSeconds, o.JobTimeoutSeconds, o.PollIntervalMs, o.DefaultImageSeconds));
         Assert.False(o.Enabled);
+        Assert.Equal(2, o.SeedsBeforeRewrite);
     }
 }

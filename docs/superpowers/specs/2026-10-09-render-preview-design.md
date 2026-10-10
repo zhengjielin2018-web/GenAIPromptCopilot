@@ -1,6 +1,7 @@
 # 定稿後生成預覽圖：設計
 
 日期：2026-10-09
+更新：2026-10-10 自評改成「使用者想法符合度評分」，見[符合度評分設計](2026-10-10-intent-fit-scoring-design.md)；本文件描述自評內容的地方（§1、§4 元件表的 SelfChecker、§4.2、§5.2 的 selfCheck 格式、§8 自評清單、§9 自評統計、§11）以該設計為準。
 來源：2026-10-09 brainstorm。前情是 [ComfyUI 整合可行性](../../ComfyUI整合可行性.md)：生圖後端走 ComfyUI、先在 RunPod Serverless 上試（§2.2），spike 實測延遲過門檻（§9.2），專案擁有者決定直接相信 Gemini 自評、不量一致率（§9.2），換模型暫緩（§9.3）。
 
 ---
@@ -31,7 +32,7 @@
 | 審查開關 | 跟對話輪同一套：`safety: off` 要後端開放才收；**關著時完全不跑審查分類器** | 專案擁有者指定。關著時本來就是測試，不必多花一次 Gemini 呼叫 |
 | 生圖前要不要審提示詞 | 定稿當時審過就不再審；定稿是在審查關著時產生的（`LastFinal.Reviewed == false`）、這次又開著，就先補審 | 審過的不重花錢；沒審過的不能直接拿去生 |
 | 圖存哪 | **存在 session 裡，跟 session 一起過期**；不寫資料庫、不進知識庫與種子 | 預覽圖是暫存，跟「上游圖片一律不轉存」（[資料來源](../../資料來源.md)）是兩回事，但同樣不留 |
-| 同一個 session 的 seed | **建 session 時隨機一次，之後固定** | 重新定稿再生時，畫面差異才是 tag 造成的（可行性 §4） |
+| 同一個 session 的 seed | **建 session 時隨機一次，之後固定**（2026-10-10 起改成「目前的 seed」：換 seed 重生時才變，見[修正建議設計](2026-10-10-fix-suggestions-design.md) §5） | 重新定稿再生時，畫面差異才是 tag 造成的（可行性 §4） |
 | 用哪個 endpoint | 做法 B（GitHub 建置、模型包進映像檔）的 `GenAIPromptCopilot` | 冷啟動載入快、沒有網路磁碟月費（可行性 §9.1）；做法 A 留作換模型的試驗台 |
 
 ## 3. 範圍
@@ -62,8 +63,8 @@
 | `RenderService` | `Rendering/RenderService.cs` | **收件與建立工作的唯一入口**：輸入是中性的 `RenderRequest`（正向詞、負向詞、自評項目、seed、`safety`、定稿當時是否審過、來源 `turnIndex`），做 §5.1 裡跟 session 狀態無關的檢查（上一張還沒好、張數上限、預估等待）、必要時補審提示詞（§6）、建 `RenderRecord`、排進佇列。**不讀 `LastFinal`、不拿 session 鎖**：那些是呼叫端的事（§5.1），之後自主閉環的工具從一輪對話裡呼叫它時，那一輪已經拿著鎖（§12） |
 | `RenderQueue` | `Rendering/RenderQueue.cs` | `Channel<RenderJob>`、排第幾、最近 10 張佔住佇列的平均秒數、每日計數 |
 | `RenderWorker` | `Rendering/RenderWorker.cs`，`BackgroundService` | 單一消費者（對應 Runpod Max Workers 1）：組 workflow → 送出 → 等 → 取圖 → 審圖與自評平行跑（審圖過了就先放出圖，自評繼續跑）→ 收尾。**收尾集中在一個方法**（寫最終狀態、更新平均耗時、寫 audit），`done`／`failed`／`blocked` 都走它；自主閉環要在圖好了時觸發下一輪，就在這裡多一步（§12）。服務停止時取消手上的工作 |
-| `ImageReviewer` | `Safety/ImageReviewer.cs` | 看圖審查：nsfw、真實人物，回 JSON（`ResponseSchema`、`Temperature = 0`），寫法照 `SafetyClassifier`；圖片放在 user 訊息的 `ImageContent`。缺 `reason` 視為解析失敗。2026-10-10 起送的是 `ImageForGemini` 縮過的圖：長邊 768 的 JPEG（品質 85），審圖與自評共用一張，使用者看到的仍是原圖；實測原圖 PNG 審圖要 12–17 秒（可行性 §9.4） |
-| `SelfChecker` | `Rendering/SelfChecker.cs` | 自評：列出要檢查的項目（§4.2），請 Gemini 逐項回 `present`／`absent`／`unclear` 與一句理由 |
+| `ImageReviewer` | `Safety/ImageReviewer.cs` | 看圖審查：nsfw、真實人物，回 JSON（`ResponseSchema`；原本設 `Temperature = 0`，2026-10-10 起改用模型預設溫度，見 [eval-cases](../../eval-cases.md) R14–R17 的觀察），寫法照 `SafetyClassifier`；圖片放在 user 訊息的 `ImageContent`。缺 `reason` 視為解析失敗。2026-10-10 起送的是 `ImageForGemini` 縮過的圖：長邊 768 的 JPEG（品質 85），審圖與自評共用一張，使用者看到的仍是原圖；實測原圖 PNG 審圖要 12–17 秒（可行性 §9.4） |
+| `SelfChecker` | `Rendering/SelfChecker.cs` | 看圖步：逐條判圖符不符合使用者的要求（`met`／`unmet`／`unclear`），清單由 `RequirementExtractor` 整理（符合度設計 §4、§5） |
 | `RenderRecord` | `Rendering/RenderRecord.cs` | 一張圖的狀態、圖片 bytes、審圖與自評結果、耗時、`safety` |
 | `Session.Renders` | `Sessions/Session.cs` | `ConcurrentDictionary<string, RenderRecord>`；`Session.RenderSeed` 建 session 時隨機一次。不進 `SessionSnapshot`：對話輪回滾碰不到它 |
 
@@ -87,9 +88,7 @@ Gemini 的模型用 `Llm:Model`（跟 `SafetyClassifier` 同一個），走同�
 
 ### 4.2 自評的檢查項目
 
-定稿當下 `FacetStates` 是 `Covered`、而且 `FacetTags` 有 tag 的 facet，每個一項：`{facetId, label（facets.yaml 的中文標籤）, tag}`，例如 `{appearance.hair, 髮型, long silver hair}`。不另外挑「畫面看得出來的」facet：鏡頭焦段、參照畫師這類看不出來的，交給 Gemini 回 `unclear`。
-
-項目在收件時跟定稿一起做成快照，之後使用者再改設定也不影響這張圖的自評。
+已由[符合度評分設計](2026-10-10-intent-fit-scoring-design.md) §4 取代：檢查項目不再是 covered facet 的 tag，改成從對話整理出的使用者要求清單。
 
 ### 4.3 寫實風的判斷
 
@@ -302,7 +301,9 @@ audit 寫失敗只記 log，不改變回應（同推薦的做法）。
 | `ImageReviewer`、`SelfChecker` | 原樣沿用。自評結果改成 JSON 文字回給模型；圖片不進 `ChatHistory`（可行性 §4） |
 | `RenderWorker` 的收尾方法 | A 在這裡多一步：圖好了就通知 Dispatcher 觸發下一輪 |
 | `RenderRecord`、`Session.Renders`、圖片端點、audit | 原樣沿用；A 可能要在紀錄上加 session 版本戳，回來時版本變了就標 `Stale`（可行性 §6.4） |
-| session 固定 seed、同一個 session 一次一張 | A 本來就需要 |
+| session 固定 seed、同一個 session 一次一張 | A 本來就需要；seed 已改成可換（修正建議設計 §5） |
 | 前端的圖與自評清單 | 沿用顯示；更新來源從輪詢改成事件流 |
 
 A 要新增、跟本案無關的：生圖工具與「等生圖」的終止結果、伺服器觸發的新輪種類（`TurnKind.Observe`）、把「跑一輪」從 HTTP 請求抽出來（`AgenticOrchestrator`）、常駐的 session 事件流、每個要求的生圖預算、system prompt 的規則、依自評自動修正（要先決定是否量自評一致率，可行性 §9.2）。
+
+**2026-10-10 補充**：專案擁有者對閉環的想法見[符合度評分設計](2026-10-10-intent-fit-scoring-design.md) §14（每次定稿都給看 prompt、標「內部調整中」；依 prompt_missing／not_rendered 決定改 prompt 或換 seed；換 seed 與改 prompt 分開）。

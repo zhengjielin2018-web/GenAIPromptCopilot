@@ -251,3 +251,40 @@ API 層是用 SSE 直接打分支 `feat/set-recommendations` 的 API（本機 50
 | R6 | `SAFETY_ALLOW_DISABLE=true`、頂列關掉審查後生成 | 圖上方標「審查已關閉（測試用）」；audit 的 `Render_Completed` 沒有 `reviewMs` | ✅ 關掉審查後生成：圖上方「審查已關閉（測試用）」，沒有經過「審查圖片中」；audit 的 `reviewMs` 是 null |
 | R7 | `Render__PerSessionLimit=1` 重建 api，同一個對話生第二張 | `429`「這段對話的預覽張數已達上限（1 張）」 | 沒在 compose 上跑（compose 沒映射這個設定）；由 `RenderEndpointTests.Unfinished_previous_render_is_409_and_session_limit_is_429` 涵蓋 |
 | R8 | 讀 audit 的 `Render_Completed` | 記下 `reviewMs`、`selfCheckMs`、`delayMs`、`executionMs`，寫進 [ComfyUI 整合可行性](ComfyUI整合可行性.md) §9 | 已記進可行性 §9.4：審圖 14.6 秒、自評 12.3–16.7 秒，比估計的 2–5 秒慢很多 |
+
+## 2026-10-10 符合度評分（R9–R13）
+
+設計見[符合度評分設計](superpowers/specs/2026-10-10-intent-fit-scoring-design.md) §12.4。`docker compose up -d --build api frontend` 重建後，API 用 scratchpad 的 Python 腳本打 `localhost:5000`（追問時自動選第一個選項；R10b 改成一律回「這些你決定就好」）；畫面用 Playwright（`playwright-core` 驅動系統的 Edge，headless），把完成的 session 與 renderId 放進 sessionStorage 後重新整理，讀預覽區。實際呼叫 RunPod 與 Gemini，腳本不進 repo。
+
+| 編號 | 操作 | 預期 | 結果 |
+| :--- | :--- | :--- | :--- |
+| R9 | 「一個銀色雙馬尾的少女站在傍晚的海邊，穿白色洋裝，不要帽子，動漫風」→ 定稿 → 生成預覽 | 依序到評分中時圖已出現；補上「符合度 N」與說明文字；「你的要求」跟對話對得上 | ✅ generating → reviewing → self_checking → done；符合度 100，「使用者要求 11 條，11 條符合」；條目含銀色雙馬尾、白色洋裝、傍晚的海邊、不要帽子與追問時選的半身、平視、微笑。**「不要帽子」那條 prompt 其實沒把 `hat` 寫進負向詞**，評分給 met＋兩個 tag 欄都空，前端顯示「prompt 沒寫，剛好畫出來」——評分抓到了 prompt 的真實缺口 |
+| R10 | 「一個在咖啡廳看書的女孩，其他隨便」 | 出現收合的「模型幫你挑的（不計分，N 條）」；分數只算使用者講的 | ⚠️ 第一次腳本在追問時替使用者選了選項，8 條都成了 user（使用者選的就是 user，判法正確），沒測到委託。R10b 改成「畫一個在咖啡廳看書的女孩，其他都隨便你決定」、追問一律回「這些你決定就好」：✅ user 3 條（女生、咖啡廳、看書）＋ delegated 5 條（坐在桌旁、拿著書、室內、溫暖燈光、舒適氛圍）；符合度 100 只算 3 條；畫面上「模型幫你挑的（不計分，5 條）」預設收合，點開後格式同上 |
+| R11 | 「一個長髮少女在櫻花樹下，動漫風」→ 定稿 →「頭髮改成短髮」→ 定稿 → 生成預覽 | 清單只有短髮 | ✅ 清單只有「短髮」，沒有長髮。符合度 89：「半身特寫與平視視角」判 unmet（畫成全身），歸類 `not_rendered`，畫面標「沒畫出來」、滑鼠提示「prompt 有寫，但這次沒畫出來」 |
+| R12 | 「一隻黑貓坐在窗台上看雨，動漫風」→ 定稿 → 生成預覽 → 同一張卡再生一次 | 第二張 audit 的 `listReused: true`、`listKey` 相同 | ✅ 第一張 `listReused: false`、第二張 `true`，`listKey` 都是 `2bea0030`，清單 12 條相同。**同一張圖（同 seed、同 prompt）兩次判定不同**：「鮮豔色調」第一次 unmet、第二次 met，分數 91 → 100；主觀的風格類要求判定有雜訊 |
+| R13 | 讀 audit | `requirementsMs`、`selfCheckMs` 寫進可行性 §9.4 | ✅ 6 張：文字步 1.1–2.1 秒（中位數 1.6），一律比生圖短，沒有拉長整張的時間；看圖步 2.6–5.1 秒（中位數 2.9），跟原本的自評同一個量級。已記進[可行性](ComfyUI整合可行性.md) §9.4 |
+
+觀察（沒擋驗收，留給下一步決定）：
+
+- **清單粒度不一**：規則寫「一條只放一件看得見的事」，實際有併成一條的（「半身特寫與平視視角」「青春少女與微笑表情」），也有拆太細的（「坐在」「窗台」分兩條）。併成一條時，只要一半沒畫出來整條就 unmet，歸因變粗。
+- **判定雜訊**：R12 同一張圖兩次分數差 9 分，來自主觀的風格類要求（鮮豔色調）。之後閉環要拿分數當門檻時要考慮這點（符合度設計 §14）。
+
+## 2026-10-10 修正建議（R14–R17）
+
+設計見[修正建議設計](superpowers/specs/2026-10-10-fix-suggestions-design.md) §9.3。`docker compose up -d --build api frontend` 重建後，API 用 scratchpad 的 Python 腳本打 `localhost:5000`：開對話 → 定稿 → 生成預覽 → 照 `selfCheck.suggestion` 走（`fix_prompt`／`rewrite_tags` 把 `message` 當使用者訊息送出、確認卡選第一個、定稿後再生；`reroll` 用 `reroll: true` 再生；`none` 就停），每段最多 4 張。追問時自動選第一個選項；B、E 一律回「這些你決定就好」。畫面用 Playwright（同 R9–R13）。實際呼叫 RunPod 與 Gemini，腳本不進 repo。跑了 7 段對話，18 張生成完成：A 銀色雙馬尾少女抱白貓、B 咖啡廳看書的女孩、C 戴紅圍巾的柴犬、D 紅髮少年騎腳踏車背吉他、E 女孩（其他交給模型）、F 雨中撐傘的小女孩與青蛙、G 兩個少女背對背。
+
+| 編號 | 操作 | 預期 | 結果 |
+| :--- | :--- | :--- | :--- |
+| R14 | 出現「prompt 漏了」→ 按「請助理修改」→ 確認 → 定稿 → 生成預覽 | 送出的是程式組的那句話；新圖的 seed 跟上一張相同；那條要求這次有對應的 tag | ⚠️ `fix_prompt` 實機沒碰到（7 段對話沒有一條被判「prompt 漏了」），由 `FixAdvisorTests` 涵蓋。同一條路徑（送 `message` → 確認卡 → 定稿 → 生成預覽）由 `rewrite_tags` 走了 3 次（D、F、G）：✅ 送出的是程式組的那句話；新圖的 seed 都跟上一張相同；改寫後的 tag 都進了 prompt（`(carrying acoustic guitar on back:1.3)`、`cute little frog sitting on ground near feet`、`(kimono:1.2), traditional kimono`）。D 的吉他改寫後畫出來（80 → 100），F 的青蛙改寫後要再換一個 seed 才畫出來，G 的和服改寫後仍沒畫出來。畫面：F 最後一張按「請助理修改」後按鈕停用、旁邊寫「已送出修正」 |
+| R15 | 只剩「沒畫出來」→ 按「換 seed 重生」 | 新圖的 seed 不同；audit 的 `reroll: true` | ✅ 8 次（B 兩次、C、D、F 兩次、G 兩次）：新圖的 seed 都不同，audit `reroll: true`；使用者沒開口，`listKey` 不變、`listReused: true`。畫面：建議那一行、「換 seed 重生」按鈕、圖下方 `seed 2040762035` 都在 |
+| R16 | 同一條要求在 2 個 seed 下都沒畫出來 | 建議變成「改寫」 | ✅ 5 次（D、F 兩次、G 兩次）：文字是「換了 2 個 seed 都沒畫出來」，多條用「、」串接，負向的寫成「負向：text」。⚠️ B 的「專注閱讀的表情與動作」也在 2 個 seed 下都沒畫出來，卻還是建議換 seed：prompt 沒變，但文字步第一張對到 `focused expression`、第二張對到 `focused expression, focused on book`，tag 集合不同就從頭算（見觀察）。第 3 個 seed 畫出來了。之後已修：prompt 沒變就算同一條（修正建議設計 §4） |
+| R17 | 委託項目畫錯 | 建議旁邊有註記 | 實機沒碰到：有委託項目的 E（5 條）、D 第 3 張（1 條）都畫出來了。由 `FixAdvisorTests` 涵蓋 |
+
+觀察（沒擋驗收，留給下一步決定）：
+
+- **tag 對應的雜訊會讓 seed 計數從頭算**（已修）：設計原本假設「tag 變了 = 改寫過」，但文字步每張都重新對 tag，同一份 prompt 也會對到不同的 tag（R16 的 B），該建議改寫時還在建議換 seed，多花一張。已改成 prompt 沒變、或這條對到的 tag 相同，都算同一條（修正建議設計 §4，`FixAdvisorTests.Same_prompt_counts_even_when_the_matched_tags_differ`）。
+- **要求清單偶爾有錯字**：D 第 3 張的清單幾乎每條都是錯字（「牙錢十全」「鄉間匑匑」），F 前兩張有幾個字錯（「青蟙」應為「青蛙」、「雨鞴」應為「雨鞋」、「水殤倒影蘇虹燈」應為「水窪倒映霓虹燈」）。同一份回應裡有對有錯，錯的是字形相近的字，F 重新整理清單後又正確，判斷是模型（`gemini-3.5-flash-lite`、`Temperature = 0`、JSON 輸出）的輸出出錯，不是編碼問題。錯字會跟著進建議文字與送給助理的那句話。這是評分案的清單整理，之後把回 JSON 的 4 個呼叫（安全分類、看圖審查、整理清單、逐條判圖）都改回模型預設溫度（Google 建議 Gemini 3 系列不要調低溫度；溫度 0 本來就沒換到穩定，見 2026-09-29 facet 向量實驗）。改完做了一次只打文字的比對：7 段對話的輸入重組（使用者原話＋助理確認的話＋當時的 prompt；session 已過期，原本的整理拿不回來），溫度 0 與預設各整理清單 3 次、拿同一份清單對 tag 3 次，共 84 次呼叫。結果：兩邊都沒重現錯字（清單文字裡對話沒出現過的字：預設 4/1170、溫度 0 是 0/1165，預設那 4 個是「冬日」這種正常改寫）；對 tag 3 次完全相同的條目，預設 72/77（94%）、溫度 0 是 68/77（88%）；整理出的條數預設變動稍大（C：15、10、10；F：14、12、13；溫度 0 都一樣）；耗時中位數一樣（整理約 1.7 秒、對 tag 1.4–1.5 秒）。錯字的原因因此沒確認，可能是偶發的，也可能跟重組不出來的原本對話有關；改預設溫度沒有變差，照 Google 的建議留著。
+- **換第幾個 seed 才畫出來**（`Render:SeedsBeforeRewrite` 的參考）：C 的三條第 2 個 seed 都畫出來；B 第 3 個；D 的吉他、F 的青蛙與「不要出現任何文字」、G 的和服兩個 seed 都沒畫出來，改寫後吉他第 1 個、青蛙與文字第 2 個 seed 畫出來，和服仍沒有。樣本少，先不調。
+- **改寫一個 tag 會連帶影響其他條**：G 改寫和服、seed 不變，原本畫對的「背對背」「西裝外套」這張變成沒畫出來（91 → 73）。prompt 一變構圖就跟著變，「seed 不變才看得出差異」只在改動小時成立。
+- **送出修正後清單會重新整理**：使用者開口了，`listKey` 換新，條目的切法與 id 會變（G「穿和服」→「左邊穿和服」），舊清單下的失敗不算、seed 從頭算（照設計，修正建議設計 Review Focus 2）。
+- A 第一次遇到 RunPod 閒置約 4 小時後的冷啟動，超過 180 秒逾時（`Render_Failed`、`timeout`），跟這次改動無關；重跑正常。

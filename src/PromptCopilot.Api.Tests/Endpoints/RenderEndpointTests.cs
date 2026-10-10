@@ -24,13 +24,14 @@ public class RenderEndpointTests
         public Task<ImageVerdict> ReviewAsync(GeminiImage image, CancellationToken ct) { Interlocked.Increment(ref Calls); return Task.FromResult(new ImageVerdict(false, false, null, "ok")); }
     }
 
-    private sealed class OneItemChecker : ISelfChecker
+    private sealed class MetChecker : ISelfChecker
     {
-        public Task<IReadOnlyList<SelfCheckVerdict>> CheckAsync(GeminiImage image, IReadOnlyList<SelfCheckItem> items, CancellationToken ct) =>
-            Task.FromResult<IReadOnlyList<SelfCheckVerdict>>(new[] { new SelfCheckVerdict("appearance.hair", "髮型", "silver hair", "present", "銀髮") });
+        public Task<IReadOnlyList<RequirementVerdict>> CheckAsync(GeminiImage image, IReadOnlyList<RequirementMatch> items, CancellationToken ct) =>
+            Task.FromResult<IReadOnlyList<RequirementVerdict>>(items.Select(i => new RequirementVerdict(i.Id, i.Text, i.Source, i.Tags, i.NegativeTags, "met", "none", "有")).ToList());
     }
 
     private readonly CountingReviewer _reviewer = new();
+    private readonly RenderPipelineTests.FakeExtractor _extractor = new();
 
     private WebApplicationFactory<Program> Factory(Dictionary<string, string?>? extra = null)
     {
@@ -43,7 +44,8 @@ public class RenderEndpointTests
             {
                 s.AddSingleton<IRunPodClient>(new RenderPipelineTests.FakeRunPod());
                 s.AddSingleton<IImageReviewer>(_reviewer);
-                s.AddSingleton<ISelfChecker>(new OneItemChecker());
+                s.AddSingleton<ISelfChecker>(new MetChecker());
+                s.AddSingleton<IRequirementExtractor>(_extractor);
                 s.AddSingleton<IAuditSink>(new RecordingAudit());
             });
         });
@@ -54,6 +56,7 @@ public class RenderEndpointTests
         var s = f.Services.GetRequiredService<SessionStore>().Create();
         s.ApplyProfile("portrait", f.Services.GetRequiredService<FacetCatalog>());
         s.TurnIndex = turn;
+        s.ChatHistory.AddUserMessage("銀髮少女");
         s.RecordFinalize(new FinalPrompt("1girl, silver hair", "lowres", "", "", Reviewed: reviewed));
         return s;
     }
@@ -80,8 +83,13 @@ public class RenderEndpointTests
         var id = (await post.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("renderId").GetString();
         var done = await WaitFor(c, $"/api/sessions/{s.Id}/renders/{id}", "done");
         Assert.Equal(4, done.GetProperty("turnIndex").GetInt32());
-        Assert.Equal("ok", done.GetProperty("selfCheck").GetProperty("status").GetString());
-        Assert.Equal("present", done.GetProperty("selfCheck").GetProperty("items")[0].GetProperty("verdict").GetString());
+        var sc = done.GetProperty("selfCheck");
+        Assert.Equal(("ok", 100), (sc.GetProperty("status").GetString(), sc.GetProperty("score").GetInt32()));
+        Assert.Equal("使用者要求 1 條，1 條符合", sc.GetProperty("summary").GetString());
+        var item = sc.GetProperty("items")[0];
+        Assert.Equal(("r1", "met", "none"), (item.GetProperty("id").GetString(), item.GetProperty("verdict").GetString(), item.GetProperty("issue").GetString()));
+        Assert.Contains("使用者：銀髮少女", _extractor.LastTranscript);
+        Assert.Equal(0, _extractor.MatchCalls);
         var img = await c.GetAsync($"/api/sessions/{s.Id}/renders/{id}/image");
         Assert.Equal("image/png", img.Content.Headers.ContentType!.MediaType);
         Assert.Equal(new byte[] { 0x89, 0x50, 0x4E, 0x47 }, await img.Content.ReadAsByteArrayAsync());
@@ -172,5 +180,99 @@ public class RenderEndpointTests
         Assert.Equal(HttpStatusCode.OK, (await c.GetAsync($"/api/sessions/{s.Id}/renders/rv/image")).StatusCode);
         var missing = await c.GetAsync($"/api/sessions/{s.Id}/renders/nope");
         Assert.Contains("找不到這張預覽", await missing.Content.ReadAsStringAsync());
+    }
+
+    /// <summary>使用者沒再開口就重新生成：沿用 session 上的清單快照（符合度設計 §4.3）。</summary>
+    [Fact]
+    public async Task Same_user_words_reuse_the_snapshot()
+    {
+        await using var f = Factory();
+        var c = f.CreateClient();
+        var s = Finalized(f);
+        var key = IntentTranscript.Build(s, f.Services.GetRequiredService<FacetCatalog>()).Key;
+        var fixedList = new[] { new Requirement("r1", "銀色長髮", RequirementSources.User) };
+        s.Requirements = new RequirementSnapshot(key, fixedList);
+        var post = await c.PostAsJsonAsync($"/api/sessions/{s.Id}/renders", new { turnIndex = 4 });
+        var id = (await post.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("renderId").GetString();
+        await WaitFor(c, $"/api/sessions/{s.Id}/renders/{id}", "done");
+        Assert.Equal((0, 1), (_extractor.ExtractCalls, _extractor.MatchCalls));
+        Assert.Same(fixedList, _extractor.LastFixed);
+    }
+
+    [Fact]
+    public async Task A_snapshot_for_other_words_is_not_reused()
+    {
+        await using var f = Factory();
+        var c = f.CreateClient();
+        var s = Finalized(f);
+        s.Requirements = new RequirementSnapshot("someone-else", new[] { new Requirement("r1", "黑髮", RequirementSources.User) });
+        var post = await c.PostAsJsonAsync($"/api/sessions/{s.Id}/renders", new { turnIndex = 4 });
+        var id = (await post.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("renderId").GetString();
+        await WaitFor(c, $"/api/sessions/{s.Id}/renders/{id}", "done");
+        Assert.Equal((1, 0), (_extractor.ExtractCalls, _extractor.MatchCalls));
+        Assert.Equal("銀色長髮", s.Requirements!.Items[0].Text);   // 換成新整理的
+    }
+
+    [Fact]
+    public async Task Normal_render_uses_the_current_seed_and_shows_seed_and_suggestion()
+    {
+        await using var f = Factory();
+        var c = f.CreateClient();
+        var s = Finalized(f);
+        s.RenderSeed = 1234;
+        var post = await c.PostAsJsonAsync($"/api/sessions/{s.Id}/renders", new { turnIndex = 4 });
+        var id = (await post.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("renderId").GetString();
+        var done = await WaitFor(c, $"/api/sessions/{s.Id}/renders/{id}", "done");
+        Assert.Equal(1234, done.GetProperty("seed").GetInt64());
+        Assert.Equal("none", done.GetProperty("selfCheck").GetProperty("suggestion").GetProperty("kind").GetString());
+        Assert.Equal(1234, s.RenderSeed);
+    }
+
+    [Fact]
+    public async Task Reroll_uses_an_unused_seed_and_keeps_it_once_accepted()
+    {
+        await using var f = Factory();
+        var c = f.CreateClient();
+        var s = Finalized(f);
+        var before = s.RenderSeed;
+        var post = await c.PostAsJsonAsync($"/api/sessions/{s.Id}/renders", new { turnIndex = 4, reroll = true });
+        Assert.Equal(HttpStatusCode.Accepted, post.StatusCode);
+        var id = (await post.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("renderId").GetString()!;
+        var done = await WaitFor(c, $"/api/sessions/{s.Id}/renders/{id}", "done");
+        var seed = done.GetProperty("seed").GetInt64();
+        Assert.NotEqual(before, seed);
+        Assert.Equal(seed, s.RenderSeed);
+        Assert.True(s.Renders[id].Request.Reroll);
+    }
+
+    [Fact]
+    public async Task Refused_reroll_keeps_the_current_seed()
+    {
+        await using var f = Factory(new() { ["Render:PerSessionLimit"] = "1" });
+        var c = f.CreateClient();
+        var s = Finalized(f);
+        s.Renders["used"] = RenderRecordTests.New(id: "used");
+        s.Renders["used"].MarkSubmitted("j"); s.Renders["used"].Fail(RenderMessages.Failed, "runpod", null);
+        var before = s.RenderSeed;
+        var r = await c.PostAsJsonAsync($"/api/sessions/{s.Id}/renders", new { turnIndex = 4, reroll = true });
+        Assert.Equal((HttpStatusCode)429, r.StatusCode);
+        Assert.Equal(before, s.RenderSeed);
+    }
+
+    /// <summary>Review Focus 1：收了件、卻在補審 prompt 時就被擋下——圖沒生出來，目前的 seed 不能換掉。</summary>
+    [Fact]
+    public async Task Reroll_blocked_at_prompt_review_keeps_the_current_seed()
+    {
+        await using var f = Factory();
+        var c = f.CreateClient();
+        var s = Finalized(f, reviewed: false);
+        ((FakeChatCompletion)f.Services.GetRequiredService<IChatCompletionService>())
+            .Then(FakeChatCompletion.Text("""{"nsfw":true,"realPerson":false,"personName":null,"wantsAutoComplete":false,"reason":"裸露"}"""));
+        var before = s.RenderSeed;
+        var post = await c.PostAsJsonAsync($"/api/sessions/{s.Id}/renders", new { turnIndex = 4, reroll = true });
+        Assert.Equal(HttpStatusCode.Accepted, post.StatusCode);
+        var id = (await post.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("renderId").GetString()!;
+        Assert.Equal(RenderStatus.Blocked, s.Renders[id].Status);
+        Assert.Equal(before, s.RenderSeed);
     }
 }

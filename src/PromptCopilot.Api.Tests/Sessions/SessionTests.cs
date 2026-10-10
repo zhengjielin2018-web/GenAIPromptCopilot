@@ -213,11 +213,15 @@ public class SessionTests
         Assert.Equal(5, s.LastFinal!.TurnIndex);
     }
 
+    /// <summary>修正建議設計 §5：建 session 時隨機一次；之後只有「換 seed 重生」收件成功時才被寫成新的。</summary>
     [Fact]
-    public void Render_seed_is_fixed_for_the_session()
+    public void Render_seed_starts_random_and_changes_only_when_set()
     {
         var s = New();
-        Assert.True(s.RenderSeed > 0);
-        Assert.Equal(s.RenderSeed, s.RenderSeed);
+        var first = s.RenderSeed;
+        Assert.True(first > 0);
+        Assert.Equal(first, s.RenderSeed);
+        s.RenderSeed = first + 1;
+        Assert.Equal(first + 1, s.RenderSeed);
     }
 }

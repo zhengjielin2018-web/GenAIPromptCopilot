@@ -85,5 +85,8 @@ public sealed class RenderOptions
     public int GeminiTimeoutSeconds { get; set; } = 60;
     /// <summary>還沒有實測資料時，預估等待用的每張秒數。</summary>
     public int DefaultImageSeconds { get; set; } = 10;
+    /// <summary>同一條要求在幾個不同 seed 下都沒畫出來，修正建議就從「換 seed」改成「改寫 tag」（修正建議設計 §4）。
+    /// 先用 2：額度有限（每段對話 10 張）；之後從 audit 看實際換第幾個 seed 才畫出來再調。小於 1 時 FixAdvisor 當 1。</summary>
+    public int SeedsBeforeRewrite { get; set; } = 2;
     public bool Enabled => !string.IsNullOrWhiteSpace(EndpointId) && !string.IsNullOrWhiteSpace(ApiKey);
 }

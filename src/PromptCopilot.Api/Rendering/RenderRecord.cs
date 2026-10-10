@@ -1,3 +1,5 @@
+using PromptCopilot.Api.Sessions;
+
 namespace PromptCopilot.Api.Rendering;
 
 public enum RenderStatus { Queued, Generating, Reviewing, SelfChecking, Done, Failed, Blocked }
@@ -14,13 +16,12 @@ public static class RenderWire
     public static string SelfCheck(SelfCheckStatus s) => s switch { SelfCheckStatus.Pending => "pending", SelfCheckStatus.Ok => "ok", _ => "unavailable" };
 }
 
-public sealed record SelfCheckItem(string FacetId, string Label, string Tag);
-public sealed record SelfCheckVerdict(string FacetId, string Label, string Tag, string Verdict, string Reason);
-
 /// <summary>收件時的快照（預覽設計 §4、§5.1）：之後使用者再改設定也不影響這張圖。TurnIndex 是哪張定稿卡；
-/// 之後自主閉環是哪一輪（設計 §12）。PromptReviewed：定稿當時有沒有經過輸出審查（FinalPrompt.Reviewed）。</summary>
+/// 之後自主閉環是哪一輪（設計 §12）。PromptReviewed：定稿當時有沒有經過輸出審查（FinalPrompt.Reviewed）。
+/// Intent：對話整理與快照的鍵；ReusedRequirements：鍵跟 session 上的快照相同時，那份清單（符合度設計 §4.3）。
+/// Reroll：使用者按「換 seed 重生」生的（修正建議設計 §5），只進 audit。</summary>
 public sealed record RenderRequest(string SessionId, int TurnIndex, string Positive, string Negative, long Seed,
-    IReadOnlyList<SelfCheckItem> SelfCheckItems, bool SafetyOn, bool PromptReviewed);
+    IntentInput Intent, bool SafetyOn, bool PromptReviewed, IReadOnlyList<Requirement>? ReusedRequirements = null, bool Reroll = false);
 
 public static class RenderMessages
 {
@@ -31,26 +32,28 @@ public static class RenderMessages
     public const string Timeout = "生成逾時，可以再按一次";
 }
 
-public sealed record SelfCheckView(string Status, IReadOnlyList<SelfCheckVerdict> Items);
-public sealed record RenderTimingsView(int? QueueMs, int? DelayMs, int? ExecutionMs, int? ReviewMs, int? SelfCheckMs);
+public sealed record SelfCheckView(string Status, int? Score, string? Summary, IReadOnlyList<RequirementVerdict> Items, FixSuggestion? Suggestion);
+public sealed record RenderTimingsView(int? QueueMs, int? DelayMs, int? ExecutionMs, int? ReviewMs, int? RequirementsMs, int? SelfCheckMs);
 public sealed record RenderView(string RenderId, int TurnIndex, string Status, int? Position, string Safety, string? Message,
-    SelfCheckView SelfCheck, RenderTimingsView Timings);
+    SelfCheckView SelfCheck, RenderTimingsView Timings, long Seed);
 
 /// <summary>一張預覽。背景服務寫、端點讀，全部經過 _gate。狀態由事實推導而不是一格一格設（預覽設計 §5.2）：
-/// 圖還沒到是 queued／generating；審查開著而且還沒過是 reviewing（圖不給）；自評還沒好是 self_checking（圖給）；都好了是 done。
-/// 審圖與自評平行跑，誰先好都一樣。failed／blocked 是終點，之後的結果一律忽略。</summary>
-public sealed class RenderRecord(string id, RenderRequest request, DateOnly quotaDay)
+/// 圖還沒到是 queued／generating；審查開著而且還沒過是 reviewing（圖不給）；評分還沒好是 self_checking（圖給）；都好了是 done。
+/// 審圖與評分平行跑，誰先好都一樣。failed／blocked 是終點，之後的結果一律忽略。</summary>
+public sealed class RenderRecord(string id, RenderRequest request, DateOnly quotaDay, Session? owner = null)
 {
     private readonly object _gate = new();
     private bool _generating, _imageArrived, _reviewPassed, _selfCheckDone;
     private RenderStatus? _end;
     private string? _message;
     private byte[]? _image;
-    private IReadOnlyList<SelfCheckVerdict> _selfCheck = Array.Empty<SelfCheckVerdict>();
+    private SelfCheckResult? _selfCheck;
     private SelfCheckStatus _selfCheckState = SelfCheckStatus.Pending;
 
     public string Id => id;
     public RenderRequest Request => request;
+    /// <summary>收件時的 session，只用來寫回要求清單快照（符合度設計 §4.3）。session 中途過期時寫到已經不用的物件上，沒有影響。</summary>
+    public Session? Owner => owner;
     /// <summary>收件時保留額度的那一天（台灣時間）；沒送 RunPod 就結束時退回到這一天。</summary>
     public DateOnly QuotaDay => quotaDay;
 
@@ -61,6 +64,8 @@ public sealed class RenderRecord(string id, RenderRequest request, DateOnly quot
     public int? DelayMs { get; private set; }
     public int? ExecutionMs { get; private set; }
     public int? ReviewMs { get; private set; }
+    /// <summary>文字步（整理或重用要求清單）的耗時；SelfCheckMs 只算看圖步。</summary>
+    public int? RequirementsMs { get; private set; }
     public int? SelfCheckMs { get; private set; }
     /// <summary>只進 audit：被擋在哪一關（prompt／image）、失敗種類、細節（判定理由、例外）。不回給使用者（同 SafetyGuard 的 BlockDetail）。</summary>
     public string? BlockStage { get; private set; }
@@ -92,7 +97,7 @@ public sealed class RenderRecord(string id, RenderRequest request, DateOnly quot
     public byte[]? Image { get { lock (_gate) return Status is RenderStatus.SelfChecking or RenderStatus.Done ? _image : null; } }
 
     public SelfCheckStatus SelfCheckState { get { lock (_gate) return _selfCheckState; } }
-    public IReadOnlyList<SelfCheckVerdict> SelfCheck { get { lock (_gate) return _selfCheck; } }
+    public SelfCheckResult? SelfCheck { get { lock (_gate) return _selfCheck; } }
 
     public void MarkEnqueued(DateTimeOffset at) { lock (_gate) EnqueuedAt = at; }
 
@@ -107,15 +112,18 @@ public sealed class RenderRecord(string id, RenderRequest request, DateOnly quot
 
     public void ReviewPassed(int reviewMs) { lock (_gate) { if (_end is not null) return; _reviewPassed = true; ReviewMs = reviewMs; } }
 
-    /// <summary>verdicts 為 null 表示自評失敗（Gemini 出錯或拒收）：標 unavailable，圖照給。</summary>
-    public void SelfCheckFinished(IReadOnlyList<SelfCheckVerdict>? verdicts, int ms)
+    public void RequirementsFinished(int ms) { lock (_gate) RequirementsMs = ms; }
+
+    /// <summary>result 為 null 表示評分失敗（清單整理不出來、Gemini 出錯或拒收、逾時）：標 unavailable，圖照給。
+    /// ms 為 null：沒走到看圖步。</summary>
+    public void SelfCheckFinished(SelfCheckResult? result, int? ms)
     {
         lock (_gate)
         {
             if (_end is not null) return;
             _selfCheckDone = true; SelfCheckMs = ms;
-            _selfCheck = verdicts ?? Array.Empty<SelfCheckVerdict>();
-            _selfCheckState = verdicts is null ? SelfCheckStatus.Unavailable : SelfCheckStatus.Ok;
+            _selfCheck = result;
+            _selfCheckState = result is null ? SelfCheckStatus.Unavailable : SelfCheckStatus.Ok;
         }
     }
 
@@ -125,8 +133,8 @@ public sealed class RenderRecord(string id, RenderRequest request, DateOnly quot
         {
             if (_end is not null || Status == RenderStatus.Done) return;
             _end = RenderStatus.Blocked; _message = message; BlockStage = stage; Detail = detail; ReviewMs = reviewMs ?? ReviewMs;
-            // 自評結果跟著圖一起丟：狀態不能還寫 ok（或停在 pending），否則 view 與 audit 看起來像「自評好了但沒有項目」
-            _image = null; _selfCheck = Array.Empty<SelfCheckVerdict>(); _selfCheckState = SelfCheckStatus.Unavailable;
+            // 評分結果跟著圖一起丟：狀態不能還寫 ok（或停在 pending），否則 view 與 audit 看起來像「評分好了但沒有項目」
+            _image = null; _selfCheck = null; _selfCheckState = SelfCheckStatus.Unavailable;
         }
     }
 
@@ -144,10 +152,12 @@ public sealed class RenderRecord(string id, RenderRequest request, DateOnly quot
         lock (_gate)
         {
             var status = Status;
+            // 分數、說明、清單、建議都等 done 才給（審查開著時評分可能比審圖先好）
+            var sc = status == RenderStatus.Done ? _selfCheck : null;
             return new RenderView(id, request.TurnIndex, RenderWire.Status(status), status == RenderStatus.Queued ? position : null,
                 request.SafetyOn ? "on" : "off", _message,
-                new SelfCheckView(RenderWire.SelfCheck(_selfCheckState), status == RenderStatus.Done ? _selfCheck : Array.Empty<SelfCheckVerdict>()),
-                new RenderTimingsView(QueueMs, DelayMs, ExecutionMs, ReviewMs, SelfCheckMs));
+                new SelfCheckView(RenderWire.SelfCheck(_selfCheckState), sc?.Score, sc?.Summary, sc?.Items ?? Array.Empty<RequirementVerdict>(), sc?.Suggestion),
+                new RenderTimingsView(QueueMs, DelayMs, ExecutionMs, ReviewMs, RequirementsMs, SelfCheckMs), request.Seed);
         }
     }
 }

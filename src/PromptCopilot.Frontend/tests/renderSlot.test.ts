@@ -1,14 +1,29 @@
 import { describe, it, expect } from 'vitest'
-import { beginRequest, requestFailed, requestAccepted, resumed, gaveUp, applyView, isInFlight } from '../lib/renderSlot'
+import { beginRequest, requestFailed, requestAccepted, resumed, gaveUp, applyView, isInFlight, markFixSent } from '../lib/renderSlot'
 import type { RenderView } from '../types/api'
 
 const view = (status: RenderView['status']): RenderView => ({
   renderId: 'r1', turnIndex: 3, status, position: null, safety: 'on', message: null,
-  selfCheck: { status: 'pending', items: [] }, timings: { queueMs: null, delayMs: null, executionMs: null, reviewMs: null, selfCheckMs: null },
+  selfCheck: { status: 'pending', score: null, summary: null, items: [], suggestion: null }, timings: { queueMs: null, delayMs: null, executionMs: null, reviewMs: null, requirementsMs: null, selfCheckMs: null }, seed: 42,
 })
 const done = () => applyView(requestAccepted('r1'), view('done'), true).slot
 
 describe('render slot', () => {
+  // 修正建議設計 §9.1：換 seed 被拒絕時，訊息要顯示在「換 seed 重生」下方，不是遠在圖上方的「生成預覽」下方
+  it('remembers which button made a refused request', () => {
+    expect(requestFailed(beginRequest(done(), 'reroll'), '這段對話的預覽張數已達上限（10 張）').requestKind).toBe('reroll')
+    expect(requestFailed(beginRequest(done()), '這段對話的預覽張數已達上限（10 張）').requestKind).toBe('render')
+    expect(beginRequest(requestFailed(beginRequest(done(), 'reroll'), 'x')).requestKind).toBe('render')
+  })
+
+  it('remembers a sent fix until a new preview replaces the slot', () => {
+    const sent = markFixSent(done())
+    expect(sent.fixSent).toBe(true)
+    expect(beginRequest(sent).fixSent).toBe(true)
+    expect(requestAccepted('r2').fixSent).toBe(false)
+    expect(resumed('r1').fixSent).toBe(false)
+  })
+
   // 再按一次被 429／503／409 或斷線擋下：已經好的那張要留著，訊息只放在按鈕下方（預覽設計 §8）
   it('keeps the existing preview when a new request is refused', () => {
     const s = requestFailed(beginRequest(done()), '這段對話的預覽張數已達上限（10 張）')

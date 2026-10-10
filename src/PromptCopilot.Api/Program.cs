@@ -91,6 +91,7 @@ services.AddSingleton(TimeProvider.System);
 services.AddSingleton(_ => RenderWorkflow.Load(Path.Combine(AppContext.BaseDirectory, "Rendering", RenderWorkflow.FileName)));
 services.AddSingleton<IRunPodClient>(sp => RunPodClient.Create(sp.GetRequiredService<IOptions<RenderOptions>>().Value, sp.GetRequiredService<TimeProvider>()));
 services.AddSingleton<IImageReviewer, ImageReviewer>();
+services.AddSingleton<IRequirementExtractor, RequirementExtractor>();
 services.AddSingleton<ISelfChecker, SelfChecker>();
 services.AddSingleton<RenderQueue>();
 services.AddSingleton<RenderService>();

@@ -55,7 +55,7 @@ public sealed class RenderService(RenderQueue queue, SafetyClassifier classifier
             else if (wait > o.MaxEstimatedWaitSeconds) refusal = new("busy", 503, "目前人多，稍後再試", used, daily, wait);
             else
             {
-                record = new RenderRecord(Guid.NewGuid().ToString("N"), request, queue.TakeDaily());
+                record = new RenderRecord(Guid.NewGuid().ToString("N"), request, queue.TakeDaily(), session);
                 session.Renders[record.Id] = record;
             }
         }

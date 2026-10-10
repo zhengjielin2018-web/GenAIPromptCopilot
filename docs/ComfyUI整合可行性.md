@@ -432,6 +432,17 @@ Anima 吃 Danbooru tag，§2.2 對 Comfy Cloud 內建動漫模型「跟知識庫
 - 自評不再全判 `present`：7 張裡有 6 張各有 1 項 `absent`（例如「前景元素 raindrops on lens foreground：畫面未見明顯的鏡頭前雨滴特效」）。
 - 兩次重複送出都回 `409`「上一張還在生」；舊定稿卡回 `409`「只有最新一張定稿卡可以生成預覽」。
 
+**符合度評分（2026-10-10，[設計](superpowers/specs/2026-10-10-intent-fit-scoring-design.md)）**：自評改成文字步（從對話整理要求清單，跟生圖同時跑）＋看圖步。實測 6 張（[eval-cases](eval-cases.md) R9–R13）：
+
+| | 張數 | 範圍 | 中位數 |
+| :--- | ---: | ---: | ---: |
+| 文字步 `requirementsMs` | 6 | 1.1–2.1 秒 | 1.6 秒 |
+| 看圖步 `selfCheckMs` | 6 | 2.6–5.1 秒 | 2.9 秒 |
+
+- 文字步一律比生圖（delayTime＋executionTime，暖機時約 40 秒）短很多，跟生圖同時跑之後沒有拉長整張的時間。
+- 看圖步跟原本的自評（中位數 3.1 秒）同一個量級。
+- 第一張碰到冷啟動：delayTime 46.3 秒＋executionTime 109.1 秒，155 秒內完成，沒有超過 180 秒的上限。
+
 ---
 
 ## 10. 對既有文件的影響（定案後才改）

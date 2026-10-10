@@ -59,14 +59,21 @@ public sealed class Session
     private readonly Dictionary<string, int> _slateBatches = new();
     private static readonly IReadOnlyDictionary<string, int> NoneSeen = new Dictionary<string, int>();
 
-    /// <summary>生成預覽的 seed：建 session 時隨機一次，之後固定。重新定稿再生時，畫面差異才是 tag 造成的（預覽設計 §2）。</summary>
-    public long RenderSeed { get; } = Random.Shared.NextInt64(1, int.MaxValue);
+    /// <summary>生成預覽「目前的 seed」：建 session 時隨機一次；一般生圖（含改完 prompt 再生）都用它，前後兩張的差異才看得出是 prompt 造成的。
+    /// 只有「換 seed 重生」收件成功時，端點才把它換成新的（修正建議設計 §5）。只有生圖端點讀寫；同一段對話一次只有一張預覽在跑，不會搶寫。
+    /// 不進 SessionSnapshot：對話回滾碰不到它。</summary>
+    public long RenderSeed { get; set; } = Random.Shared.NextInt64(1, int.MaxValue);
 
     /// <summary>這個 session 的預覽圖（預覽設計 §4）：跟 session 一起過期，不進 SessionSnapshot，對話輪回滾碰不到它。</summary>
     public ConcurrentDictionary<string, RenderRecord> Renders { get; } = new();
 
     /// <summary>生成預覽補審（預覽設計 §6）通過的正向詞：同一份沒審過的定稿再生時不用重審。只記通過的；換了定稿正向詞就對不上，自然重審。</summary>
     public string? PreReviewedPositive { get; set; }
+
+    private volatile RequirementSnapshot? _requirements;
+    /// <summary>最新一份要求清單（符合度設計 §4.3）：鍵相同就重用，分數才能跨圖比較。由背景的 pipeline 寫、端點拿著鎖時讀，所以用 volatile。
+    /// 不進 SessionSnapshot：鍵照使用者的話算，回滾後鍵對不上就會重新整理，不會拿到錯的清單。</summary>
+    public RequirementSnapshot? Requirements { get => _requirements; set => _requirements = value; }
 
     public Session(string id, bool retrievalEnabled = true) { Id = id; RetrievalEnabled = retrievalEnabled; }
 
