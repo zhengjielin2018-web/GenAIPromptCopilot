@@ -80,6 +80,7 @@ public class RenderPipelineTests
 
     private static readonly ImageVerdict Clean = new(false, false, null, "風景");
     private static readonly RequirementVerdict Hair = new("r1", "銀色長髮", RequirementSources.User, new[] { "silver hair" }, Array.Empty<string>(), "met", "none", "銀色長髮");
+    private static readonly RequirementVerdict HairUnmet = new("r1", "銀色長髮", RequirementSources.User, new[] { "silver hair" }, Array.Empty<string>(), "unmet", "not_rendered", "短髮");
 
     private readonly FakeRunPod _runpod = new();
     private readonly GatedReviewer _reviewer = new();
@@ -129,6 +130,9 @@ public class RenderPipelineTests
         Assert.Contains("\"listKey\":\"k1\"", e.PayloadJson);
         Assert.Contains("\"requirementsMs\":", e.PayloadJson);
         Assert.Contains("\"jobId\":\"j1\"", e.PayloadJson);
+        Assert.Contains("\"seed\":42", e.PayloadJson);
+        Assert.Contains("\"reroll\":false", e.PayloadJson);
+        Assert.Contains("\"suggestion\":\"none\"", e.PayloadJson);
     }
 
     /// <summary>給 Gemini 的是縮小的 JPEG（可行性 §9.4：1.5 MB 的 PNG 審圖要十幾秒），使用者拿到的仍是原圖；兩邊共用同一張縮圖。</summary>
@@ -456,5 +460,54 @@ public class RenderPipelineTests
         await run.WaitAsync(TimeSpan.FromSeconds(5));
         Assert.True(_extractor.LastToken.IsCancellationRequested);
         Assert.Equal(RenderStatus.Blocked, r.Status);
+    }
+
+    /// <summary>修正建議設計 §4：用同一段對話其他圖的紀錄算建議。先前另一個 seed 也沒畫出來 → 第二個 seed 就建議改寫。</summary>
+    [Fact]
+    public async Task Suggestion_uses_earlier_renders_of_the_session()
+    {
+        var earlier = new RenderRecord("old", RenderRecordTests.Request() with { Seed = 7 }, _queue.TakeDaily(), _owner);
+        earlier.MarkGenerating(0); earlier.ImageArrived(Png, 1, 1); earlier.ReviewPassed(1);
+        earlier.SelfCheckFinished(SelfCheckScore.Build(new[] { HairUnmet }, "k1", false), 1);
+        _owner.Renders[earlier.Id] = earlier;
+        _reviewer.Gate.SetResult(Clean);
+        _checker.Gate.SetResult(new[] { HairUnmet });
+        var r = await Dequeued();
+        await Pipeline().ProcessAsync(r, default);
+        var s = r.SelfCheck!.Suggestion!;
+        Assert.Equal(SuggestionKinds.RewriteTags, s.Kind);
+        Assert.Equal(new[] { "r1" }, s.ItemIds);
+        var e = Assert.Single(_audit.Entries);
+        Assert.Contains("\"suggestion\":\"rewrite_tags\"", e.PayloadJson);
+        Assert.Contains("\"suggestionItems\":1", e.PayloadJson);
+    }
+
+    [Fact]
+    public async Task Unavailable_scoring_has_no_suggestion()
+    {
+        _extractor.Open = false;
+        _extractor.Gate.SetException(new InvalidOperationException("bad json"));
+        _reviewer.Gate.SetResult(Clean);
+        var r = await Dequeued();
+        await Pipeline().ProcessAsync(r, default);
+        Assert.Null(r.SelfCheck);
+        Assert.Contains("\"suggestion\":null", Assert.Single(_audit.Entries).PayloadJson);
+    }
+
+    /// <summary>Review Focus 4：其他圖的紀錄壞掉讓 FixAdvisor 丟例外：分數與圖照給，只是沒有建議。</summary>
+    [Fact]
+    public async Task Advice_failure_leaves_the_score_and_image()
+    {
+        var broken = new RenderRecord("old", RenderRecordTests.Request() with { Seed = 7 }, _queue.TakeDaily(), _owner);
+        broken.MarkGenerating(0); broken.ImageArrived(Png, 1, 1); broken.ReviewPassed(1);
+        broken.SelfCheckFinished(new SelfCheckResult(0, "壞的", null!, "k1", false), 1);
+        _owner.Renders[broken.Id] = broken;
+        _reviewer.Gate.SetResult(Clean);
+        _checker.Gate.SetResult(new[] { HairUnmet });
+        var r = await Dequeued();
+        await Pipeline().ProcessAsync(r, default);
+        Assert.Equal((RenderStatus.Done, SelfCheckStatus.Ok, (int?)0), (r.Status, r.SelfCheckState, r.SelfCheck!.Score));
+        Assert.Null(r.SelfCheck.Suggestion);
+        Assert.Equal(Png, r.Image);
     }
 }

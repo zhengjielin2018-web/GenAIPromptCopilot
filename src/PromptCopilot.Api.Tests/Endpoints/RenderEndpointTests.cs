@@ -212,4 +212,67 @@ public class RenderEndpointTests
         Assert.Equal((1, 0), (_extractor.ExtractCalls, _extractor.MatchCalls));
         Assert.Equal("銀色長髮", s.Requirements!.Items[0].Text);   // 換成新整理的
     }
+
+    [Fact]
+    public async Task Normal_render_uses_the_current_seed_and_shows_seed_and_suggestion()
+    {
+        await using var f = Factory();
+        var c = f.CreateClient();
+        var s = Finalized(f);
+        s.RenderSeed = 1234;
+        var post = await c.PostAsJsonAsync($"/api/sessions/{s.Id}/renders", new { turnIndex = 4 });
+        var id = (await post.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("renderId").GetString();
+        var done = await WaitFor(c, $"/api/sessions/{s.Id}/renders/{id}", "done");
+        Assert.Equal(1234, done.GetProperty("seed").GetInt64());
+        Assert.Equal("none", done.GetProperty("selfCheck").GetProperty("suggestion").GetProperty("kind").GetString());
+        Assert.Equal(1234, s.RenderSeed);
+    }
+
+    [Fact]
+    public async Task Reroll_uses_an_unused_seed_and_keeps_it_once_accepted()
+    {
+        await using var f = Factory();
+        var c = f.CreateClient();
+        var s = Finalized(f);
+        var before = s.RenderSeed;
+        var post = await c.PostAsJsonAsync($"/api/sessions/{s.Id}/renders", new { turnIndex = 4, reroll = true });
+        Assert.Equal(HttpStatusCode.Accepted, post.StatusCode);
+        var id = (await post.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("renderId").GetString()!;
+        var done = await WaitFor(c, $"/api/sessions/{s.Id}/renders/{id}", "done");
+        var seed = done.GetProperty("seed").GetInt64();
+        Assert.NotEqual(before, seed);
+        Assert.Equal(seed, s.RenderSeed);
+        Assert.True(s.Renders[id].Request.Reroll);
+    }
+
+    [Fact]
+    public async Task Refused_reroll_keeps_the_current_seed()
+    {
+        await using var f = Factory(new() { ["Render:PerSessionLimit"] = "1" });
+        var c = f.CreateClient();
+        var s = Finalized(f);
+        s.Renders["used"] = RenderRecordTests.New(id: "used");
+        s.Renders["used"].MarkSubmitted("j"); s.Renders["used"].Fail(RenderMessages.Failed, "runpod", null);
+        var before = s.RenderSeed;
+        var r = await c.PostAsJsonAsync($"/api/sessions/{s.Id}/renders", new { turnIndex = 4, reroll = true });
+        Assert.Equal((HttpStatusCode)429, r.StatusCode);
+        Assert.Equal(before, s.RenderSeed);
+    }
+
+    /// <summary>Review Focus 1：收了件、卻在補審 prompt 時就被擋下——圖沒生出來，目前的 seed 不能換掉。</summary>
+    [Fact]
+    public async Task Reroll_blocked_at_prompt_review_keeps_the_current_seed()
+    {
+        await using var f = Factory();
+        var c = f.CreateClient();
+        var s = Finalized(f, reviewed: false);
+        ((FakeChatCompletion)f.Services.GetRequiredService<IChatCompletionService>())
+            .Then(FakeChatCompletion.Text("""{"nsfw":true,"realPerson":false,"personName":null,"wantsAutoComplete":false,"reason":"裸露"}"""));
+        var before = s.RenderSeed;
+        var post = await c.PostAsJsonAsync($"/api/sessions/{s.Id}/renders", new { turnIndex = 4, reroll = true });
+        Assert.Equal(HttpStatusCode.Accepted, post.StatusCode);
+        var id = (await post.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("renderId").GetString()!;
+        Assert.Equal(RenderStatus.Blocked, s.Renders[id].Status);
+        Assert.Equal(before, s.RenderSeed);
+    }
 }

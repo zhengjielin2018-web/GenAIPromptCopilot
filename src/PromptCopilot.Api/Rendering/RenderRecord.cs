@@ -18,9 +18,10 @@ public static class RenderWire
 
 /// <summary>收件時的快照（預覽設計 §4、§5.1）：之後使用者再改設定也不影響這張圖。TurnIndex 是哪張定稿卡；
 /// 之後自主閉環是哪一輪（設計 §12）。PromptReviewed：定稿當時有沒有經過輸出審查（FinalPrompt.Reviewed）。
-/// Intent：對話整理與快照的鍵；ReusedRequirements：鍵跟 session 上的快照相同時，那份清單（符合度設計 §4.3）。</summary>
+/// Intent：對話整理與快照的鍵；ReusedRequirements：鍵跟 session 上的快照相同時，那份清單（符合度設計 §4.3）。
+/// Reroll：使用者按「換 seed 重生」生的（修正建議設計 §5），只進 audit。</summary>
 public sealed record RenderRequest(string SessionId, int TurnIndex, string Positive, string Negative, long Seed,
-    IntentInput Intent, bool SafetyOn, bool PromptReviewed, IReadOnlyList<Requirement>? ReusedRequirements = null);
+    IntentInput Intent, bool SafetyOn, bool PromptReviewed, IReadOnlyList<Requirement>? ReusedRequirements = null, bool Reroll = false);
 
 public static class RenderMessages
 {
@@ -31,10 +32,10 @@ public static class RenderMessages
     public const string Timeout = "生成逾時，可以再按一次";
 }
 
-public sealed record SelfCheckView(string Status, int? Score, string? Summary, IReadOnlyList<RequirementVerdict> Items);
+public sealed record SelfCheckView(string Status, int? Score, string? Summary, IReadOnlyList<RequirementVerdict> Items, FixSuggestion? Suggestion);
 public sealed record RenderTimingsView(int? QueueMs, int? DelayMs, int? ExecutionMs, int? ReviewMs, int? RequirementsMs, int? SelfCheckMs);
 public sealed record RenderView(string RenderId, int TurnIndex, string Status, int? Position, string Safety, string? Message,
-    SelfCheckView SelfCheck, RenderTimingsView Timings);
+    SelfCheckView SelfCheck, RenderTimingsView Timings, long Seed);
 
 /// <summary>一張預覽。背景服務寫、端點讀，全部經過 _gate。狀態由事實推導而不是一格一格設（預覽設計 §5.2）：
 /// 圖還沒到是 queued／generating；審查開著而且還沒過是 reviewing（圖不給）；評分還沒好是 self_checking（圖給）；都好了是 done。
@@ -151,12 +152,12 @@ public sealed class RenderRecord(string id, RenderRequest request, DateOnly quot
         lock (_gate)
         {
             var status = Status;
-            // 分數、說明、清單都等 done 才給（審查開著時評分可能比審圖先好）
+            // 分數、說明、清單、建議都等 done 才給（審查開著時評分可能比審圖先好）
             var sc = status == RenderStatus.Done ? _selfCheck : null;
             return new RenderView(id, request.TurnIndex, RenderWire.Status(status), status == RenderStatus.Queued ? position : null,
                 request.SafetyOn ? "on" : "off", _message,
-                new SelfCheckView(RenderWire.SelfCheck(_selfCheckState), sc?.Score, sc?.Summary, sc?.Items ?? Array.Empty<RequirementVerdict>()),
-                new RenderTimingsView(QueueMs, DelayMs, ExecutionMs, ReviewMs, RequirementsMs, SelfCheckMs));
+                new SelfCheckView(RenderWire.SelfCheck(_selfCheckState), sc?.Score, sc?.Summary, sc?.Items ?? Array.Empty<RequirementVerdict>(), sc?.Suggestion),
+                new RenderTimingsView(QueueMs, DelayMs, ExecutionMs, ReviewMs, RequirementsMs, SelfCheckMs), request.Seed);
         }
     }
 }

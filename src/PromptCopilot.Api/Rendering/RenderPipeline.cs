@@ -138,13 +138,34 @@ public sealed class RenderPipeline(IRunPodClient runpod, RenderWorkflow workflow
         try
         {
             var verdicts = await checker.CheckAsync(image, outcome.Items, timeout.Token);
-            r.SelfCheckFinished(SelfCheckScore.Build(verdicts, r.Request.Intent.Key, outcome.Reused), Ms(t));
+            var result = SelfCheckScore.Build(verdicts, r.Request.Intent.Key, outcome.Reused);
+            r.SelfCheckFinished(result with { Suggestion = Advise(r, result) }, Ms(t));
         }
         catch (Exception e)
         {
             // 評分只是顯示：失敗或逾時就標 unavailable，圖照給（審查關著時 Gemini 拒收也一樣）。審圖擋下而取消的不用記
             if (r.Status != RenderStatus.Blocked) logger.LogInformation(e, "self-check unavailable for render {RenderId}", r.Id);
             r.SelfCheckFinished(null, Ms(t));
+        }
+    }
+
+    /// <summary>修正建議（修正建議設計 §4、§7）：用同一段對話其他評分 ok 的圖算「換了幾個 seed」。只是建議：算不出來就沒有，分數與圖照給。</summary>
+    private FixSuggestion? Advise(RenderRecord r, SelfCheckResult result)
+    {
+        try
+        {
+            var others = (r.Owner?.Renders.Values ?? Enumerable.Empty<RenderRecord>())
+                .Where(o => o.Id != r.Id)
+                .Select(o => (o, sc: o.SelfCheck))
+                .Where(x => x.sc is not null)
+                .Select(x => new PastRender(x.o.Request.Seed, x.o.Request.Positive, x.o.Request.Negative, x.sc!))
+                .ToList();
+            return FixAdvisor.Advise(result, r.Request.Seed, r.Request.Positive, r.Request.Negative, others, options.Value.SeedsBeforeRewrite);
+        }
+        catch (Exception e)
+        {
+            logger.LogWarning(e, "fix advice failed for render {RenderId}", r.Id);
+            return null;
         }
     }
 
@@ -156,10 +177,11 @@ public sealed class RenderPipeline(IRunPodClient runpod, RenderWorkflow workflow
         var eventType = r.Status switch { RenderStatus.Done => "Render_Completed", RenderStatus.Blocked => "Render_Blocked", _ => "Render_Failed" };
         var payload = JsonSerializer.Serialize(new
         {
-            renderId = r.Id, safety = r.Request.SafetyOn ? "on" : "off", jobId = r.RunPodJobId,
+            renderId = r.Id, safety = r.Request.SafetyOn ? "on" : "off", jobId = r.RunPodJobId, seed = r.Request.Seed, reroll = r.Request.Reroll,
             queueMs = r.QueueMs, delayMs = r.DelayMs, executionMs = r.ExecutionMs, reviewMs = r.ReviewMs,
             requirementsMs = r.RequirementsMs, selfCheckMs = r.SelfCheckMs,
             selfCheck = SelfCheckScore.Audit(RenderWire.SelfCheck(r.SelfCheckState), r.SelfCheck),
+            suggestion = r.SelfCheck?.Suggestion?.Kind, suggestionItems = r.SelfCheck?.Suggestion?.ItemIds.Count,
             stage = r.BlockStage, error = r.FailureKind, detail = r.Detail,
         }, RenderAudit.Json);
         await RenderAudit.TryWriteAsync(audit, new AuditEntry(r.Request.SessionId, r.Request.TurnIndex, eventType, PayloadJson: payload, LatencyMs: latencyMs), logger);

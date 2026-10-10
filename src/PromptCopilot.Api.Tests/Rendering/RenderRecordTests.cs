@@ -129,7 +129,8 @@ public class RenderRecordTests
         r.MarkGenerating(10); r.ImageArrived(Png, 100, 4600); r.ReviewPassed(1800);
         var json = JsonSerializer.Serialize(r.View(position: null), new JsonSerializerOptions(JsonSerializerDefaults.Web));
         Assert.Contains("\"status\":\"self_checking\"", json);
-        Assert.Contains("\"selfCheck\":{\"status\":\"pending\",\"score\":null,\"summary\":null,\"items\":[]}", json);
+        Assert.Contains("\"selfCheck\":{\"status\":\"pending\",\"score\":null,\"summary\":null,\"items\":[],\"suggestion\":null}", json);
+        Assert.Contains("\"seed\":42", json);
         Assert.Contains("\"requirementsMs\":null", json);
         Assert.Contains("\"safety\":\"on\"", json);
         Assert.Contains("\"renderId\":\"r1\"", json);
@@ -161,5 +162,17 @@ public class RenderRecordTests
         r.SelfCheckFinished(Hair, 900);                     // 審圖還沒過：reviewing
         var v = r.View(null).SelfCheck;
         Assert.Equal(("ok", (int?)null, (string?)null, 0), (v.Status, v.Score, v.Summary, v.Items.Count));
+    }
+
+    [Fact]
+    public void Suggestion_is_shown_only_when_done()
+    {
+        var advised = Hair with { Suggestion = new FixSuggestion(SuggestionKinds.None, null, null, Array.Empty<string>(), new[] { "註記" }) };
+        var r = New();
+        r.MarkGenerating(0); r.ImageArrived(Png, 1, 1);
+        r.SelfCheckFinished(advised, 900);
+        Assert.Null(r.View(null).SelfCheck.Suggestion);                 // 還在 reviewing
+        r.ReviewPassed(1);
+        Assert.Equal(new[] { "註記" }, r.View(null).SelfCheck.Suggestion!.Notes);
     }
 }

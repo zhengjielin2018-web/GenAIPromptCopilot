@@ -59,8 +59,10 @@ public sealed class Session
     private readonly Dictionary<string, int> _slateBatches = new();
     private static readonly IReadOnlyDictionary<string, int> NoneSeen = new Dictionary<string, int>();
 
-    /// <summary>生成預覽的 seed：建 session 時隨機一次，之後固定。重新定稿再生時，畫面差異才是 tag 造成的（預覽設計 §2）。</summary>
-    public long RenderSeed { get; } = Random.Shared.NextInt64(1, int.MaxValue);
+    /// <summary>生成預覽「目前的 seed」：建 session 時隨機一次；一般生圖（含改完 prompt 再生）都用它，前後兩張的差異才看得出是 prompt 造成的。
+    /// 只有「換 seed 重生」收件成功時，端點才把它換成新的（修正建議設計 §5）。只有生圖端點讀寫；同一段對話一次只有一張預覽在跑，不會搶寫。
+    /// 不進 SessionSnapshot：對話回滾碰不到它。</summary>
+    public long RenderSeed { get; set; } = Random.Shared.NextInt64(1, int.MaxValue);
 
     /// <summary>這個 session 的預覽圖（預覽設計 §4）：跟 session 一起過期，不進 SessionSnapshot，對話輪回滾碰不到它。</summary>
     public ConcurrentDictionary<string, RenderRecord> Renders { get; } = new();
