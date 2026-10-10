@@ -63,7 +63,7 @@
 | `RenderService` | `Rendering/RenderService.cs` | **收件與建立工作的唯一入口**：輸入是中性的 `RenderRequest`（正向詞、負向詞、自評項目、seed、`safety`、定稿當時是否審過、來源 `turnIndex`），做 §5.1 裡跟 session 狀態無關的檢查（上一張還沒好、張數上限、預估等待）、必要時補審提示詞（§6）、建 `RenderRecord`、排進佇列。**不讀 `LastFinal`、不拿 session 鎖**：那些是呼叫端的事（§5.1），之後自主閉環的工具從一輪對話裡呼叫它時，那一輪已經拿著鎖（§12） |
 | `RenderQueue` | `Rendering/RenderQueue.cs` | `Channel<RenderJob>`、排第幾、最近 10 張佔住佇列的平均秒數、每日計數 |
 | `RenderWorker` | `Rendering/RenderWorker.cs`，`BackgroundService` | 單一消費者（對應 Runpod Max Workers 1）：組 workflow → 送出 → 等 → 取圖 → 審圖與自評平行跑（審圖過了就先放出圖，自評繼續跑）→ 收尾。**收尾集中在一個方法**（寫最終狀態、更新平均耗時、寫 audit），`done`／`failed`／`blocked` 都走它；自主閉環要在圖好了時觸發下一輪，就在這裡多一步（§12）。服務停止時取消手上的工作 |
-| `ImageReviewer` | `Safety/ImageReviewer.cs` | 看圖審查：nsfw、真實人物，回 JSON（`ResponseSchema`、`Temperature = 0`），寫法照 `SafetyClassifier`；圖片放在 user 訊息的 `ImageContent`。缺 `reason` 視為解析失敗。2026-10-10 起送的是 `ImageForGemini` 縮過的圖：長邊 768 的 JPEG（品質 85），審圖與自評共用一張，使用者看到的仍是原圖；實測原圖 PNG 審圖要 12–17 秒（可行性 §9.4） |
+| `ImageReviewer` | `Safety/ImageReviewer.cs` | 看圖審查：nsfw、真實人物，回 JSON（`ResponseSchema`；原本設 `Temperature = 0`，2026-10-10 起改用模型預設溫度，見 [eval-cases](../../eval-cases.md) R14–R17 的觀察），寫法照 `SafetyClassifier`；圖片放在 user 訊息的 `ImageContent`。缺 `reason` 視為解析失敗。2026-10-10 起送的是 `ImageForGemini` 縮過的圖：長邊 768 的 JPEG（品質 85），審圖與自評共用一張，使用者看到的仍是原圖；實測原圖 PNG 審圖要 12–17 秒（可行性 §9.4） |
 | `SelfChecker` | `Rendering/SelfChecker.cs` | 看圖步：逐條判圖符不符合使用者的要求（`met`／`unmet`／`unclear`），清單由 `RequirementExtractor` 整理（符合度設計 §4、§5） |
 | `RenderRecord` | `Rendering/RenderRecord.cs` | 一張圖的狀態、圖片 bytes、審圖與自評結果、耗時、`safety` |
 | `Session.Renders` | `Sessions/Session.cs` | `ConcurrentDictionary<string, RenderRecord>`；`Session.RenderSeed` 建 session 時隨機一次。不進 `SessionSnapshot`：對話輪回滾碰不到它 |

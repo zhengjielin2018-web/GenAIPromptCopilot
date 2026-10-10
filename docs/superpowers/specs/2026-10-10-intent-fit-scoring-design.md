@@ -87,7 +87,7 @@
 
 ### 4.2 整理要求
 
-`RequirementExtractor` 用不帶圖的 Gemini 呼叫（`ResponseSchema`、`Temperature = 0`，同 `GeminiImagePrompt` 的寫法），分兩種模式：
+`RequirementExtractor` 用不帶圖的 Gemini 呼叫（`ResponseSchema`，同 `GeminiImagePrompt` 的寫法；原本設 `Temperature = 0`，2026-10-10 起改用模型預設溫度，見 [eval-cases](../../eval-cases.md) R14–R17 的觀察），分兩種模式：
 
 **重新整理**（`Session.Requirements` 沒有、或鍵不同）：送 §4.1 的全文，回
 

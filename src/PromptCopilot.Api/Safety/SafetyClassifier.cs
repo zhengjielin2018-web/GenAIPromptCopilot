@@ -41,12 +41,12 @@ public sealed class SafetyClassifier(IChatCompletionService chat, IOptions<LlmOp
     {
         var history = new ChatHistory();
         history.AddUserMessage(prompt);
+        // 不設 temperature，用模型預設（同 GeminiImagePrompt 的理由）
         var settings = new GeminiPromptExecutionSettings
         {
             ModelId = llm.Value.Model,
             ResponseMimeType = "application/json",
             ResponseSchema = typeof(SafetyVerdict),
-            Temperature = 0,
         };
         var result = await chat.GetChatMessageContentsAsync(history, settings, kernel: null, ct);
         var content = result[0].Content ?? "";

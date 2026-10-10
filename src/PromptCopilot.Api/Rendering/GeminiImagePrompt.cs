@@ -15,7 +15,9 @@ internal static class GeminiImagePrompt
         var items = new ChatMessageContentItemCollection { new TextContent(prompt) };
         if (image is not null) items.Add(new ImageContent(image.Data, image.MimeType));
         history.AddUserMessage(items);
-        var settings = new GeminiPromptExecutionSettings { ModelId = model, ResponseMimeType = "application/json", ResponseSchema = schema, Temperature = 0 };
+        // 不設 temperature，用模型預設：Google 建議 Gemini 3 系列維持預設，調低可能迴圈或品質下降；
+        // 溫度 0 時要求清單偶爾有錯字，同一個輸入也照樣給不同的 tag，沒換到穩定（eval-cases R14–R17、facet 向量實驗）
+        var settings = new GeminiPromptExecutionSettings { ModelId = model, ResponseMimeType = "application/json", ResponseSchema = schema };
         var result = await chat.GetChatMessageContentsAsync(history, settings, kernel: null, ct);
         return result[0].Content ?? "";
     }
