@@ -6,6 +6,7 @@
 | # | 問題 | 類型 | 優先 |
 | :--- | :--- | :--- | :--- |
 | 4 | 無害描述被上游 SAFETY 連續誤擋 | 行為 | 中 |
+| 18 | 輸出安全把模型自己帶進來的名字當成真人，整輪失敗 | 行為 | 中 |
 | 5 | eval #5、#18 行為不符預期；§14 端到端要在新 HEAD 重跑 | 調整 | 低 |
 | 10 | 整套組合推薦的已知限制：錨靠模型翻譯、SQL 的錨比對比 C# 粗、換了內容沒重給 `tags` 時舊錨留著；採用輪失敗後重試是純文字，HTTP 層就失敗時填回的是佔位字 | 限制 | 低 |
 | 11 | `AskUser`／`Discuss` 的 call args 壓縮對 Gemini 不生效 | 成本 | 低 |
@@ -88,6 +89,19 @@
 **現象**（2026-10-10 符合度評分最終審查）：每輪收尾 `HistoryTrimmer.Truncate` 把 `ChatHistory` 截成最近 `Orchestrator:HistoryTurns`（20）則使用者訊息。先確認再動手之後，按確認卡、回追問各算一則，大約 8–10 輪修改就會截掉第一句；第一句通常是最完整的主體描述。[`IntentTranscript`](../src/PromptCopilot.Api/Rendering/IntentTranscript.cs) 從截短後的 history 組對話整理，清單就少了這些要求，分數只算在剩下的要求上。[`RecommendationService.JoinedUserText`](../src/PromptCopilot.Api/Orchestration/RecommendationService.cs) 有同樣的限制。
 
 **可能的方向**：`Session` 另存一份不截短的對話紀錄（使用者原話＋助理的確認／追問／回應），放進 `SessionSnapshot` 讓回滾一起回來，`IntentTranscript` 與推薦都讀那一份。要動 orchestrator 與回滾，另開一案（[符合度評分設計](superpowers/specs/2026-10-10-intent-fit-scoring-design.md) §4.1）。
+
+## 18. 輸出安全把模型自己帶進來的名字當成真人，整輪失敗（行為，中）
+
+**現象**（2026-10-11 截 README 截圖時跑的十幾段對話裡有 2 段）：使用者的描述裡沒有任何人名，輸出側的 `OutputSafetyFilter` 卻以 `realPerson` 攔下整輪（`Blocked_Output`），前端顯示「模型的輸出被安全規則攔下」，請使用者改寫需求再送。
+
+- 「銀髮的精靈女子在森林裡拿著法杖，奇幻風格，周圍有發光的螢火蟲」，動手輪被擋，理由：「The input mentions Galadriel, a fictional character portrayed by a real person, but the content itself is a safe chat prompt about fantasy character design.」分類器自己也說是虛構角色、內容安全，仍回 `realPerson: true`。Galadriel 出現在這一輪 `SearchPresets` 的結果裡，是知識庫片段帶進來的。
+- 「穿米色風衣的長髮女子站在河岸邊的櫻花樹下，春天的午後，微風吹起她的頭髮」，追問時選了「日系動漫風，色調清新柔和」，之後的動手輪被擋，理由：「輸入內容提到了新海誠（Makoto Shinkai）這位真實存在的導演與動畫家名稱。」這段對話的工具結果裡都沒有這個名字，是模型自己由風格聯想到的（推測寫進了定稿的 tag 或說明；audit 的 `Blocked_Output` 只記理由，沒記被擋的工具與文字，無法確認）。
+
+同一個場景的另一段對話，定稿含 `(yoneyama mai:0.9)`（真實插畫家名，rag 帶進來）卻放行，現在 README 的截圖就是那一段。專案擁有者的立場：畫師名當畫風參考可以，而且正好展示 RAG 對畫風的幫助。
+
+**原因**：`SafetyClassifier.OutputPrompt` 的 realPerson 只寫「是否描述真實存在的人」，不像輸入側的規則排除虛構角色，也沒區分「畫面要畫出真人」和「提到真人當畫風參考」。分類器是 LLM，同類的名字有時擋、有時放。被擋時整輪回滾，使用者的輸入本身沒問題，卻得改寫重送。
+
+**可能的方向**：輸出側的 realPerson 改成「畫面要畫出真實存在的人（本人的長相、扮演）」才算，畫師、導演、作品名當風格參考與虛構角色（即使由真人演出）都不算；輸入側同一條要不要一起放寬另外判斷。`Blocked_Output` 補記工具名與被審的文字，之後查得到名字從哪來。改完要確認真人防線照樣擋得住（指名明星、要求畫某位真人）。
 
 ## 已修正
 
