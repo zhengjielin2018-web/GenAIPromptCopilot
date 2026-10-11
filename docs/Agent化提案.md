@@ -1,6 +1,6 @@
 # AI Agent 化提案：從提示詞工作流到會自我驗證的 agent
 
-日期：2026-10-08
+日期：2026-10-08（2026-10-11 更新：§3 的 A、C 改成生成預覽、符合度評分、修正建議上線後的現況，C 由 ✗ 改為 ◐；其餘段落保留提案當時的內容）
 狀態：**提案，未定案**。各項要不要做、先做哪個，由專案擁有者決定；定案的項目照慣例另開 `superpowers/specs/` 設計文件與 `superpowers/plans/` 計畫，本文件不取代它們。
 對象：決定專案下一步方向的人。讀完應該知道：agent 化的重點是什麼（§2）、這個專案跟一般認知的「AI agent 專案」差在哪、每個差距的證據在哪、建議怎麼補、先後順序與代價、哪些事要先拍板。
 
@@ -153,9 +153,9 @@ agent 化是在這套控管**裡面**，把「做 → 看 → 改」這個圈加
 
 | # | 特徵 | 現況 | 證據 |
 | :--- | :--- | :--- | :--- |
-| A | 目標導向 | ◐ 目標是「產出提示詞」，完成＝呼叫終止型工具；有定稿閘門（還有缺就擋回），但沒有對「畫面是否符合需求」的檢查 | [主規格](superpowers/specs/2026-09-21-genai-prompt-copilot-design.md) §4.6 |
+| A | 目標導向 | ◐ 目標是「產出提示詞」，完成＝呼叫終止型工具；有定稿閘門（還有缺就擋回）。定稿後生圖可以算出 0–100 的符合度，但分數只給使用者看，不是完成的條件 | [主規格](superpowers/specs/2026-09-21-genai-prompt-copilot-design.md) §4.6、[符合度評分](superpowers/specs/2026-10-10-intent-fit-scoring-design.md) |
 | B | 自主決定步驟 | ◐ 模型在輪內自己選工具，但流程是編號步驟寫在流程說明裡；輪的種類與可用工具由程式決定 | [`flow-act.md`](../src/PromptCopilot.Api/Prompts/flow-act.md)、[`flow-propose.md`](../src/PromptCopilot.Api/Prompts/flow-propose.md)、[`ToolSetBuilder.cs`](../src/PromptCopilot.Api/Orchestration/ToolSetBuilder.cs) |
-| C | 環境回饋 | ✗ 不生成圖片，看不到產物的效果；唯一的「環境」是知識庫檢索 | 主規格 §2.2「實際生成圖片（只產 prompt）」 |
+| C | 環境回饋 | ◐ 定稿後可以生圖，Gemini 依使用者想法逐條判圖、程式算分，`FixAdvisor` 決定下一步（補 prompt、改寫 tag、換 seed）。但生圖與修正都要使用者按：對話裡的模型看不到圖和分數，要等使用者按下修正建議才收到回饋；自主閉環還沒做 | [生成預覽](superpowers/specs/2026-10-09-render-preview-design.md)、[符合度評分](superpowers/specs/2026-10-10-intent-fit-scoring-design.md)、[修正建議](superpowers/specs/2026-10-10-fix-suggestions-design.md) |
 | D | 記憶 | ◐ 工作記憶有（`ChatHistory`、facet 狀態、ledger）；沒有長期記憶，session 重啟即清空 | [`SessionStore.cs`](../src/PromptCopilot.Api/Sessions/SessionStore.cs)、主規格 §2.2 |
 | E | 可量測 | ◐ 有指標化的實驗與報表，但 eval 全靠人工跑、人工判讀 | [`eval-cases.md`](eval-cases.md)、[`experiments/`](experiments/) |
 | F | 可觀測、受控 | ◐ 控管很完整；可觀測只有 audit 與 log 行，沒有 token、成本、trace | [`Filters/`](../src/PromptCopilot.Api/Filters/)、[`known-issues.md`](known-issues.md) |
