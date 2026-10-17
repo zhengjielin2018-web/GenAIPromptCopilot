@@ -1,0 +1,43 @@
+name: Release
+
+# 推 v* tag（例如 v0.1.0）就建一個程式版本的 Release。
+# 知識庫種子另走 seed-v* tag、由 scripts/export_seed.py 印出的指令手動上傳，不經過這裡。
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: create GitHub Release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # 變更摘要：上一個 v* tag 到這個 tag 之間主線（first-parent）上的 commit，
+      # 主線多半是 merge commit，訊息本身就是一段中文摘要。第一版則列出全部主線歷史。
+      - name: build release notes
+        run: |
+          prev=$(git describe --tags --abbrev=0 --match 'v*' "${GITHUB_REF_NAME}^" 2>/dev/null || true)
+          range=${prev:+${prev}..}${GITHUB_REF_NAME}
+          {
+            if [ -n "$prev" ]; then
+              echo "## ${prev} 之後的變更"
+            else
+              echo "## 變更"
+            fi
+            echo
+            git log --first-parent --format='- %s (%h)' "$range"
+            echo
+            echo "知識庫種子不隨程式版本發布，見 seed-v* Release；\`docker-compose.yml\` 的 \`SEED_URL\` 指向目前使用的那一版。"
+          } > notes.md
+          cat notes.md
+
+      - name: create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" --notes-file notes.md
