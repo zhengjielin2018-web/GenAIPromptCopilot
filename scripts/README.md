@@ -115,7 +115,7 @@ clean／structure／embed／load 全部五個階段，`--max-records` 預設不�
 
     python export_seed.py --version 3        # 產出 data/seed/prompt_copilot_seed_v3.dump（不進版控）
 
-它會印出 `gh release create seed-v3 …` 指令，上傳是手動的。目前 Release 上是 seed-v1 與 seed-v2，compose 預設用 seed-v2（多了 `facet_tags`）。語料擴增或換 embedding 模型後
+它會印出 `gh release create seed-v3 …` 指令，上傳是手動的。目前 Release 上最新是 seed-v3，compose 預設用 seed-v3（比 seed-v2 多了 `preset_facet_embeddings`）。語料擴增或換 embedding 模型後
 版本號 +1，並同步 `docker-compose.yml` 的 `SEED_URL` 預設值與 `db/init/001_schema.sql` 的維度。
 授權與免責聲明見 [docs/資料來源.md](../docs/資料來源.md)。
 
