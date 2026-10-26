@@ -109,7 +109,7 @@ clean／structure／embed／load 全部五個階段，`--max-records` 預設不�
 ## 匯出公開的知識庫種子
 
 `docker compose up` 首次啟動灌的 dump 從這裡來。它開一個用完即丟的 pgvector 容器、套上
-`db/init/001_schema.sql`，把開發庫的兩張知識表以 `pg_dump --data-only` 串流灌進去，
+`db/init/001_schema.sql`，把開發庫的三張表（知識片段、facet 向量子表、共享紀錄）以 `pg_dump --data-only` 串流灌進去，
 在丟棄庫裡刪掉使用者自己存的紀錄（`source = 'user'`），再從丟棄庫匯出，最後停掉容器。
 開發庫只被讀，API 開著也沒關係；灌進全新 schema 這一步順便證明 dump 灌得回去。約 2 分鐘。
 
