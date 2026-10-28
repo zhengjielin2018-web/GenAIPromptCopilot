@@ -55,7 +55,7 @@ flowchart LR
 
 一輪對話：使用者送一句話 → 輸入側安全過濾 → 模型在動態組出的工具清單裡自己決定要查知識庫、跟使用者確認、更新儀表板、追問、討論還是定稿 → 每個工具呼叫即時以 SSE 推到前端 → 該輪以一個終止型工具收尾。會改動畫面的要求一律分兩輪：打字的那一輪模型只拿得到確認、討論與檢索，使用者按下確認卡的按鈕後，下一輪才拿得到改狀態的工具（[先確認再動手設計](docs/superpowers/specs/2026-10-05-confirm-before-act-design.md)）。任何一步失敗整輪回滾，跟資料庫交易一樣。細節見[主規格 §4](docs/superpowers/specs/2026-09-21-genai-prompt-copilot-design.md#4-核心編排全-agentic)；檢索與組裝的逐步拆解（以 Python 單輪 demo 實跑）見 [docs/單輪流程說明.md](docs/單輪流程說明.md)。
 
-生成預覽不經過對話：定稿卡按下按鈕後請求進背景佇列，RenderWorker 組好 ComfyUI workflow 送 RunPod，同時請 Gemini 從對話整理出使用者的要求清單。圖回來先審圖，過了就先給前端看，再逐條判圖、由程式算分，最後 `FixAdvisor` 照固定規則決定建議的下一步。細節見[定稿後生成預覽](docs/superpowers/specs/2026-10-09-render-preview-design.md)、[符合度評分](docs/superpowers/specs/2026-10-10-intent-fit-scoring-design.md)、[修正建議](docs/superpowers/specs/2026-10-10-fix-suggestions-design.md)。
+生成預覽不經過對話：定稿卡按下按鈕後請求進背景佇列，RenderWorker 組好 ComfyUI workflow 送 RunPod，同時請 Gemini 從對話整理出使用者的要求清單。圖回來後審圖和逐條判圖同時開始：審圖過了才把圖給前端看；判圖的結果由程式算分，再由 `FixAdvisor` 照固定規則決定建議的下一步，分數和建議要等審圖過了才給，審圖擋下就連評分一起丟掉。細節見[定稿後生成預覽](docs/superpowers/specs/2026-10-09-render-preview-design.md)、[符合度評分](docs/superpowers/specs/2026-10-10-intent-fit-scoring-design.md)、[修正建議](docs/superpowers/specs/2026-10-10-fix-suggestions-design.md)。
 
 ## 技術對照
 
