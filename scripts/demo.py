@@ -334,8 +334,9 @@ def build_view(
 def unusable_message(exc: UnusableResponse) -> str:
     """把 Gemini 唯一給出的那點資訊翻成使用者看得懂的話。
 
-    內容攔截不重試（見 pipeline/gemini_client.py 的 UnusableResponse），所以這裡要講
-    清楚這不是程式壞掉，而且下一步在使用者手上——由人決定要不要改寫自己的需求。
+    內容攔截只重試一次（見 pipeline/gemini_client.py 的 UnusableResponse），走到這裡就是
+    重試後仍被擋，所以要講清楚這不是程式壞掉，而且下一步在使用者手上——由人決定要不要
+    改寫自己的需求。
     非攔截的情形 client 層已經重試過了，叫使用者改描述只會誤導。
     """
     if exc.is_content_block:

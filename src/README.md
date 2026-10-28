@@ -10,13 +10,13 @@
 docker compose up -d db                      # 專案根目錄；schema 由 db/init 自動建
 cd src/PromptCopilot.Api
 dotnet user-secrets set "Llm:ApiKey" "<GEMINI_API_KEY>"
-dotnet run                                   # Swagger: http://localhost:5000/swagger
+dotnet run                                   # Swagger: http://localhost:5192/swagger（launchSettings 的 http profile）
 ```
 
 DB 密碼不是預設的 `postgres` 時，連線字串用環境變數蓋掉，不要改 `appsettings.json`：
 `Database__ConnectionString="Host=localhost;Port=5432;Database=prompt_copilot;Username=postgres;Password=<POSTGRES_PASSWORD>"`（或 `dotnet user-secrets set "Database:ConnectionString" "..."`）。
 
-`launchSettings.json` 會挑別的埠、也會開瀏覽器。要固定埠又不要瀏覽器就繞過它，
+`launchSettings.json` 用 5192、也會開瀏覽器，但前端的 devProxy 與 `manual-tests/start_api.py` 都假設 API 在 5000。要固定在 5000 又不要瀏覽器就繞過它，
 但 user-secrets 只在 Development 載入，所以環境變數得自己補（2026-09-23 驗收就是這樣跑的）：
 
 ```bash
@@ -60,7 +60,7 @@ GEMINI_API_KEY=<key> PC_INTEGRATION=1 dotnet test --filter GeminiContractTests  
 
 ## 組態
 
-所有數字在 `appsettings.json`（`Orchestrator:*`、`Llm:*Retries`），本機覆寫用 `appsettings.Development.json` 或 user-secrets。
+數字大多在 `appsettings.json`（`Orchestrator:*`、`Llm:*Retries`、`Render:*`）。推薦組法的 `Orchestrator:RecommendationTake`／`RecommendationTimeoutSeconds`／`RecommendationPoolSize`／`RecommendationSeenPenalty`／`RecommendationTemperature` 與 `Render:SeedsBeforeRewrite` 只有 [`Options.cs`](PromptCopilot.Api/Configuration/Options.cs) 的預設值，要調就在 `appsettings.json` 加同名的鍵。本機覆寫用 `appsettings.Development.json` 或 user-secrets。
 
 本機 `dotnet test` 若在新建的 Debug dll 上被 Windows 應用程式控制擋下，改跑 `dotnet test -c Release`，結果相同。
 

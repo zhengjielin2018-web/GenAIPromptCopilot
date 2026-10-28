@@ -107,14 +107,18 @@ sequenceDiagram
         H->>G: 改 role、記錄回應
         G-->>C: functionCall 或文字
         C->>K: 執行被點名的工具
-        K->>K: Audit → ToolBudget → OutputSafety → TerminalTool → plugin
+        K->>K: Audit → ToolBudget → OutputSafety → TerminalTool → plugin（FinalizePrompt 在這裡比對 ledger 標 tag 來源）
         K-->>C: 工具結果（寫進 ChatHistory）
     end
     Note over K: 終止型工具成功 → TerminalToolFilter 設 Terminate，迴圈停
     C-->>O: 回來
     O->>O: 沒有終止型工具？拿掉這次的純文字、帶一則暫時提示再呼叫一次（Protocol_Violation）
-    O->>O: 標 tag 來源、推薦（只在定稿）、HistoryTrimmer 壓縮與截斷、寫 audit
-    O-->>E: final／blocked／error 事件
+    O->>O: HistoryTrimmer 壓縮與截斷（從這裡起這一輪不再回滾）
+    O-->>E: final、dimensions 事件
+    O->>O: 推薦（只在定稿、知識庫開著；讀的是截短後的 history，見 known-issues 第 17 條）
+    O-->>E: recommendations 事件
+    O->>O: 寫 audit（Turn_Completed）
+    Note over E,O: 收尾前任一步失敗（含輸出被擋）就整輪回滾、改送 blocked／error 事件；推薦與 audit 失敗不回滾
 ```
 
 幾個要點：
