@@ -25,7 +25,8 @@ TaskType = Literal["RETRIEVAL_DOCUMENT", "RETRIEVAL_QUERY"]
 CONTENT_BLOCK_REASONS: frozenset[str] = frozenset({
     "PROHIBITED_CONTENT", "SAFETY", "IMAGE_SAFETY", "BLOCKLIST", "JAILBREAK", "MODEL_ARMOR",
 })
-UNUSABLE_ATTEMPTS = 3  # 空回應最多呼叫幾次（含第一次，即重試 2 次；內容攔截的重試也算在內）。傳輸錯誤另由 _call 最多呼叫 6 次
+# 空回應最多呼叫幾次（含第一次，即重試 2 次；內容攔截的重試也算在內）。傳輸錯誤另由 _call 最多呼叫 6 次
+UNUSABLE_ATTEMPTS = 3
 CONTENT_BLOCK_ATTEMPTS = 1  # 內容攔截的重試次數。只一次：會誤擋 SFW，但重送到過為止等於規避安全判定
 
 
